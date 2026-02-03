@@ -243,7 +243,7 @@
         localStorage.setItem('appVersion', CURRENT_VERSION);
         location.reload();
     }
-    import { getDatabase, ref, set, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBJ9CRer5FEjA1_yZ5g1jBypaX_3Cpqqyo",
@@ -334,7 +334,8 @@
         onValue(dbRef, (snapshot) => {
             const data = snapshot.val();
             if (data) {
-                window.users = data;
+                // null/undefined 항목 제거
+                window.users = Array.isArray(data) ? data.filter(u => u && u.id) : data;
                 checkForNewMembers(); 
             } else {
                 initDataWithImageContent();
@@ -345,34 +346,16 @@
 
         // 안전한 저장 (Transaction 사용)
         window.saveData = () => {
-            runTransaction(dbRef, (currentData) => {
-                // Firebase의 최신 데이터와 병합
-                if (currentData && Array.isArray(currentData)) {
-                    // 로컬 변경사항을 서버 데이터에 반영
-                    window.users.forEach(localUser => {
-                        const serverUser = currentData.find(u => u && u.id === localUser.id);
-                        if (serverUser) {
-                            // 기존 사용자 업데이트
-                            Object.assign(serverUser, localUser);
-                        } else {
-                            // 새 사용자 추가
-                            currentData.push(localUser);
-                        }
-                    });
-                    return currentData;
-                } else {
-                    // 데이터가 없으면 로컬 데이터로 초기화
-                    return window.users;
-                }
-            }).then(() => {
-                console.log('[저장 성공] Transaction 완료');
-            }).catch((error) => {
-                console.error('[저장 실패]', error);
-                if (error.message.includes('transaction')) {
-                    // Transaction 충돌 시 자동 재시도됨
-                    console.log('[재시도] 다른 사용자와 동시 수정 감지');
-                }
-            });
+            // 전체 배열 저장 (중복 방지)
+            set(dbRef, window.users)
+                .then(() => {
+                    console.log('[저장 성공]');
+                    render();
+                    lastRenderTime = Date.now();
+                })
+                .catch((error) => {
+                    console.error('[저장 실패]', error);
+                });
         };
 
     }
@@ -408,7 +391,7 @@
     function executePostponeLogic(myUser) {
         if (!myUser.role) return;
         
-        const waitingUsersWithRole = window.users.filter(user => user.status === 'waiting' && user.role === myUser.role).sort((a, b) => {
+        const waitingUsersWithRole = window.users.filter(u => u && u.id).filter(user => user.status === 'waiting' && user.role === myUser.role).sort((a, b) => {
             const aPostponed = a.postponedOrder !== undefined ? a.postponedOrder : 0;
             const bPostponed = b.postponedOrder !== undefined ? b.postponedOrder : 0;
             if (aPostponed !== bPostponed) return aPostponed - bPostponed;
@@ -420,13 +403,13 @@
         if (currentIdx !== 0 || waitingUsersWithRole.length < 2) return;
         
         const postponedUsers = waitingUsersWithRole.filter(user => {
-            const userInArray = window.users.find(u => u.id === user.id);
+            const userInArray = window.users.filter(u => u && u.id).find(u => u.id === user.id);
             return userInArray.postponedOrder !== undefined && userInArray.postponedOrder > 0;
         });
         
         let maxPostponedOrder = 0;
         postponedUsers.forEach(user => {
-            const userInArray = window.users.find(u => u.id === user.id);
+            const userInArray = window.users.filter(u => u && u.id).find(u => u.id === user.id);
             if (userInArray.postponedOrder > maxPostponedOrder) {
                 maxPostponedOrder = userInArray.postponedOrder;
             }
@@ -435,14 +418,14 @@
         console.log('[미루기 전] 역할:', myUser.role);
         console.log('[미루기 전] 대기열:', waitingUsersWithRole.map((u, i) => `${i+1}.${u.name}(${u.postponedOrder || 0})`).join(' '));
         
-        const firstUserInArray = window.users.find(user => user.id === waitingUsersWithRole[0].id);
+        const firstUserInArray = window.users.filter(u => u && u.id).find(user => user.id === waitingUsersWithRole[0].id);
         firstUserInArray.postponedOrder = maxPostponedOrder + 1;
         window.logChange(firstUserInArray.id, firstUserInArray.name, "postponedOrder", maxPostponedOrder, maxPostponedOrder + 1, "순번 미루기 버튼");
         console.log('[미루기] 1등', firstUserInArray.name, '→ postponedOrder:', firstUserInArray.postponedOrder);
         
         
         waitingUsersWithRole.forEach(user => {
-            const userInArray = window.users.find(u => u.id === user.id);
+            const userInArray = window.users.filter(u => u && u.id).find(u => u.id === user.id);
             if (userInArray.postponedOrder === undefined) {
                 userInArray.postponedOrder = 0;
             }
@@ -474,7 +457,7 @@
 
     // 횟수 수정 함수 (비밀번호 체크)
     window.updateCompletedCount = (id, newVal, inputEl) => {
-        const user = window.users.find(u => u.id === id);
+        const user = window.users.filter(u => u && u.id).find(u => u.id === id);
         if (!user) return;
 
         if (user.completedCount == newVal) return;
@@ -612,7 +595,7 @@
 
         const tbody = document.getElementById('participant-table');
         tbody.innerHTML = '';
-        const allUsers = [...window.users].sort((a,b) => a.id - b.id);
+        const allUsers = [...window.users].filter(u => u && u.id).sort((a,b) => a.id - b.id);
 
         allUsers.forEach(u => {
             const tr = document.createElement('tr');
@@ -703,11 +686,26 @@
         reader.readAsArrayBuffer(file);
     };
 
-    window.openRoleModal = (id) => { window.targetUserId = id; document.getElementById('roleModal').style.display = 'flex'; };
+    window.openRoleModal = (id) => { 
+        const user = window.users.filter(u => u && u.id).find(u => u.id === id);
+        if (user && user.status === 'waiting') {
+            alert('이미 대기 중입니다!\n\n현재 대기 역할: ' + user.role);
+            return;
+        }
+        window.targetUserId = id; 
+        document.getElementById('roleModal').style.display = 'flex'; 
+    };
     window.confirmRole = (role) => {
         if (window.targetUserId) {
-            const user = window.users.find(u => u.id === window.targetUserId);
+            const user = window.users.filter(u => u && u.id).find(u => u.id === window.targetUserId);
             if (user) {
+                // 중복 대기 체크
+                if (user.status === 'waiting') {
+                    alert('이미 대기 중입니다!\n\n현재 대기 역할: ' + user.role);
+                    window.closeModal();
+                    return;
+                }
+                
                 // 변경 로그 기록
                 const oldRole = user.role || '없음';
                 const oldStatus = user.status;
@@ -724,7 +722,7 @@
     };
     window.closeModal = () => { window.targetUserId = null; document.getElementById('roleModal').style.display = 'none'; };
     window.cancelWaiting = (id) => {
-        const user = window.users.find(u => u.id === id);
+        const user = window.users.filter(u => u && u.id).find(u => u.id === id);
         if (user) {
             // 변경 로그 기록
             window.logChange(user.id, user.name, 'status', 'waiting', 'idle', '대기 취소 버튼');
@@ -745,9 +743,9 @@
         }
     };
     window.startWork = (id) => {
-        const activeUsers = window.users.filter(u => u.status === 'active');
+        const activeUsers = window.users.filter(u => u && u.id).filter(u => u.status === 'active');
         if (activeUsers.length >= window.MAX_ACTIVE) { alert('슬롯이 꽉 찼습니다.'); return; }
-        const user = window.users.find(u => u.id === id);
+        const user = window.users.filter(u => u && u.id).find(u => u.id === id);
         if (!user) return;
         const isRoleTaken = activeUsers.some(activeUser => activeUser.role === user.role);
         if (isRoleTaken) { alert(`🚫 입장 불가: 현재 [${user.role}] 퀘스트는 이미 진행 중입니다.`); return; }
@@ -767,7 +765,7 @@
             return;
         }
         
-        const user = window.users.find(u => u.id === id);
+        const user = window.users.filter(u => u && u.id).find(u => u.id === id);
         if (user) {
             // 변경 로그 기록
             window.logChange(user.id, user.name, 'status', 'active', 'idle', '완료 버튼');
@@ -785,7 +783,7 @@
     };
     
     window.postponeTurn = (currentId) => {
-        const user = window.users.find(u => u.id === currentId);
+        const user = window.users.filter(u => u && u.id).find(u => u.id === currentId);
         if(user) {
             executePostponeLogic(user);
             window.saveData();
@@ -808,11 +806,11 @@
     };
     window.deleteUser = (id) => {
         if(confirm('정말 이 참여자를 삭제하시겠습니까?')) {
-            window.users = window.users.filter(u => u.id !== id);
+            window.users = window.users.filter(u => u && u.id).filter(u => u.id !== id);
             window.saveData();
         }
     };
-    window.updateName = (id, val) => { const u = window.users.find(u => u.id === id); if(u) { u.name = val; window.saveData(); } };
+    window.updateName = (id, val) => { const u = window.users.filter(u => u && u.id).find(u => u.id === id); if(u) { u.name = val; window.saveData(); } };
     
     window.clearAllData = () => { 
         if(confirm('정말 모든 데이터를 삭제하고 초기화 하시겠습니까?\n(이 작업은 되돌릴 수 없습니다)')) { 
