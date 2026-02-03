@@ -299,6 +299,9 @@
         window.targetUserId = null;
 
         // 변경 로그 기록 함수
+        // 로그 카운터 (같은 밀리초에 여러 로그 저장 시 충돌 방지)
+        let logCounter = 0;
+        
         window.logChange = (userId, userName, field, oldValue, newValue, changedBy = '시스템') => {
             const timestamp = new Date().toLocaleString('ko-KR', {
                 year: 'numeric',
@@ -320,8 +323,9 @@
                 changedBy: changedBy
             };
             
-            // Firebase에 로그 추가 (push로 자동 ID 생성)
-            const newLogRef = ref(db, 'eka_change_logs/' + Date.now());
+            // 고유한 키 생성: 타임스탬프 + 카운터 (덮어쓰기 방지)
+            const uniqueKey = Date.now() + '_' + (logCounter++);
+            const newLogRef = ref(db, 'eka_change_logs/' + uniqueKey);
             set(newLogRef, logEntry).catch(error => console.error('로그 저장 실패:', error));
             
             console.log('[변경 로그]', logEntry);
