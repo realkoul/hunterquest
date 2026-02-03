@@ -344,6 +344,9 @@
             document.getElementById('loading-cover').style.display = 'none';
         });
 
+        // 렌더링 시간 추적 변수
+        let lastRenderTime = 0;
+        
         // 안전한 저장 (Transaction 사용)
         window.saveData = () => {
             // 전체 배열 저장 (중복 방지)
