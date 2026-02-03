@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:,">
+    <title>에카 작위 퀘스트 (Simple)</title>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        /* [기본 스타일] */
+        body { font-family: 'Segoe UI', AppleSDGothicNeo, sans-serif; background-color: #f0f2f5; margin: 0; padding: 15px; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; display: none; }
+        button { cursor: pointer; transition: 0.2s; font-family: inherit; }
+        
+        .btn-add { background-color: #2c3e50; color: white; padding: 12px 20px; border-radius: 8px; border: none; font-weight: bold; }
+        .btn-excel { background-color: #27ae60; color: white; padding: 12px 20px; border-radius: 8px; border: none; font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 5px; }
+        .btn-reset { background-color: #e74c3c; color: white; padding: 8px 15px; border-radius: 6px; border: none; font-size: 0.9rem; }
+        
+        .control-panel { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .input-wrapper { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+        .input-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .input-text { padding: 12px; border: 1px solid #ddd; border-radius: 8px; width: 200px; font-size: 1rem; }
+
+        .stats { display: flex; gap: 15px; margin-bottom: 30px; background: white; padding: 15px; border-radius: 8px; flex-wrap: wrap; justify-content: space-around; }
+        .stat-box { font-weight: bold; font-size: 1rem; display: flex; align-items: center; gap: 5px; }
+
+        section { background: white; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        h2 { margin-top: 0; color: #2c3e50; font-size: 1.3rem; margin-bottom: 15px; }
+        
+        .slots-container { display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; }
+        .slot { flex: 1; min-width: 280px; max-width: 400px; border: 2px solid #e0e0e0; border-radius: 12px; padding: 15px; display: flex; flex-direction: column; justify-content: space-between; text-align: center; background: white; }
+        .slot.active { border-color: #3498db; background-color: #f0f8ff; }
+        .slot.empty { border: 2px dashed #bdc3c7; background-color: #fafafa; color: #aaa; min-height: 150px; justify-content: center; align-items: center; }
+        .info-badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 0.8rem; color: white; margin-bottom: 5px; background: #95a5a6; }
+        .bg-green { background: #27ae60; }
+        .btn-action { border: none; padding: 12px; border-radius: 8px; font-weight: bold; width: 100%; margin-top: 10px; color: white; font-size: 1rem; }
+        .btn-end { background-color: #7f8c8d; }
+        
+        .queue-container { width: 100%; }
+        .queue-list { display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; }
+        .queue-card { width: 100%; max-width: 180px; background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px; padding: 15px; text-align: center; position: relative; box-shadow: 0 2px 5px rgba(0,0,0,0.05); display: flex; flex-direction: column; justify-content: space-between; }
+        .queue-rank { position: absolute; top: -10px; left: -10px; background: #ff9800; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1rem; box-shadow: 0 2px 2px rgba(0,0,0,0.2); }
+        .btn-group { display: flex; gap: 5px; margin-top: 10px; width: 100%; }
+        .btn-common-style { flex: 1; width: 0; border: none; padding: 8px 2px; border-radius: 4px; font-weight: bold; font-size: 0.8rem; white-space: nowrap; display: flex; justify-content: center; align-items: center; }
+        .btn-enter { background-color: #27ae60; color: white; } .btn-enter:hover { background-color: #219150; }
+        .btn-swap { background-color: #d35400; color: white; } .btn-swap:hover { background-color: #e67e22; }
+        .btn-disabled-card { background-color: #bdc3c7; color: #fff; cursor: not-allowed; }
+        .btn-blocked-queue { background-color: #e67e22; color: #fff; cursor: not-allowed; }
+        .btn-cancel-queue { margin-top: 5px; width: 100%; background: transparent; border: 1px solid #e74c3c; color: #e74c3c; padding: 5px; border-radius: 4px; font-size: 0.8rem; cursor: pointer; }
+        .btn-cancel-queue:hover { background: #e74c3c; color: white; }
+
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+
+        .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid #eee; border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; min-width: 500px; }
+        th, td { padding: 12px 10px; text-align: left; border-bottom: 1px solid #eee; vertical-align: middle; font-size: 0.9rem; white-space: nowrap; }
+        th { background-color: #f8f9fa; color: #555; }
+        
+        input.edit-name { width: 150px; padding: 6px; border: 1px solid transparent; background: transparent; font-size: 0.95rem; }
+        input.edit-name:focus { border-color: #3498db; background: white; outline: none; border-radius: 4px; }
+        input.edit-count { width: 60px; padding: 8px; text-align: center; border: 2px solid #f39c12; border-radius: 6px; font-weight: bold; color: #d35400; font-size: 1rem; background-color: #fffaf0; }
+        input.edit-count:focus { border-color: #e67e22; background-color: #fff; outline: none; }
+        
+        .btn-apply, .btn-cancel, .btn-delete { padding: 6px 10px; border-radius: 4px; border: none; font-size: 0.85rem; margin-right: 2px; color: white; cursor: pointer;}
+        .btn-apply { background-color: #3498db; }
+        .btn-cancel { background-color: #e74c3c; }
+        .btn-delete { background-color: #c0392b; }
+
+        @media (max-width: 768px) {
+            body { padding: 10px; }
+            .input-wrapper { flex-direction: column; align-items: stretch; gap: 15px; }
+            .input-group { width: 100%; justify-content: space-between; }
+            .input-text { flex: 1; }
+            .btn-add, .btn-excel { width: 100%; margin-top: 5px; }
+            .slot { min-width: 100%; }
+            .queue-card { max-width: 47%; flex: 1 1 40%; }
+            .stats { gap: 10px; padding: 10px; }
+            .stat-box { font-size: 0.9rem; }
+            h1 { font-size: 1.5rem; }
+            th, td { padding: 10px 5px; }
+        }
+
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-content { background: white; padding: 30px; border-radius: 12px; width: 300px; text-align: center; box-shadow: 0 5px 20px rgba(0,0,0,0.2); }
+        .role-btn-group { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+        .btn-role { padding: 12px; border: none; border-radius: 8px; font-weight: bold; color: white; font-size: 1rem; }
+        .btn-cancel-modal { margin-top: 10px; background: transparent; border: 1px solid #ccc; padding: 8px; border-radius: 6px; color: #666; width: 100%; }
+        .role-tainer { background-color: #e74c3c; } .role-hide { background-color: #8e44ad; } .role-perfo { background-color: #2980b9; }
+        .role-badge { display: inline-block; padding: 3px 8px; border-radius: 4px; color: white; font-size: 0.8rem; font-weight: bold; margin-right: 5px; vertical-align: middle; }
+        .st-badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
+        .st-idle { background: #eee; color: #777; } .st-waiting { background: #fff3cd; color: #856404; } .st-active { background: #d1ecf1; color: #0c5460; }
+        #loading-cover { position: fixed; top:0; left:0; width:100%; height:100%; background:white; z-index:9999; display:flex; justify-content:center; align-items:center; font-size:1.5rem; color:#2c3e50; font-weight:bold; }
+        #lock-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #2c3e50; z-index: 10000; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; }
+        .lock-box { background: white; padding: 30px; border-radius: 12px; text-align: center; color: #333; box-shadow: 0 10px 30px rgba(0,0,0,0.3); width: 80%; max-width: 300px; }
+        .lock-input { padding: 10px; font-size: 1.2rem; border: 1px solid #ddd; border-radius: 6px; width: 100%; box-sizing: border-box; text-align: center; margin-bottom: 10px; }
+        .btn-unlock { padding: 10px 20px; font-size: 1rem; background: #27ae60; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; }
+        .btn-unlock:hover { background: #219150; }
+    </style>
+</head>
+<body>
+
+<div id="lock-screen">
+    <div class="lock-box">
+        <h2 style="margin-top:0;">🔒 접근 제한</h2>
+        <p>비밀번호를 입력하세요.</p>
+        <input type="password" id="password-input" class="lock-input" placeholder="Password" onkeypress="if(event.key==='Enter') window.checkPassword()">
+        <br>
+        <button class="btn-unlock" onclick="window.checkPassword()">입 장</button>
+        <p id="password-error" style="color:#e74c3c; display:none; margin-top:10px; font-weight:bold;">비밀번호가 틀렸습니다.</p>
+    </div>
+</div>
+
+<div id="loading-cover" style="display:none;">서버 연결 중...</div>
+
+<div class="container" id="main-container">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+        <div>
+            <h1 style="margin:0;">🛡️ 에카 작위 퀘스트 (LIVE)</h1>
+            <span style="color:#27ae60; font-weight:bold; font-size:0.85rem;">● hunterquest-fbdee 서버 연동됨</span>
+        </div>
+        <button class="btn-reset" id="btn-reset-all">전체 초기화</button>
+    </div>
+
+    <div class="stats">
+        <div class="stat-box">전체: <span id="total-cnt">0</span></div>
+        <div class="stat-box" style="color:#e67e22;">⏳ 대기: <span id="waiting-cnt">0</span></div>
+        <div class="stat-box" style="color:#2980b9;">🔥 진행: <span id="active-cnt">0</span></div>
+    </div>
+
+    <section>
+        <h2>🔥 진행 중 (3 Slots)</h2>
+        <div class="slots-container" id="slots-container"></div>
+    </section>
+
+    <section>
+        <h2>⏳ 대기 명단 (전체 보기)</h2>
+        <div style="margin-bottom:15px; background:#e8f6f3; padding:10px; border-radius:4px; color:#16a085; font-size:0.9rem; line-height: 1.5;">
+            <strong>🚀 룰 안내:</strong><br>
+            <strong>🎯 순서:</strong> 1.완료 횟수 적음 &gt; 2.신청 순서 (선착순)<br>
+            1. 퀘스트 중복 시 입장 불가 (겹치면 순번 유지)<br>
+            2. <strong>[▼ 순번미루기]</strong>: 같은 퀘스트 대기자가 있으면 교체, 없으면 뒷사람에게 양보<br>
+        </div>
+        <div class="queue-container">
+            <div class="queue-list" id="queue-list"></div>
+        </div>
+    </section>
+
+    <section>
+        <h2>👥 전체 참여자 관리</h2>
+        <div style="margin-bottom:10px; color:#d35400; font-size:0.9rem;">
+            * 완료 횟수 숫자를 클릭하고 수정 후 <strong>엔터(Enter)</strong>를 누르면 저장됩니다.
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th width="8%">ID</th>
+                        <th width="25%">이름</th>
+                        <th width="12%">완료</th>
+                        <th width="25%">상태 / 퀘스트</th>
+                        <th width="20%">시작 시간</th>
+                        <th>관리</th>
+                    </tr>
+                </thead>
+                <tbody id="participant-table"></tbody>
+            </table>
+        </div>
+    </section>
+    </section>
+
+
+    <div class="control-panel" style="text-align: center;">
+        <button class="btn-excel" onclick="window.openLogModal()" style="font-size: 1rem; padding: 15px 30px;">
+            📋 변경 로그 보기 (관리자)
+        </button>
+    </div>
+
+    <div class="control-panel">
+        <div class="input-wrapper">
+            <div class="input-group" style="flex: 2;">
+                <strong>👤 개별:</strong>
+                <input type="text" id="new-name" class="input-text" placeholder="이름을 입력하세요" >
+            </div>
+            <button class="btn-add" id="btn-add-user" style="flex: 1;">등록</button>
+        </div>
+        <div style="margin-top: 10px;">
+            <input type="file" id="excel-file" accept=".xlsx, .xls" style="display: none;" onchange="window.handleExcelUpload(event)">
+            <button class="btn-excel" style="width:100%;" onclick="document.getElementById('excel-file').click()">
+                📂 엑셀 일괄 등록
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="roleModal" class="modal-overlay">
+    <div class="modal-content">
+        <h3 style="margin-top:0;">퀘스트 선택</h3>
+        <p style="color:#666; font-size:0.9rem;">진행할 퀘스트를 선택하세요.</p>
+        <div class="role-btn-group">
+            <button class="btn-role role-tainer" onclick="confirmRole('테이너')">1. 테이너</button>
+            <button class="btn-role role-hide" onclick="confirmRole('하이드')">2. 하이드</button>
+            <button class="btn-role role-perfo" onclick="confirmRole('퍼포')">3. 퍼포</button>
+        </div>
+        <button class="btn-cancel-modal" onclick="closeModal()">취소</button>
+    </div>
+</div>
+
+<!-- 로그 모달 -->
+<div id="logModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 1200px; width: 90%; min-height: 500px; max-height: 85vh; overflow-y: auto; padding: 25px;">
+        <h3 style="margin-top:0;">📋 변경 로그 (최근 100개)</h3>
+        <button class="btn-excel" onclick="window.refreshLogsInModal()" style="margin-bottom: 15px; width: auto;">
+            🔄 새로고침
+        </button>
+        <div class="table-wrapper" style="min-height: 300px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th width="18%">시간</th>
+                        <th width="12%">사용자</th>
+                        <th width="12%">변경 항목</th>
+                        <th width="15%">이전 값</th>
+                        <th width="15%">새 값</th>
+                        <th width="15%">변경자</th>
+                    </tr>
+                </thead>
+                <tbody id="log-table-modal"></tbody>
+            </table>
+        </div>
+        <button class="btn-cancel-modal" onclick="window.closeLogModal()" style="margin-top: 15px;">닫기</button>
+    </div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+
+    // 버전 체크 (페이지 상단에 추가)
+    const CURRENT_VERSION = "2.0.0"; // 업데이트 시 변경
+    const STORED_VERSION = localStorage.getItem('appVersion');
+    
+    if (STORED_VERSION !== CURRENT_VERSION) {
+        alert('🔄 새 버전이 있습니다!\n\n페이지를 새로고침합니다.\n(데이터는 안전합니다)');
+        localStorage.setItem('appVersion', CURRENT_VERSION);
+        location.reload();
+    }
+    import { getDatabase, ref, set, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBJ9CRer5FEjA1_yZ5g1jBypaX_3Cpqqyo",
+      authDomain: "hunterquest-fbdee.firebaseapp.com",
+      databaseURL: "https://hunterquest-fbdee-default-rtdb.firebaseio.com",
+      projectId: "hunterquest-fbdee",
+      storageBucket: "hunterquest-fbdee.firebasestorage.app",
+      messagingSenderId: "999017602063",
+      appId: "1:999017602063:web:711b798bb7405ddbfe577a",
+      measurementId: "G-13WEG56NZR"
+    };
+
+    const SITE_PASSWORD = "1234";
+    const RESET_PASSWORD = "0000";
+    const EDIT_PASSWORD = "9876"; 
+
+    const RAW_NAMES = [
+        "헌터투썸", "헌터야해", "헌터파개", "헌터유령", "헌터원이", "헌터로또", "헌터포동", "헌터고수", 
+        "헌터거미", "헌터원빈", "헌터제리", "헌터살벌", "헌터짝패", "헌터조이", "헌터질럿", "헌터테이", 
+        "헌터마린", "헌터말봉", "헌터공포", "헌터빡구", "헌터신조", "헌터타노스", "헌터나영", "헌터백수", 
+        "헌터티모", "헌터작두", "헌터잼민", "헌터수호", "헌터영웅", "헌터츠키", "헌터선공", "헌터데데", 
+        "헌터동방", "헌터큼이", "헌터버기", "헌터레오", "헌터쏘주", "헌터밸리", "헌터은섬", "헌터바드", 
+        "헌터히데", "헌터혼고", "헌터비디", "헌터빵야", "헌터감자", "헌터센세", "헌터키위", "헌터볼드", 
+        "헌터춘봉", "헌터니이", "헌터말랭", "히든탱탱", "헌터드진", "헌터유로", "헌터고구마", "헌터복서", "헌터황월",
+        "나앗", "덱스", "숭이", "구찌", "심", "지인", "코스", "퓨리", "중독", "매콤", "간지", 
+        "성용", "기유", "나구리", "콩이", "후맨", "로이", "깜냥", "이도", "비트", "진상",
+        "헌터배추", "헌터쁘띠"
+    ];
+
+    window.checkPassword = () => {
+        const input = document.getElementById('password-input').value;
+        const errorMsg = document.getElementById('password-error');
+        if (input === SITE_PASSWORD) {
+            document.getElementById('lock-screen').style.display = 'none';
+            document.getElementById('main-container').style.display = 'block';
+            document.getElementById('loading-cover').style.display = 'flex';
+            startFirebase(); 
+        } else {
+            errorMsg.style.display = 'block';
+            document.getElementById('password-input').value = '';
+            document.getElementById('password-input').focus();
+        }
+    };
+
+    function startFirebase() {
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        const dbRef = ref(db, 'eka_quest_users');
+        window.changeLogRef = ref(db, 'eka_change_logs'); // 변경 로그 저장소
+
+        window.users = [];
+        window.MAX_ACTIVE = 3;
+        window.targetUserId = null;
+
+        // 변경 로그 기록 함수
+        window.logChange = (userId, userName, field, oldValue, newValue, changedBy = '시스템') => {
+            const timestamp = new Date().toLocaleString('ko-KR', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+            
+            const logEntry = {
+                timestamp: timestamp,
+                userId: userId,
+                userName: userName,
+                field: field,
+                oldValue: oldValue,
+                newValue: newValue,
+                changedBy: changedBy
+            };
+            
+            // Firebase에 로그 추가 (push로 자동 ID 생성)
+            const newLogRef = ref(db, 'eka_change_logs/' + Date.now());
+            set(newLogRef, logEntry).catch(error => console.error('로그 저장 실패:', error));
+            
+            console.log('[변경 로그]', logEntry);
+        };
+
+        onValue(dbRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                window.users = data;
+                checkForNewMembers(); 
+            } else {
+                initDataWithImageContent();
+            }
+            render();
+            document.getElementById('loading-cover').style.display = 'none';
+        });
+
+        // 안전한 저장 (Transaction 사용)
+        window.saveData = () => {
+            runTransaction(dbRef, (currentData) => {
+                // Firebase의 최신 데이터와 병합
+                if (currentData && Array.isArray(currentData)) {
+                    // 로컬 변경사항을 서버 데이터에 반영
+                    window.users.forEach(localUser => {
+                        const serverUser = currentData.find(u => u && u.id === localUser.id);
+                        if (serverUser) {
+                            // 기존 사용자 업데이트
+                            Object.assign(serverUser, localUser);
+                        } else {
+                            // 새 사용자 추가
+                            currentData.push(localUser);
+                        }
+                    });
+                    return currentData;
+                } else {
+                    // 데이터가 없으면 로컬 데이터로 초기화
+                    return window.users;
+                }
+            }).then(() => {
+                console.log('[저장 성공] Transaction 완료');
+            }).catch((error) => {
+                console.error('[저장 실패]', error);
+                if (error.message.includes('transaction')) {
+                    // Transaction 충돌 시 자동 재시도됨
+                    console.log('[재시도] 다른 사용자와 동시 수정 감지');
+                }
+            });
+        };
+
+    }
+
+    function checkForNewMembers() {
+        let changed = false;
+        let nextId = 1;
+        if (window.users.length > 0) {
+            nextId = Math.max(...window.users.map(u => u.id)) + 1;
+        }
+
+        RAW_NAMES.forEach(name => {
+            const exists = window.users.some(u => u.name === name);
+            if (!exists) {
+                window.users.push({
+                    id: nextId++,
+                    name: name,
+                    completedCount: 0,
+                    role: '',
+                    status: 'idle',
+                    waitingTime: null,
+                    startTime: null
+                });
+                changed = true;
+            }
+        });
+
+        if (changed) {
+            window.saveData();
+        }
+    }
+
+    function executePostponeLogic(myUser) {
+        if (!myUser.role) return;
+        
+        const waitingUsersWithRole = window.users.filter(user => user.status === 'waiting' && user.role === myUser.role).sort((a, b) => {
+            const aPostponed = a.postponedOrder !== undefined ? a.postponedOrder : 0;
+            const bPostponed = b.postponedOrder !== undefined ? b.postponedOrder : 0;
+            if (aPostponed !== bPostponed) return aPostponed - bPostponed;
+            if (a.completedCount !== b.completedCount) return a.completedCount - b.completedCount;
+            return a.waitingTime - b.waitingTime;
+        });
+        
+        const currentIdx = waitingUsersWithRole.findIndex(user => user.id === myUser.id);
+        if (currentIdx !== 0 || waitingUsersWithRole.length < 2) return;
+        
+        const postponedUsers = waitingUsersWithRole.filter(user => {
+            const userInArray = window.users.find(u => u.id === user.id);
+            return userInArray.postponedOrder !== undefined && userInArray.postponedOrder > 0;
+        });
+        
+        let maxPostponedOrder = 0;
+        postponedUsers.forEach(user => {
+            const userInArray = window.users.find(u => u.id === user.id);
+            if (userInArray.postponedOrder > maxPostponedOrder) {
+                maxPostponedOrder = userInArray.postponedOrder;
+            }
+        });
+        
+        console.log('[미루기 전] 역할:', myUser.role);
+        console.log('[미루기 전] 대기열:', waitingUsersWithRole.map((u, i) => `${i+1}.${u.name}(${u.postponedOrder || 0})`).join(' '));
+        
+        const firstUserInArray = window.users.find(user => user.id === waitingUsersWithRole[0].id);
+        firstUserInArray.postponedOrder = maxPostponedOrder + 1;
+        window.logChange(firstUserInArray.id, firstUserInArray.name, "postponedOrder", maxPostponedOrder, maxPostponedOrder + 1, "순번 미루기 버튼");
+        console.log('[미루기] 1등', firstUserInArray.name, '→ postponedOrder:', firstUserInArray.postponedOrder);
+        
+        
+        waitingUsersWithRole.forEach(user => {
+            const userInArray = window.users.find(u => u.id === user.id);
+            if (userInArray.postponedOrder === undefined) {
+                userInArray.postponedOrder = 0;
+            }
+        });
+    }
+
+    function initDataWithImageContent() {
+        const uniqueData = [];
+        const seenNames = new Set();
+        let nextId = 1;
+        
+        RAW_NAMES.forEach(name => {
+            if (!seenNames.has(name)) {
+                seenNames.add(name);
+                uniqueData.push({
+                    id: nextId++,
+                    name: name,
+                    completedCount: 0,
+                    role: '',
+                    status: 'idle',
+                    waitingTime: null,
+                    startTime: null
+                });
+            }
+        });
+        window.users = uniqueData;
+        window.saveData();
+    }
+
+    // 횟수 수정 함수 (비밀번호 체크)
+    window.updateCompletedCount = (id, newVal, inputEl) => {
+        const user = window.users.find(u => u.id === id);
+        if (!user) return;
+
+        if (user.completedCount == newVal) return;
+
+        const originalVal = user.completedCount;
+        const parsedVal = parseInt(newVal);
+
+        if (isNaN(parsedVal) || parsedVal < 0) {
+            alert("올바른 숫자를 입력하세요.");
+            inputEl.value = originalVal;
+            return;
+        }
+
+        const pw = prompt("관리자 비밀번호를 입력하세요 (횟수 수정):");
+        if (pw === EDIT_PASSWORD) {
+            user.completedCount = parsedVal;
+            window.saveData();
+            alert("수정되었습니다.");
+        } else {
+            alert("비밀번호가 틀렸습니다.");
+            inputEl.value = originalVal; // 복구
+        }
+    };
+
+    function render() {
+        const users = window.users;
+        const waitingUsers = users.filter(u => u.status === 'waiting')
+            .sort((a, b) => {
+                const aPostponed = a.postponedOrder !== undefined ? a.postponedOrder : 0;
+                const bPostponed = b.postponedOrder !== undefined ? b.postponedOrder : 0;
+                if (aPostponed !== bPostponed) return aPostponed - bPostponed;
+                if (a.completedCount !== b.completedCount) return a.completedCount - b.completedCount;
+                return a.waitingTime - b.waitingTime;
+            });
+
+        const activeUsers = users.filter(u => u.status === 'active');
+        const currentRoles = activeUsers.map(u => u.role);
+
+        document.getElementById('total-cnt').innerText = users.length;
+        document.getElementById('waiting-cnt').innerText = waitingUsers.length;
+        document.getElementById('active-cnt').innerText = activeUsers.length;
+
+        const slotsDiv = document.getElementById('slots-container');
+        slotsDiv.innerHTML = '';
+        for (let i = 0; i < window.MAX_ACTIVE; i++) {
+            const user = activeUsers[i];
+            const div = document.createElement('div');
+            if (user) {
+                div.className = 'slot active';
+                div.innerHTML = `
+                    <div>
+                        <span class="info-badge bg-green">${user.completedCount}회 완료</span>
+                        <h3 style="margin:10px 0;">${getRoleBadge(user.role)} ${user.name}</h3>
+                        <small style="color:#888">${user.startTime} 시작</small>
+                    </div>
+                    <button class="btn-action btn-end" onclick="finishWork(${user.id})">종료 (횟수 +1)</button>
+                `;
+            } else {
+                div.className = 'slot empty';
+                div.innerHTML = `<h3>빈 슬롯 ${i + 1}</h3><div style="font-size:0.9rem;">입장 대기 중...</div>`;
+            }
+            slotsDiv.appendChild(div);
+        }
+
+        const queueDiv = document.getElementById('queue-list');
+        queueDiv.innerHTML = '';
+        if (waitingUsers.length === 0) {
+            queueDiv.innerHTML = '<div style="padding:15px; color:#999;">대기 중인 사람이 없습니다.</div>';
+        } else {
+            const hasEmptySlot = activeUsers.length < window.MAX_ACTIVE;
+            let enabledButtonCount = 0; 
+            const queuedRoles = new Set(); 
+
+            waitingUsers.forEach((u, idx) => {
+                const card = document.createElement('div');
+                card.className = 'queue-card';
+                
+                const isBlockedByActive = currentRoles.includes(u.role);
+                const isBlockedByQueue = queuedRoles.has(u.role);
+                queuedRoles.add(u.role);
+
+                let mainBtn = '';
+                if (!hasEmptySlot) {
+                    mainBtn = `<button disabled class="btn-common-style btn-disabled-card">슬롯 꽉참</button>`;
+                } else if (isBlockedByActive) {
+                    mainBtn = `<button disabled class="btn-common-style btn-disabled-card" style="color:#e74c3c;">⛔ 진행 중</button>`;
+                } else if (isBlockedByQueue) {
+                    mainBtn = `<button disabled class="btn-common-style btn-blocked-queue">✋ 대기 중</button>`;
+                } else {
+                    if (enabledButtonCount < 4) {
+                        mainBtn = `<button class="btn-common-style btn-enter" onclick="startWork(${u.id})">입장 하기</button>`;
+                        enabledButtonCount++;
+                    } else {
+                         mainBtn = `<div style="font-size:0.8rem; color:#aaa; font-weight:bold; padding:8px 0; width:100%;">순번 ${idx + 1}</div>`;
+                    }
+                }
+
+                let swapBtn = '';
+                const sameRoleWaiting = waitingUsers.filter(user => user.role === u.role);
+                if (sameRoleWaiting.length >= 2) {
+                    const roleIdx = sameRoleWaiting.findIndex(user => user.id === u.id);
+                    const isFirstInRole = roleIdx === 0;
+                    if (isFirstInRole) {
+                        swapBtn = `<button class="btn-common-style btn-swap" onclick="window.postponeTurn(${u.id})">▼ 순번미루기</button>`;
+                    } else {
+                        swapBtn = `<button class="btn-common-style btn-swap" disabled style="opacity:0.5; cursor:not-allowed; background:#cbd5e0;">▼ 순번미루기</button>`;
+                    }
+                }
+
+                let buttonHtml = '';
+                if (mainBtn.includes('button')) { 
+                    buttonHtml = `<div class="btn-group">${mainBtn}${swapBtn}</div>`;
+                } else { 
+                    buttonHtml = `${mainBtn}${swapBtn ? `<div class="btn-group">${swapBtn}</div>` : ''}`;
+                }
+
+                const cancelBtn = `<button class="btn-cancel-queue" onclick="window.cancelWaitingWithConfirm(${u.id})">대기 취소</button>`;
+
+                let timerHtml = '';
+
+                card.innerHTML = `
+                    <div class="queue-rank">${idx + 1}</div>
+                    ${timerHtml}
+                    <div style="margin-bottom:5px;">${getRoleBadge(u.role)}</div>
+                    <strong>${u.name}</strong>
+                    <div style="margin-top:5px; font-size:0.85rem;">
+                        <span style="color:#d35400;">${u.completedCount}회</span>
+                    </div>
+                    ${buttonHtml}
+                    ${cancelBtn}
+                `;
+                queueDiv.appendChild(card);
+            });
+        }
+
+        const tbody = document.getElementById('participant-table');
+        tbody.innerHTML = '';
+        const allUsers = [...window.users].sort((a,b) => a.id - b.id);
+
+        allUsers.forEach(u => {
+            const tr = document.createElement('tr');
+            let statusHtml = '', actionBtn = '';
+
+            if (u.status === 'idle') {
+                statusHtml = '<span class="st-badge st-idle">미등록</span>';
+                actionBtn = `<button class="btn-apply" onclick="openRoleModal(${u.id})">대기 신청</button>`;
+            } else if (u.status === 'waiting') {
+                statusHtml = `${getRoleBadge(u.role)} <span class="st-badge st-waiting">대기 중</span>`;
+                actionBtn = `<button class="btn-cancel" onclick="cancelWaiting(${u.id})">신청 취소</button>`;
+            } else if (u.status === 'active') {
+                statusHtml = `${getRoleBadge(u.role)} <span class="st-badge st-active">진행 중</span>`;
+                actionBtn = '-';
+            }
+
+            tr.innerHTML = `
+                <td>${u.id}</td>
+                <td><input type="text" class="edit-name" value="${u.name}" onchange="window.updateName(${u.id}, this.value)"></td>
+                <td>
+                    <input type="number" class="edit-count" value="${u.completedCount}" 
+                           onchange="window.updateCompletedCount(${u.id}, this.value, this)">
+                </td>
+                <td>${statusHtml}</td>
+                <td style="font-size:0.85rem; color:#666;">${u.startTime || '-'}</td>
+                <td>
+                    ${actionBtn}
+                    <button class="btn-delete" onclick="window.deleteUser(${u.id})">삭제</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function getRoleBadge(role) {
+        if (!role) return '';
+        let className = 'role-all';
+        if (role === '테이너') className = 'role-tainer';
+        else if (role === '하이드') className = 'role-hide';
+        else if (role === '퍼포') className = 'role-perfo';
+        return `<span class="role-badge ${className}">${role}</span>`;
+    }
+
+    window.handleExcelUpload = (event) => {
+        const file = event.target.files[0];
+        if(!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, {type: 'array'});
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, {header: 1});
+
+            if(jsonData.length === 0) {
+                alert("엑셀 파일에 데이터가 없습니다.");
+                return;
+            }
+
+            let nextId = 1;
+            if (window.users.length > 0) {
+                nextId = Math.max(...window.users.map(u => u.id)) + 1;
+            }
+
+            let addCount = 0;
+            jsonData.forEach((row, index) => {
+                if(row.length < 1) return; 
+                const name = String(row[0]).trim();
+                const exists = window.users.some(u => u.name === name);
+                if(!exists && name) {
+                    window.users.push({
+                        id: nextId++,
+                        name: name,
+                        completedCount: 0,
+                        role: '',
+                        status: 'idle',
+                        waitingTime: null,
+                        startTime: null
+                    });
+                    addCount++;
+                }
+            });
+            window.saveData();
+            alert(`${addCount}명의 데이터가 추가되었습니다!`);
+            event.target.value = ''; 
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    window.openRoleModal = (id) => { window.targetUserId = id; document.getElementById('roleModal').style.display = 'flex'; };
+    window.confirmRole = (role) => {
+        if (window.targetUserId) {
+            const user = window.users.find(u => u.id === window.targetUserId);
+            if (user) {
+                // 변경 로그 기록
+                const oldRole = user.role || '없음';
+                const oldStatus = user.status;
+                window.logChange(user.id, user.name, 'role', oldRole, role, '대기 등록 모달');
+                window.logChange(user.id, user.name, 'status', oldStatus, 'waiting', '대기 등록 모달');
+                
+                user.status = 'waiting';
+                user.role = role;
+                user.waitingTime = Date.now();
+                window.saveData();
+            }
+        }
+        window.closeModal();
+    };
+    window.closeModal = () => { window.targetUserId = null; document.getElementById('roleModal').style.display = 'none'; };
+    window.cancelWaiting = (id) => {
+        const user = window.users.find(u => u.id === id);
+        if (user) {
+            // 변경 로그 기록
+            window.logChange(user.id, user.name, 'status', 'waiting', 'idle', '대기 취소 버튼');
+            if (user.role) {
+                window.logChange(user.id, user.name, 'role', user.role, '', '대기 취소 버튼 (역할 초기화)');
+            }
+            
+            user.status = 'idle';
+            user.waitingTime = null;
+            user.role = '';
+            user.postponedOrder = 0;
+            window.saveData();
+        }
+    };
+    window.cancelWaitingWithConfirm = (id) => {
+        if(confirm('대기를 취소하시겠습니까?')) {
+            window.cancelWaiting(id);
+        }
+    };
+    window.startWork = (id) => {
+        const activeUsers = window.users.filter(u => u.status === 'active');
+        if (activeUsers.length >= window.MAX_ACTIVE) { alert('슬롯이 꽉 찼습니다.'); return; }
+        const user = window.users.find(u => u.id === id);
+        if (!user) return;
+        const isRoleTaken = activeUsers.some(activeUser => activeUser.role === user.role);
+        if (isRoleTaken) { alert(`🚫 입장 불가: 현재 [${user.role}] 퀘스트는 이미 진행 중입니다.`); return; }
+        
+        // 변경 로그 기록
+        window.logChange(user.id, user.name, 'status', user.status, 'active', '입장 하기 버튼');
+        
+        user.status = 'active';
+        user.startTime = new Date().toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+        user.postponedOrder = 0;
+        window.saveData();
+    };
+    
+    // [Modified] 종료 버튼 클릭 시 확인 팝업 추가
+    window.finishWork = (id) => {
+        if(!confirm("퀘스트가 완료되었나요?\n(확인을 누르면 완료 횟수가 +1 증가합니다)")) {
+            return;
+        }
+        
+        const user = window.users.find(u => u.id === id);
+        if (user) {
+            // 변경 로그 기록
+            window.logChange(user.id, user.name, 'status', 'active', 'idle', '완료 버튼');
+            window.logChange(user.id, user.name, 'completedCount', user.completedCount, user.completedCount + 1, '완료 버튼');
+            if (user.role) {
+                window.logChange(user.id, user.name, 'role', user.role, '', '완료 버튼 (역할 초기화)');
+            }
+            
+            user.status = 'idle';
+            user.completedCount += 1;
+            user.startTime = null;
+            user.role = ''; 
+            window.saveData();
+        }
+    };
+    
+    window.postponeTurn = (currentId) => {
+        const user = window.users.find(u => u.id === currentId);
+        if(user) {
+            executePostponeLogic(user);
+            window.saveData();
+        }
+    };
+
+    window.addNewUser = () => {
+        const nameInput = document.getElementById('new-name');
+        const name = nameInput.value.trim();
+        if(!name) return;
+        let nextId = 1;
+        if (window.users.length > 0) { nextId = Math.max(...window.users.map(u => u.id)) + 1; }
+        
+        window.users.push({ 
+            id: nextId, name: name, 
+            completedCount: 0, role: '', status: 'idle', waitingTime: null, startTime: null 
+        });
+        nameInput.value = '';
+        window.saveData();
+    };
+    window.deleteUser = (id) => {
+        if(confirm('정말 이 참여자를 삭제하시겠습니까?')) {
+            window.users = window.users.filter(u => u.id !== id);
+            window.saveData();
+        }
+    };
+    window.updateName = (id, val) => { const u = window.users.find(u => u.id === id); if(u) { u.name = val; window.saveData(); } };
+    
+    window.clearAllData = () => { 
+        if(confirm('정말 모든 데이터를 삭제하고 초기화 하시겠습니까?\n(이 작업은 되돌릴 수 없습니다)')) { 
+            const input = prompt("초기화 비밀번호를 입력하세요:");
+            if (input === RESET_PASSWORD) {
+                window.users = []; 
+                window.saveData();
+                alert("초기화되었습니다.");
+            } else {
+                alert("비밀번호가 틀렸습니다.");
+            }
+        } 
+    };
+
+        // 로그 새로고침 함수
+        // 로그 모달 열기 (비밀번호 확인)
+        window.openLogModal = () => {
+            const password = prompt('관리자 비밀번호를 입력하세요:');
+            if (password === EDIT_PASSWORD) {
+                document.getElementById('logModal').style.display = 'flex';
+                window.refreshLogsInModal();
+            } else if (password !== null) {
+                alert('비밀번호가 올바르지 않습니다.');
+            }
+        };
+        
+        // 로그 모달 닫기
+        window.closeLogModal = () => {
+            document.getElementById('logModal').style.display = 'none';
+        };
+        
+        // 로그 새로고침 (모달 내부)
+        window.refreshLogsInModal = () => {
+            onValue(window.changeLogRef, (snapshot) => {
+                const logs = snapshot.val();
+                const logTable = document.getElementById('log-table-modal');
+                logTable.innerHTML = '';
+                
+                if (!logs) {
+                    logTable.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#999; padding: 50px; font-size: 1.1rem;">📋 변경 로그가 없습니다.<br><br><span style="font-size:0.9rem; color:#bbb;">사용자가 역할 변경, 입장, 완료 등의 작업을 수행하면<br>여기에 로그가 기록됩니다.</span></td></tr>';
+                    return;
+                }
+                
+                // 로그를 배열로 변환하고 최신순 정렬
+                const logArray = Object.entries(logs).map(([key, value]) => ({
+                    key: key,
+                    ...value
+                })).sort((a, b) => parseInt(b.key) - parseInt(a.key)).slice(0, 100); // 최근 100개
+                
+                logArray.forEach(log => {
+                    const tr = document.createElement('tr');
+                    
+                    // 필드 이름 한글화
+                    const fieldNames = {
+                        'status': '상태',
+                        'role': '역할',
+                        'completedCount': '완료 횟수',
+                        'postponedOrder': '미루기 순서'
+                    };
+                    
+                    // 값 한글화
+                    const statusNames = {
+                        'idle': '대기',
+                        'waiting': '대기열',
+                        'active': '진행 중'
+                    };
+                    
+                    const fieldName = fieldNames[log.field] || log.field;
+                    let oldValue = statusNames[log.oldValue] || log.oldValue || '-';
+                    let newValue = statusNames[log.newValue] || log.newValue || '-';
+                    
+                    tr.innerHTML = `
+                        <td style="font-size:0.85rem;">${log.timestamp}</td>
+                        <td><strong>${log.userName}</strong></td>
+                        <td><span style="background:#3498db; color:white; padding:2px 6px; border-radius:4px; font-size:0.8rem;">${fieldName}</span></td>
+                        <td style="color:#e74c3c;">${oldValue}</td>
+                        <td style="color:#27ae60;"><strong>${newValue}</strong></td>
+                        <td style="font-size:0.85rem; color:#666;">${log.changedBy}</td>
+                    `;
+                    logTable.appendChild(tr);
+                });
+            }, { onlyOnce: true }); // 한 번만 읽기
+        };
+    window.handleEnter = (e) => { if(e.key === 'Enter') window.addNewUser(); };
+
+    document.getElementById('btn-add-user').onclick = window.addNewUser;
+    document.getElementById('btn-reset-all').onclick = window.clearAllData;
+</script>
+</body>
+</html>
