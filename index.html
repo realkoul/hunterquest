@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" href="data:,">
-    <title>에카 작위 퀘스트 관리 시스템 v3.5.5</title>
+    <title>에카 작위 퀘스트 v3.6.2</title>
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     <style>
         /* [기본 스타일] */
@@ -96,8 +96,7 @@
         .btn-unlock { padding: 10px 20px; font-size: 1rem; background: #27ae60; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; }
         .btn-unlock:hover { background: #219150; }
         
-        /* 배너 스타일은 인라인으로 적용됨 */
-        .improved-badge { background: #27ae60; color: white; padding: 5px 10px; border-radius: 4px; font-size: 0.8rem; margin-left: 10px; }
+        .version-badge { background: #3498db; color: white; padding: 5px 10px; border-radius: 4px; font-size: 0.8rem; margin-left: 10px; }
     </style>
 </head>
 <body>
@@ -116,14 +115,9 @@
 <div id="loading-cover" style="display:none;">서버 연결 중...</div>
 
 <div class="container" id="main-container">
-    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; text-align: center; font-weight: bold; font-size: 1.1rem; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        🛡️ 에카 작위 퀘스트 관리 시스템
-        <span class="improved-badge" style="background: #27ae60;">✨ v3.5.5</span>
-    </div>
-    
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
         <div>
-            <h1 style="margin:0;">🛡️ 에카 작위 퀘스트</h1>
+            <h1 style="margin:0;">🛡️ 에카 작위 퀘스트<span class="version-badge">v3.6.2</span></h1>
             <span style="color:#27ae60; font-weight:bold; font-size:0.85rem;">● hunterquest-fbdee 서버 연동됨</span>
         </div>
         <button class="btn-reset" id="btn-reset-all">전체 초기화</button>
@@ -138,6 +132,24 @@
     <section>
         <h2>🔥 진행 중 (3 Slots)</h2>
         <div class="slots-container" id="slots-container"></div>
+    </section>
+
+    <section style="background: #fff3cd; border: 2px solid #ffc107;">
+        <h2>⏱️ 자동 미루기 타이머 제어 (관리자)</h2>
+        <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
+            <button class="btn-role role-tainer" id="timer-btn-tainer" onclick="window.toggleRoleTimer('테이너')" style="padding: 15px 30px; font-size: 1.1rem; min-width: 150px;">
+                ⏸️ 테이너 정지
+            </button>
+            <button class="btn-role role-hide" id="timer-btn-hide" onclick="window.toggleRoleTimer('하이드')" style="padding: 15px 30px; font-size: 1.1rem; min-width: 150px;">
+                ⏸️ 하이드 정지
+            </button>
+            <button class="btn-role role-perfo" id="timer-btn-perfo" onclick="window.toggleRoleTimer('퍼포')" style="padding: 15px 30px; font-size: 1.1rem; min-width: 150px;">
+                ⏸️ 퍼포 정지
+            </button>
+        </div>
+        <div style="margin-top: 10px; text-align: center; color: #856404; font-size: 0.9rem;">
+            💡 해당 퀘스트의 자동 미루기 기능을 일시정지/재개합니다. (관리자 비밀번호 필요)
+        </div>
     </section>
 
     <section>
@@ -244,15 +256,23 @@
     // 상수 정의 (Constants)
     // ========================================
     const CONSTANTS = {
-        VERSION: "3.5.3-MIDNIGHT-FIX",
+        VERSION: "3.6.2-PRODUCTION",
         MAX_ACTIVE_SLOTS: 3,
         MAX_ENABLED_BUTTONS: 4,
         LOG_DISPLAY_COUNT: 100,
+        ENTRY_TIMEOUT_SECONDS: 600, // 10분
         // ⚠️ 보안 경고: 비밀번호가 클라이언트에 노출됨
         // 실제 운영 환경에서는 Firebase Authentication 사용 권장
         SITE_PASSWORD: "1234",
-        RESET_PASSWORD: "0000",
+        RESET_PASSWORD: "4223",
         EDIT_PASSWORD: "9876"
+    };
+
+    // 역할별 자동 미루기 일시정지 상태 (전역)
+    window.rolePauseState = {
+        '테이너': false,
+        '하이드': false,
+        '퍼포': false
     };
 
     const firebaseConfig = {
@@ -384,7 +404,6 @@
             } else {
                 const hours = Math.floor(diffMinutes / 60);
                 const mins = diffMinutes % 60;
-                // 5~7시간이면 분 단위까지 보여주는 게 좋을 것 같아 형식을 살짝 다듬었습니다
                 return `${hours}시간 ${mins}분 경과`; 
             }
         } catch (error) {
@@ -416,7 +435,7 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
         
-        // 실제 DB 사용
+        // 본서버 DB 사용
         const dbRef = ref(db, 'eka_quest_users');
         window.changeLogRef = ref(db, 'eka_change_logs');
 
@@ -548,6 +567,48 @@
                 renderActiveSlots(activeUsers);
             }
         }, 60000); // 60초마다 업데이트
+        
+        /**
+         * 입장 타이머 자동 업데이트 (1초마다)
+         */
+        setInterval(() => {
+            const waitingUsers = window.users.filter(u => u && u.status === 'waiting');
+            if (waitingUsers.length > 0) {
+                // 타이머가 있는 사용자가 있으면 전체 렌더링
+                const hasActiveTimer = waitingUsers.some(u => u.entryActivatedTime);
+                if (hasActiveTimer) {
+                    render();
+                }
+            }
+        }, 1000); // 1초마다 업데이트
+        
+        /**
+         * 초기 타이머 시작 (페이지 로드 시)
+         */
+        setTimeout(() => {
+            console.log('[초기 타이머 체크]');
+            const users = getValidUsers(window.users);
+            const activeUsers = users.filter(u => u.status === 'active');
+            const currentRoles = activeUsers.map(u => u.role);
+            const hasEmptySlot = activeUsers.length < CONSTANTS.MAX_ACTIVE_SLOTS;
+            
+            // 각 역할별로 체크
+            ['테이너', '하이드', '퍼포'].forEach(role => {
+                const isRoleActive = currentRoles.includes(role);
+                const canEnter = hasEmptySlot && !isRoleActive;
+                
+                if (canEnter) {
+                    const roleWaiting = sortWaitingUsers(
+                        users.filter(u => u.status === 'waiting' && u.role === role)
+                    );
+                    
+                    if (roleWaiting.length > 0 && !roleWaiting[0].entryActivatedTime) {
+                        console.log(`[초기 타이머 시작] ${role}`);
+                        startRoleTimer(role);
+                    }
+                }
+            });
+        }, 1000); // 1초 후 실행
     }
 
     /**
@@ -609,12 +670,213 @@
         }
     }
 
+
+    // ========================================
+    // 입장 타이머 관리
+    // ========================================
+    
+    /**
+     * 입장 타이머 체크 및 자동 미루기
+     */
+    function checkEntryTimers() {
+        const users = getValidUsers(window.users);
+        const waitingUsers = sortWaitingUsers(users.filter(u => u.status === 'waiting'));
+        const activeUsers = users.filter(u => u.status === 'active');
+        const currentRoles = activeUsers.map(u => u.role);
+        
+        const hasEmptySlot = activeUsers.length < CONSTANTS.MAX_ACTIVE_SLOTS;
+        
+        // 역할별로 독립적으로 체크
+        const roleQueues = {
+            '테이너': [],
+            '하이드': [],
+            '퍼포': []
+        };
+        
+        // 역할별로 대기자 분류
+        waitingUsers.forEach(u => {
+            if (u.role && roleQueues[u.role]) {
+                roleQueues[u.role].push(u);
+            }
+        });
+        
+        let timeoutUsers = [];
+        
+        // 각 역할별로 독립적으로 타이머 체크
+        Object.keys(roleQueues).forEach(role => {
+            const roleWaiting = roleQueues[role];
+            if (roleWaiting.length === 0) return;
+            
+            // 이 역할의 자동 미루기가 일시정지 상태인지 확인
+            const isPaused = window.rolePauseState[role];
+            
+            // 이 역할이 현재 진행 중인지 확인
+            const isRoleActive = currentRoles.includes(role);
+            
+            // 이 역할의 첫 번째 대기자
+            const firstWaiter = roleWaiting[0];
+            
+            // 입장 가능 조건: 슬롯 있음 + 해당 역할 진행 중 아님
+            const canEnter = hasEmptySlot && !isRoleActive;
+            
+            if (canEnter) {
+                // 일시정지 상태가 아닐 때만 타이머 체크
+                if (!isPaused && firstWaiter.entryActivatedTime) {
+                    const now = Date.now();
+                    const elapsed = (now - firstWaiter.entryActivatedTime) / 1000;
+                    
+                    if (elapsed >= CONSTANTS.ENTRY_TIMEOUT_SECONDS) {
+                        timeoutUsers.push(firstWaiter);
+                    }
+                }
+            }
+        });
+        
+        // 타임아웃된 사용자들 자동 미루기
+        if (timeoutUsers.length > 0) {
+            const affectedRoles = new Set();
+            
+            window.saveData((currentData) => {
+                const validData = getValidUsers(currentData);
+                
+                timeoutUsers.forEach(timeoutUser => {
+                    const user = validData.find(u => u.id === timeoutUser.id);
+                    if (user && user.status === 'waiting') {
+                        // 같은 역할의 최대 postponedOrder 찾기
+                        let maxPostponedOrder = 0;
+                        validData.forEach(u => {
+                            if (u.status === 'waiting' && u.role === user.role) {
+                                const order = u.postponedOrder ?? 0;
+                                if (order > maxPostponedOrder) {
+                                    maxPostponedOrder = order;
+                                }
+                            }
+                        });
+                        
+                        const oldOrder = user.postponedOrder ?? 0;
+                        user.postponedOrder = maxPostponedOrder + 1;
+                        user.entryActivatedTime = null; // 타이머 리셋
+                        
+                        // 영향받은 역할 기록 (외부 Set에)
+                        affectedRoles.add(user.role);
+                        
+                        window.logChange(
+                            user.id,
+                            user.name,
+                            "postponedOrder",
+                            oldOrder,
+                            maxPostponedOrder + 1,
+                            "입장 타임아웃 (자동 미루기)"
+                        );
+                        
+                        console.log(`[타임아웃] ${user.name} - 자동으로 순번 뒤로 이동`);
+                    }
+                });
+                
+                return validData;
+            }).then(() => {
+                // 타임아웃으로 밀려난 역할의 새로운 1순위에게 타이머 시작
+                affectedRoles.forEach(role => {
+                    console.log(`[타임아웃 후 타이머 시작] ${role}`);
+                    startRoleTimer(role);
+                });
+            });
+        }
+    }
+    
+
+    /**
+     * 특정 역할의 첫 번째 대기자 타이머 시작
+     */
+    function startRoleTimer(role) {
+        window.saveData((currentData) => {
+            const validData = getValidUsers(currentData);
+            const activeUsers = validData.filter(u => u.status === 'active');
+            const currentRoles = activeUsers.map(u => u.role);
+            
+            // 이 역할이 입장 가능한지 확인
+            const hasEmptySlot = activeUsers.length < CONSTANTS.MAX_ACTIVE_SLOTS;
+            const isRoleActive = currentRoles.includes(role);
+            const canEnter = hasEmptySlot && !isRoleActive;
+            
+            if (!canEnter) return validData;
+            
+            // 이 역할의 대기자 찾기
+            const roleWaiting = sortWaitingUsers(
+                validData.filter(u => u.status === 'waiting' && u.role === role)
+            );
+            
+            if (roleWaiting.length > 0) {
+                const firstWaiter = roleWaiting[0];
+                // 타이머가 없으면 시작
+                if (!firstWaiter.entryActivatedTime) {
+                    firstWaiter.entryActivatedTime = Date.now();
+                    console.log(`[타이머 시작] ${role} - ${firstWaiter.name}`);
+                }
+            }
+            
+            return validData;
+        });
+    }
+    
+    /**
+     * 특정 역할의 타이머 리셋
+     */
+    function resetRoleTimer(role) {
+        window.saveData((currentData) => {
+            const validData = getValidUsers(currentData);
+            
+            // 이 역할의 모든 대기자 타이머 리셋
+            validData.forEach(u => {
+                if (u.status === 'waiting' && u.role === role && u.entryActivatedTime) {
+                    u.entryActivatedTime = null;
+                    console.log(`[타이머 리셋] ${role} - ${u.name}`);
+                }
+            });
+            
+            return validData;
+        });
+    }
+
+    /**
+     * 남은 시간 계산 (초 단위)
+     */
+    function getRemainingTime(user) {
+        if (!user.entryActivatedTime) {
+            return null;
+        }
+        
+        // 해당 역할이 일시정지 상태인지 확인
+        if (user.role && window.rolePauseState[user.role]) {
+            return null; // 일시정지 중에는 시간 표시 안 함
+        }
+        
+        const now = Date.now();
+        const elapsed = (now - user.entryActivatedTime) / 1000;
+        const remaining = CONSTANTS.ENTRY_TIMEOUT_SECONDS - elapsed;
+        
+        return Math.max(0, Math.floor(remaining));
+    }
+    
+    /**
+     * 시간 포맷팅 (MM:SS)
+     */
+    function formatTime(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
     // ========================================
     // UI 렌더링
     // ========================================
+
     
     function render() {
         try {
+            // 입장 타이머 체크
+            checkEntryTimers();
+            
             const users = getValidUsers(window.users);
             
             // 대기 중인 사용자 정렬
@@ -639,9 +901,32 @@
             // 참여자 테이블 렌더링
             renderParticipantTable(users);
             
+            // 타이머 제어 버튼 상태 업데이트
+            updateTimerButtons();
+            
         } catch (error) {
             console.error('렌더링 오류:', error);
         }
+    }
+    
+    /**
+     * 타이머 제어 버튼 상태 업데이트
+     */
+    function updateTimerButtons() {
+        ['테이너', '하이드', '퍼포'].forEach(role => {
+            const btnId = 'timer-btn-' + (role === '테이너' ? 'tainer' : role === '하이드' ? 'hide' : 'perfo');
+            const btn = document.getElementById(btnId);
+            if (btn) {
+                const isPaused = window.rolePauseState[role];
+                if (isPaused) {
+                    btn.innerHTML = `▶️ ${role} 재개`;
+                    btn.style.background = '#27ae60';
+                } else {
+                    btn.innerHTML = `⏸️ ${role} 정지`;
+                    btn.style.background = (role === '테이너' ? '#e74c3c' : role === '하이드' ? '#8e44ad' : '#2980b9');
+                }
+            }
+        });
     }
 
     /**
@@ -744,6 +1029,30 @@
             const roleDisplay = u.role ? getRoleBadge(u.role) : '<span class="role-badge" style="background:#e74c3c;">⚠️ 역할없음</span>';
             const warningText = !u.role ? '<div style="color:#e74c3c; font-size:0.75rem; margin-top:5px;">※ 대기 취소 후 재신청 필요</div>' : '';
             
+            // 타이머 표시 (입장 버튼이 활성화된 사람만)
+            const hasEntryButton = mainBtn.includes('입장 하기');
+            let timerDisplay = '';
+            
+            if (hasEntryButton && u.entryActivatedTime) {
+                const isPaused = u.role && window.rolePauseState[u.role];
+                
+                if (isPaused) {
+                    // 일시정지 상태
+                    timerDisplay = `<div style="color:#f39c12; font-weight:bold; font-size:0.85rem; margin-top:5px;">
+                        ⏸️ 자동미루기 일시정지
+                    </div>`;
+                } else {
+                    // 정상 카운트다운
+                    const remaining = getRemainingTime(u);
+                    if (remaining !== null) {
+                        const timerColor = remaining <= 3 ? '#e74c3c' : (remaining <= 5 ? '#f39c12' : '#27ae60');
+                        timerDisplay = `<div style="color:${timerColor}; font-weight:bold; font-size:0.85rem; margin-top:5px;">
+                            ⏱️ ${formatTime(remaining)} 남음
+                        </div>`;
+                    }
+                }
+            }
+            
             card.innerHTML = `
                 <div class="queue-rank">${idx + 1}</div>
                 <div style="margin-top:10px;">
@@ -751,6 +1060,7 @@
                     <h4 style="margin:5px 0;">${u.name}</h4>
                     <small style="color:#888;">완료 ${u.completedCount}회</small>
                     ${warningText}
+                    ${timerDisplay}
                 </div>
                 ${buttonHtml}
                 ${cancelBtn}
@@ -898,7 +1208,8 @@
                                 status: 'idle',
                                 waitingTime: null,
                                 startTime: null,
-                                postponedOrder: 0
+                                postponedOrder: 0,
+                                entryActivatedTime: null
                             });
                             addCount++;
                         }
@@ -965,6 +1276,9 @@
                     user.postponedOrder = 0;
                 }
                 return validData;
+            }).then(() => {
+                // 대기 신청 후 타이머 체크 및 시작
+                startRoleTimer(role);
             });
         }
         window.closeModal();
@@ -995,6 +1309,7 @@
                 user.waitingTime = null;
                 user.role = '';
                 user.postponedOrder = 0;
+                user.entryActivatedTime = null;
             }
             return validData;
         });
@@ -1013,6 +1328,8 @@
      * 입장 하기
      */
     window.startWork = (id) => {
+        let savedRole = null;
+        
         window.saveData((currentData) => {
             const validData = getValidUsers(currentData);
             const activeUsers = validData.filter(u => u.status === 'active');
@@ -1039,6 +1356,14 @@
             
             window.logChange(user.id, user.name, 'status', user.status, 'active', '입장 하기 버튼');
             
+            savedRole = user.role; // 외부 변수에 저장
+            
+            // 입장 시 해당 역할의 자동 미루기 정지 해제
+            if (savedRole && window.rolePauseState[savedRole]) {
+                window.rolePauseState[savedRole] = false;
+                console.log(`[자동 미루기 해제] ${savedRole} - 입장으로 인한 자동 해제`);
+            }
+            
             user.status = 'active';
             // 24시간 형식으로 명확히 저장 (HH:MM:SS)
             const now = new Date();
@@ -1047,8 +1372,18 @@
             const seconds = String(now.getSeconds()).padStart(2, '0');
             user.startTime = `${hours}:${minutes}:${seconds}`;
             user.postponedOrder = 0;
+            user.entryActivatedTime = null; // 입장하면 타이머 종료
             
             return validData;
+        }).then(() => {
+            // 같은 역할의 다음 대기자 타이머 시작
+            if (savedRole) {
+                const users = getValidUsers(window.users);
+                const roleWaiting = users.filter(u => u.status === 'waiting' && u.role === savedRole);
+                if (roleWaiting.length > 0) {
+                    startRoleTimer(savedRole);
+                }
+            }
         });
     };
     
@@ -1060,6 +1395,8 @@
             return;
         }
         
+        let savedRole = null;
+        
         window.saveData((currentData) => {
             const validData = getValidUsers(currentData);
             const user = validData.find(u => u.id === id);
@@ -1070,13 +1407,25 @@
                     window.logChange(user.id, user.name, 'role', user.role, '', '완료 버튼 (역할 초기화)');
                 }
                 
+                savedRole = user.role; // 외부 변수에 저장
+                
                 user.status = 'idle';
                 user.completedCount += 1;
                 user.startTime = null;
                 user.role = ''; 
                 user.postponedOrder = 0;
+                user.entryActivatedTime = null;
             }
             return validData;
+        }).then(() => {
+            // 해당 역할의 대기자가 있으면 타이머 시작
+            if (savedRole) {
+                const users = getValidUsers(window.users);
+                const roleWaiting = users.filter(u => u.status === 'waiting' && u.role === savedRole);
+                if (roleWaiting.length > 0) {
+                    startRoleTimer(savedRole);
+                }
+            }
         });
     };
     
@@ -1087,6 +1436,51 @@
         window.saveData((currentData) => {
             return executePostponeLogic(currentId, currentData);
         });
+    };
+
+
+    /**
+     * 역할별 자동 미루기 일시정지/재개 (관리자 기능)
+     */
+    window.toggleRoleTimer = (role) => {
+        const password = prompt('관리자 비밀번호를 입력하세요:');
+        if (password !== CONSTANTS.EDIT_PASSWORD) {
+            if (password !== null) {
+                alert('비밀번호가 올바르지 않습니다.');
+            }
+            return;
+        }
+        
+        const currentState = window.rolePauseState[role];
+        const newState = !currentState;
+        
+        window.rolePauseState[role] = newState;
+        
+        // 재개 시 해당 역할의 첫 번째 대기자 타이머 리셋
+        if (!newState) {
+            const users = getValidUsers(window.users);
+            const roleWaiting = sortWaitingUsers(
+                users.filter(u => u.status === 'waiting' && u.role === role)
+            );
+            
+            if (roleWaiting.length > 0 && roleWaiting[0].entryActivatedTime) {
+                // DB 업데이트
+                window.saveData((currentData) => {
+                    const validData = getValidUsers(currentData);
+                    const firstUser = validData.find(u => u.id === roleWaiting[0].id);
+                    if (firstUser) {
+                        firstUser.entryActivatedTime = Date.now();
+                    }
+                    return validData;
+                });
+            }
+        }
+        
+        const stateText = newState ? '일시정지' : '재개';
+        alert(`[${role}] 퀘스트의 자동 미루기가 ${stateText}되었습니다.`);
+        
+        // 즉시 UI 업데이트
+        render();
     };
 
     /**
@@ -1129,7 +1523,8 @@
                 status: 'idle', 
                 waitingTime: null, 
                 startTime: null,
-                postponedOrder: 0
+                postponedOrder: 0,
+                entryActivatedTime: null  // 입장 버튼 활성화 시간
             });
             
             return validData;
@@ -1280,5 +1675,3 @@
 </script>
 </body>
 </html>
-
-}
