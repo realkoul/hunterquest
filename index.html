@@ -135,30 +135,13 @@
     </section>
 
     <section style="background: #fff3cd; border: 2px solid #ffc107;">
-        <h2>⏱️ 자동 미루기 타이머 제어 (관리자)</h2>
-        <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
-            <button class="btn-role role-tainer" id="timer-btn-tainer" onclick="window.toggleRoleTimer('테이너')" style="padding: 15px 30px; font-size: 1.1rem; min-width: 150px;">
-                ⏸️ 테이너 정지
-            </button>
-            <button class="btn-role role-hide" id="timer-btn-hide" onclick="window.toggleRoleTimer('하이드')" style="padding: 15px 30px; font-size: 1.1rem; min-width: 150px;">
-                ⏸️ 하이드 정지
-            </button>
-            <button class="btn-role role-perfo" id="timer-btn-perfo" onclick="window.toggleRoleTimer('퍼포')" style="padding: 15px 30px; font-size: 1.1rem; min-width: 150px;">
-                ⏸️ 퍼포 정지
-            </button>
-        </div>
-        <div style="margin-top: 10px; text-align: center; color: #856404; font-size: 0.9rem;">
-            💡 해당 퀘스트의 자동 미루기 기능을 일시정지/재개합니다. (관리자 비밀번호 필요)
-        </div>
-    </section>
-
     <section>
         <h2>⏳ 대기 명단 (전체 보기)</h2>
         <div style="margin-bottom:15px; background:#e8f6f3; padding:10px; border-radius:4px; color:#16a085; font-size:0.9rem; line-height: 1.5;">
             <strong>🚀 룰 안내:</strong><br>
             <strong>🎯 순서:</strong> 1.완료 횟수 적음 &gt; 2.신청 순서 (선착순)<br>
             1. 퀘스트 중복 시 입장 불가 (겹치면 순번 유지)<br>
-            2. <strong>[▼ 순번미루기]</strong>: 같은 퀘스트 대기자가 있으면 교체, 없으면 뒷사람에게 양보<br>
+            2. <strong>[▼ 순번미루기]</strong>: 맨 뒤로 이동 (수동)<br>
         </div>
         <div class="queue-container">
             <div class="queue-list" id="queue-list"></div>
@@ -268,13 +251,6 @@
         EDIT_PASSWORD: "9876"
     };
 
-    // 역할별 자동 미루기 일시정지 상태 (전역)
-    window.rolePauseState = {
-        '테이너': false,
-        '하이드': false,
-        '퍼포': false
-    };
-
     const firebaseConfig = {
         apiKey: "AIzaSyBJ9CRer5FEjA1_yZ5g1jBypaX_3Cpqqyo",
         authDomain: "hunterquest-fbdee.firebaseapp.com",
@@ -319,8 +295,8 @@
 
     /**
      * 대기열 정렬 로직
-     * 1순위: postponedOrder (미루기 순서)
-     * 2순위: completedCount (완료 횟수 적은 순 - 0회부터 우선)
+     * 1순위: isPostponed (미루기 여부 - false가 우선)
+     * 2순위: completedCount (완료 횟수 적은 순)
      * 3순위: waitingTime (신청 시간 빠른 순)
      */
     const sortWaitingUsers = (users) => {
@@ -335,12 +311,12 @@
                 return aRoleOrder - bRoleOrder;
             }
             
-            // 2. 같은 역할 내에서 미루기 순서
-            const aPostponed = a.postponedOrder ?? 0;
-            const bPostponed = b.postponedOrder ?? 0;
+            // 2. 미루기 여부 (미루기 안한 사람이 우선!)
+            const aPostponed = a.isPostponed || false;
+            const bPostponed = b.isPostponed || false;
             
             if (aPostponed !== bPostponed) {
-                return aPostponed - bPostponed;
+                return aPostponed ? 1 : -1; // false가 앞
             }
             
             // 3. 완료 횟수 적은 순 (0회부터 우선)
@@ -581,93 +557,6 @@
                 }
             }
         }, 1000); // 1초마다 업데이트
-        
-        /**
-         * 초기 타이머 시작 (페이지 로드 시)
-         */
-        setTimeout(() => {
-            console.log('[초기 타이머 체크]');
-            const users = getValidUsers(window.users);
-            const activeUsers = users.filter(u => u.status === 'active');
-            const currentRoles = activeUsers.map(u => u.role);
-            const hasEmptySlot = activeUsers.length < CONSTANTS.MAX_ACTIVE_SLOTS;
-            
-            // 각 역할별로 체크
-            ['테이너', '하이드', '퍼포'].forEach(role => {
-                const isRoleActive = currentRoles.includes(role);
-                const canEnter = hasEmptySlot && !isRoleActive;
-                
-                if (canEnter) {
-                    const roleWaiting = sortWaitingUsers(
-                        users.filter(u => u.status === 'waiting' && u.role === role)
-                    );
-                    
-                    if (roleWaiting.length > 0 && !roleWaiting[0].entryActivatedTime) {
-                        console.log(`[초기 타이머 시작] ${role}`);
-                        startRoleTimer(role);
-                    }
-                }
-            });
-        }, 1000); // 1초 후 실행
-    }
-
-    /**
-     * 순번 미루기 로직 (개선 버전)
-     */
-    function executePostponeLogic(targetUserId, currentData) {
-        try {
-            const validUsers = getValidUsers(currentData);
-            const myUser = validUsers.find(u => u.id === targetUserId);
-            
-            if (!myUser || !myUser.role) {
-                console.log('[미루기 실패] 사용자 없음 또는 역할 없음');
-                return currentData;
-            }
-            
-            // 같은 역할의 대기 중인 사용자들
-            const waitingUsersWithRole = validUsers
-                .filter(user => user.status === 'waiting' && user.role === myUser.role);
-            
-            // 정렬
-            const sortedWaiting = sortWaitingUsers(waitingUsersWithRole);
-            
-            const currentIdx = sortedWaiting.findIndex(user => user.id === myUser.id);
-            
-            // 첫 번째가 아니거나 대기자가 1명 이하면 미루기 불가
-            if (currentIdx !== 0 || sortedWaiting.length < 2) {
-                console.log('[미루기 불가] 순번이 첫 번째가 아니거나 대기자 부족');
-                return currentData;
-            }
-            
-            // 현재 미루기 순서가 있는 사용자들의 최대값 찾기
-            let maxPostponedOrder = 0;
-            sortedWaiting.forEach(user => {
-                const order = user.postponedOrder ?? 0;
-                if (order > maxPostponedOrder) {
-                    maxPostponedOrder = order;
-                }
-            });
-            
-            console.log('[미루기 실행] 역할:', myUser.role, '현재 max:', maxPostponedOrder);
-            
-            // 미루기 순서 증가
-            const oldOrder = myUser.postponedOrder ?? 0;
-            myUser.postponedOrder = maxPostponedOrder + 1;
-            
-            window.logChange(
-                myUser.id, 
-                myUser.name, 
-                "postponedOrder", 
-                oldOrder, 
-                maxPostponedOrder + 1, 
-                "순번 미루기 버튼"
-            );
-            
-            return currentData;
-        } catch (error) {
-            console.error('[미루기 로직 오류]', error);
-            return currentData;
-        }
     }
 
 
@@ -675,168 +564,7 @@
     // 입장 타이머 관리
     // ========================================
     
-    /**
-     * 입장 타이머 체크 및 자동 미루기
-     */
-    function checkEntryTimers() {
-        const users = getValidUsers(window.users);
-        const waitingUsers = sortWaitingUsers(users.filter(u => u.status === 'waiting'));
-        const activeUsers = users.filter(u => u.status === 'active');
-        const currentRoles = activeUsers.map(u => u.role);
-        
-        const hasEmptySlot = activeUsers.length < CONSTANTS.MAX_ACTIVE_SLOTS;
-        
-        // 역할별로 독립적으로 체크
-        const roleQueues = {
-            '테이너': [],
-            '하이드': [],
-            '퍼포': []
-        };
-        
-        // 역할별로 대기자 분류
-        waitingUsers.forEach(u => {
-            if (u.role && roleQueues[u.role]) {
-                roleQueues[u.role].push(u);
-            }
-        });
-        
-        let timeoutUsers = [];
-        
-        // 각 역할별로 독립적으로 타이머 체크
-        Object.keys(roleQueues).forEach(role => {
-            const roleWaiting = roleQueues[role];
-            if (roleWaiting.length === 0) return;
-            
-            // 이 역할의 자동 미루기가 일시정지 상태인지 확인
-            const isPaused = window.rolePauseState[role];
-            
-            // 이 역할이 현재 진행 중인지 확인
-            const isRoleActive = currentRoles.includes(role);
-            
-            // 이 역할의 첫 번째 대기자
-            const firstWaiter = roleWaiting[0];
-            
-            // 입장 가능 조건: 슬롯 있음 + 해당 역할 진행 중 아님
-            const canEnter = hasEmptySlot && !isRoleActive;
-            
-            if (canEnter) {
-                // 일시정지 상태가 아닐 때만 타이머 체크
-                if (!isPaused && firstWaiter.entryActivatedTime) {
-                    const now = Date.now();
-                    const elapsed = (now - firstWaiter.entryActivatedTime) / 1000;
-                    
-                    if (elapsed >= CONSTANTS.ENTRY_TIMEOUT_SECONDS) {
-                        timeoutUsers.push(firstWaiter);
-                    }
-                }
-            }
-        });
-        
-        // 타임아웃된 사용자들 자동 미루기
-        if (timeoutUsers.length > 0) {
-            const affectedRoles = new Set();
-            
-            window.saveData((currentData) => {
-                const validData = getValidUsers(currentData);
-                
-                timeoutUsers.forEach(timeoutUser => {
-                    const user = validData.find(u => u.id === timeoutUser.id);
-                    if (user && user.status === 'waiting') {
-                        // 같은 역할의 최대 postponedOrder 찾기
-                        let maxPostponedOrder = 0;
-                        validData.forEach(u => {
-                            if (u.status === 'waiting' && u.role === user.role) {
-                                const order = u.postponedOrder ?? 0;
-                                if (order > maxPostponedOrder) {
-                                    maxPostponedOrder = order;
-                                }
-                            }
-                        });
-                        
-                        const oldOrder = user.postponedOrder ?? 0;
-                        user.postponedOrder = maxPostponedOrder + 1;
-                        user.entryActivatedTime = null; // 타이머 리셋
-                        
-                        // 영향받은 역할 기록 (외부 Set에)
-                        affectedRoles.add(user.role);
-                        
-                        window.logChange(
-                            user.id,
-                            user.name,
-                            "postponedOrder",
-                            oldOrder,
-                            maxPostponedOrder + 1,
-                            "입장 타임아웃 (자동 미루기)"
-                        );
-                        
-                        console.log(`[타임아웃] ${user.name} - 자동으로 순번 뒤로 이동`);
-                    }
-                });
-                
-                return validData;
-            }).then(() => {
-                // 타임아웃으로 밀려난 역할의 새로운 1순위에게 타이머 시작
-                affectedRoles.forEach(role => {
-                    console.log(`[타임아웃 후 타이머 시작] ${role}`);
-                    startRoleTimer(role);
-                });
-            });
-        }
-    }
-    
 
-    /**
-     * 특정 역할의 첫 번째 대기자 타이머 시작
-     */
-    function startRoleTimer(role) {
-        window.saveData((currentData) => {
-            const validData = getValidUsers(currentData);
-            const activeUsers = validData.filter(u => u.status === 'active');
-            const currentRoles = activeUsers.map(u => u.role);
-            
-            // 이 역할이 입장 가능한지 확인
-            const hasEmptySlot = activeUsers.length < CONSTANTS.MAX_ACTIVE_SLOTS;
-            const isRoleActive = currentRoles.includes(role);
-            const canEnter = hasEmptySlot && !isRoleActive;
-            
-            if (!canEnter) return validData;
-            
-            // 이 역할의 대기자 찾기
-            const roleWaiting = sortWaitingUsers(
-                validData.filter(u => u.status === 'waiting' && u.role === role)
-            );
-            
-            if (roleWaiting.length > 0) {
-                const firstWaiter = roleWaiting[0];
-                // 타이머가 없으면 시작
-                if (!firstWaiter.entryActivatedTime) {
-                    firstWaiter.entryActivatedTime = Date.now();
-                    console.log(`[타이머 시작] ${role} - ${firstWaiter.name}`);
-                }
-            }
-            
-            return validData;
-        });
-    }
-    
-    /**
-     * 특정 역할의 타이머 리셋
-     */
-    function resetRoleTimer(role) {
-        window.saveData((currentData) => {
-            const validData = getValidUsers(currentData);
-            
-            // 이 역할의 모든 대기자 타이머 리셋
-            validData.forEach(u => {
-                if (u.status === 'waiting' && u.role === role && u.entryActivatedTime) {
-                    u.entryActivatedTime = null;
-                    console.log(`[타이머 리셋] ${role} - ${u.name}`);
-                }
-            });
-            
-            return validData;
-        });
-    }
 
     /**
      * 남은 시간 계산 (초 단위)
@@ -844,11 +572,6 @@
     function getRemainingTime(user) {
         if (!user.entryActivatedTime) {
             return null;
-        }
-        
-        // 해당 역할이 일시정지 상태인지 확인
-        if (user.role && window.rolePauseState[user.role]) {
-            return null; // 일시정지 중에는 시간 표시 안 함
         }
         
         const now = Date.now();
@@ -870,13 +593,9 @@
     // ========================================
     // UI 렌더링
     // ========================================
-
     
     function render() {
         try {
-            // 입장 타이머 체크
-            checkEntryTimers();
-            
             const users = getValidUsers(window.users);
             
             // 대기 중인 사용자 정렬
@@ -901,34 +620,11 @@
             // 참여자 테이블 렌더링
             renderParticipantTable(users);
             
-            // 타이머 제어 버튼 상태 업데이트
-            updateTimerButtons();
-            
         } catch (error) {
             console.error('렌더링 오류:', error);
         }
     }
     
-    /**
-     * 타이머 제어 버튼 상태 업데이트
-     */
-    function updateTimerButtons() {
-        ['테이너', '하이드', '퍼포'].forEach(role => {
-            const btnId = 'timer-btn-' + (role === '테이너' ? 'tainer' : role === '하이드' ? 'hide' : 'perfo');
-            const btn = document.getElementById(btnId);
-            if (btn) {
-                const isPaused = window.rolePauseState[role];
-                if (isPaused) {
-                    btn.innerHTML = `▶️ ${role} 재개`;
-                    btn.style.background = '#27ae60';
-                } else {
-                    btn.innerHTML = `⏸️ ${role} 정지`;
-                    btn.style.background = (role === '테이너' ? '#e74c3c' : role === '하이드' ? '#8e44ad' : '#2980b9');
-                }
-            }
-        });
-    }
-
     /**
      * 활성 슬롯 렌더링
      */
@@ -1034,22 +730,13 @@
             let timerDisplay = '';
             
             if (hasEntryButton && u.entryActivatedTime) {
-                const isPaused = u.role && window.rolePauseState[u.role];
-                
-                if (isPaused) {
-                    // 일시정지 상태
-                    timerDisplay = `<div style="color:#f39c12; font-weight:bold; font-size:0.85rem; margin-top:5px;">
-                        ⏸️ 자동미루기 일시정지
+                // 카운트다운 표시
+                const remaining = getRemainingTime(u);
+                if (remaining !== null) {
+                    const timerColor = remaining <= 3 ? '#e74c3c' : (remaining <= 5 ? '#f39c12' : '#27ae60');
+                    timerDisplay = `<div style="color:${timerColor}; font-weight:bold; font-size:0.85rem; margin-top:5px;">
+                        ⏱️ ${formatTime(remaining)} 남음
                     </div>`;
-                } else {
-                    // 정상 카운트다운
-                    const remaining = getRemainingTime(u);
-                    if (remaining !== null) {
-                        const timerColor = remaining <= 3 ? '#e74c3c' : (remaining <= 5 ? '#f39c12' : '#27ae60');
-                        timerDisplay = `<div style="color:${timerColor}; font-weight:bold; font-size:0.85rem; margin-top:5px;">
-                            ⏱️ ${formatTime(remaining)} 남음
-                        </div>`;
-                    }
                 }
             }
             
@@ -1209,6 +896,7 @@
                                 waitingTime: null,
                                 startTime: null,
                                 postponedOrder: 0,
+                                isPostponed: false,
                                 entryActivatedTime: null
                             });
                             addCount++;
@@ -1265,10 +953,8 @@
                         return validData;
                     }
                     
-                    const oldRole = user.role || '없음';
-                    const oldStatus = user.status;
-                    window.logChange(user.id, user.name, 'role', oldRole, role, '대기 등록 모달');
-                    window.logChange(user.id, user.name, 'status', oldStatus, 'waiting', '대기 등록 모달');
+                    // 간결한 로그: "퍼포 대기열 등록"
+                    window.logChange(user.id, user.name, 'action', '', `${role} 대기열 등록`, '대기 등록');
                     
                     user.status = 'waiting';
                     user.role = role;
@@ -1276,9 +962,6 @@
                     user.postponedOrder = 0;
                 }
                 return validData;
-            }).then(() => {
-                // 대기 신청 후 타이머 체크 및 시작
-                startRoleTimer(role);
             });
         }
         window.closeModal();
@@ -1300,15 +983,16 @@
             const validData = getValidUsers(currentData);
             const user = validData.find(u => u.id === id);
             if (user) {
-                window.logChange(user.id, user.name, 'status', 'waiting', 'idle', '대기 취소 버튼');
-                if (user.role) {
-                    window.logChange(user.id, user.name, 'role', user.role, '', '대기 취소 버튼 (역할 초기화)');
-                }
+                const roleName = user.role || '대기';
+                
+                // 간결한 로그: "하이드 대기 취소"
+                window.logChange(user.id, user.name, 'action', '', `${roleName} 대기 취소`, '대기 취소');
                 
                 user.status = 'idle';
                 user.waitingTime = null;
                 user.role = '';
                 user.postponedOrder = 0;
+                user.isPostponed = false; // 미루기 플래그 초기화
                 user.entryActivatedTime = null;
             }
             return validData;
@@ -1354,15 +1038,10 @@
                 return validData; 
             }
             
-            window.logChange(user.id, user.name, 'status', user.status, 'active', '입장 하기 버튼');
+            // 간결한 로그: "하이드 입장"
+            window.logChange(user.id, user.name, 'action', '', `${user.role} 입장`, '입장');
             
             savedRole = user.role; // 외부 변수에 저장
-            
-            // 입장 시 해당 역할의 자동 미루기 정지 해제
-            if (savedRole && window.rolePauseState[savedRole]) {
-                window.rolePauseState[savedRole] = false;
-                console.log(`[자동 미루기 해제] ${savedRole} - 입장으로 인한 자동 해제`);
-            }
             
             user.status = 'active';
             // 24시간 형식으로 명확히 저장 (HH:MM:SS)
@@ -1372,18 +1051,10 @@
             const seconds = String(now.getSeconds()).padStart(2, '0');
             user.startTime = `${hours}:${minutes}:${seconds}`;
             user.postponedOrder = 0;
+            user.isPostponed = false; // 미루기 플래그 초기화
             user.entryActivatedTime = null; // 입장하면 타이머 종료
             
             return validData;
-        }).then(() => {
-            // 같은 역할의 다음 대기자 타이머 시작
-            if (savedRole) {
-                const users = getValidUsers(window.users);
-                const roleWaiting = users.filter(u => u.status === 'waiting' && u.role === savedRole);
-                if (roleWaiting.length > 0) {
-                    startRoleTimer(savedRole);
-                }
-            }
         });
     };
     
@@ -1401,87 +1072,62 @@
             const validData = getValidUsers(currentData);
             const user = validData.find(u => u.id === id);
             if (user) {
-                window.logChange(user.id, user.name, 'status', 'active', 'idle', '완료 버튼');
-                window.logChange(user.id, user.name, 'completedCount', user.completedCount, user.completedCount + 1, '완료 버튼');
-                if (user.role) {
-                    window.logChange(user.id, user.name, 'role', user.role, '', '완료 버튼 (역할 초기화)');
-                }
-                
                 savedRole = user.role; // 외부 변수에 저장
+                const newCount = user.completedCount + 1;
+                
+                // 간결한 로그: "하이드 완료 (6회)"
+                window.logChange(user.id, user.name, 'action', '', `${user.role} 완료 (${newCount}회)`, '완료');
                 
                 user.status = 'idle';
-                user.completedCount += 1;
+                user.completedCount = newCount;
                 user.startTime = null;
                 user.role = ''; 
                 user.postponedOrder = 0;
+                user.isPostponed = false; // 미루기 플래그 초기화
                 user.entryActivatedTime = null;
             }
             return validData;
-        }).then(() => {
-            // 해당 역할의 대기자가 있으면 타이머 시작
-            if (savedRole) {
-                const users = getValidUsers(window.users);
-                const roleWaiting = users.filter(u => u.status === 'waiting' && u.role === savedRole);
-                if (roleWaiting.length > 0) {
-                    startRoleTimer(savedRole);
-                }
-            }
         });
     };
     
     /**
-     * 순번 미루기 (개선 버전 - 전역 변수 수정 제거)
+     * 순번 미루기 - 맨 뒤로 이동
      */
     window.postponeTurn = (currentId) => {
-        window.saveData((currentData) => {
-            return executePostponeLogic(currentId, currentData);
-        });
-    };
-
-
-    /**
-     * 역할별 자동 미루기 일시정지/재개 (관리자 기능)
-     */
-    window.toggleRoleTimer = (role) => {
-        const password = prompt('관리자 비밀번호를 입력하세요:');
-        if (password !== CONSTANTS.EDIT_PASSWORD) {
-            if (password !== null) {
-                alert('비밀번호가 올바르지 않습니다.');
-            }
+        const user = window.users.find(u => u && u.id === currentId);
+        
+        if (!user || !user.role) {
+            console.log('[미루기 실패] 사용자 없음 또는 역할 없음');
             return;
         }
         
-        const currentState = window.rolePauseState[role];
-        const newState = !currentState;
+        // 같은 역할의 대기 중인 사용자들
+        const sameRoleWaiting = window.users
+            .filter(u => u && u.status === 'waiting' && u.role === user.role);
         
-        window.rolePauseState[role] = newState;
+        const sorted = sortWaitingUsers(sameRoleWaiting);
+        const currentIdx = sorted.findIndex(u => u.id === currentId);
         
-        // 재개 시 해당 역할의 첫 번째 대기자 타이머 리셋
-        if (!newState) {
-            const users = getValidUsers(window.users);
-            const roleWaiting = sortWaitingUsers(
-                users.filter(u => u.status === 'waiting' && u.role === role)
-            );
-            
-            if (roleWaiting.length > 0 && roleWaiting[0].entryActivatedTime) {
-                // DB 업데이트
-                window.saveData((currentData) => {
-                    const validData = getValidUsers(currentData);
-                    const firstUser = validData.find(u => u.id === roleWaiting[0].id);
-                    if (firstUser) {
-                        firstUser.entryActivatedTime = Date.now();
-                    }
-                    return validData;
-                });
-            }
+        // 첫 번째가 아니거나 대기자가 1명 이하면 미루기 불가
+        if (currentIdx !== 0 || sorted.length < 2) {
+            alert('미루기는 첫 번째 대기자만 가능하며, 같은 역할 대기자가 2명 이상이어야 합니다.');
+            return;
         }
         
-        const stateText = newState ? '일시정지' : '재개';
-        alert(`[${role}] 퀘스트의 자동 미루기가 ${stateText}되었습니다.`);
+        // 미루기 표시 및 시간 변경
+        user.isPostponed = true;
+        user.waitingTime = Date.now();
         
-        // 즉시 UI 업데이트
-        render();
+        // 간결한 로그: "하이드 순번 미루기"
+        window.logChange(user.id, user.name, 'action', '', `${user.role} 순번 미루기`, '미루기');
+        
+        // 저장 및 렌더링
+        window.saveData();
+        
+        console.log(`[미루기 완료] ${user.name}이(가) 맨 뒤로 이동`);
     };
+
+
 
     /**
      * 새 사용자 추가
@@ -1524,6 +1170,7 @@
                 waitingTime: null, 
                 startTime: null,
                 postponedOrder: 0,
+                isPostponed: false,
                 entryActivatedTime: null  // 입장 버튼 활성화 시간
             });
             
