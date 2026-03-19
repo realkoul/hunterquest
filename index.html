@@ -159,13 +159,13 @@
                 <h3>🔴 테이너 대기열</h3>
                 <div class="queue-list" id="queue-list-tainer"></div>
             </div>
-            <div class="queue-column hide">
-                <h3>🟣 하이드 대기열</h3>
-                <div class="queue-list" id="queue-list-hide"></div>
-            </div>
             <div class="queue-column perfo">
                 <h3>🔵 퍼포 대기열</h3>
                 <div class="queue-list" id="queue-list-perfo"></div>
+            </div>
+            <div class="queue-column hide">
+                <h3>🟣 하이드 대기열</h3>
+                <div class="queue-list" id="queue-list-hide"></div>
             </div>
         </div>
     </section>
@@ -298,7 +298,7 @@
     };
 
     const sortWaitingUsers = (users) => {
-        const roles = ['테이너', '하이드', '퍼포'];
+        const roles = ['테이너', '퍼포', '하이드'];
         let finalResult = [];
 
         roles.forEach(role => {
@@ -454,7 +454,13 @@
     function render() {
         const users = getValidUsers(window.users);
         const waitingUsers = sortWaitingUsers(users.filter(u => u.status === 'waiting'));
-        const activeUsers = users.filter(u => u.status === 'active');
+        
+        // 진행 중인 사용자를 역할 순서대로 정렬: 테이너 → 퍼포 → 하이드
+        const activeUsers = users.filter(u => u.status === 'active').sort((a, b) => {
+            const roleOrder = { '테이너': 1, '퍼포': 2, '하이드': 3 };
+            return (roleOrder[a.role] || 999) - (roleOrder[b.role] || 999);
+        });
+        
         const currentRoles = activeUsers.map(u => u.role);
 
         document.getElementById('total-cnt').innerText = users.length;
