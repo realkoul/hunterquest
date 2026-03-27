@@ -104,6 +104,17 @@
         .btn-unlock:hover { background: #219150; }
         
         .version-badge { background: #e67e22; color: white; padding: 5px 10px; border-radius: 4px; font-size: 0.8rem; margin-left: 10px; }
+        
+        /* 테스트 배지 애니메이션 */
+        @keyframes blink {
+            0%, 50%, 100% { opacity: 1; }
+            25%, 75% { opacity: 0.5; }
+        }
+        
+        /* 멀티서버 스타일 */
+        .server-btn { transition: all 0.3s ease; }
+        .server-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        .server-btn.active { background: white !important; color: #667eea !important; box-shadow: 0 5px 20px rgba(0,0,0,0.4); transform: scale(1.05); }
     </style>
 </head>
 <body>
@@ -119,19 +130,107 @@
     </div>
 </div>
 
+<!-- 서버 선택 화면 -->
+<div id="server-selection-screen" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); z-index: 9999; display:flex; flex-direction:column; justify-content:center; align-items:center; color:white;">
+    <div style="text-align:center; max-width:600px; padding:40px;">
+        <h1 style="font-size:2.5rem; margin:0 0 20px 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+            🌐 서버 선택
+        </h1>
+        <p style="font-size:1.2rem; opacity:0.9; margin-bottom:40px;">
+            퀘스트를 진행할 서버를 선택해주세요
+        </p>
+        
+        <div style="display:flex; gap:30px; justify-content:center; flex-wrap:wrap;">
+            <button onclick="window.selectServer('1')" style="
+                flex: 1;
+                min-width: 200px;
+                max-width: 250px;
+                padding: 40px 30px;
+                background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+                color: white;
+                border: none;
+                border-radius: 20px;
+                cursor: pointer;
+                font-size: 1.5rem;
+                font-weight: bold;
+                box-shadow: 0 10px 30px rgba(52, 152, 219, 0.4);
+                transition: all 0.3s;
+            " onmouseover="this.style.transform='translateY(-10px) scale(1.05)'; this.style.boxShadow='0 15px 40px rgba(52, 152, 219, 0.6)';" onmouseout="this.style.transform=''; this.style.boxShadow='0 10px 30px rgba(52, 152, 219, 0.4)';">
+                <div style="font-size:1.8rem; margin-bottom:10px; font-weight:bold;">진기르</div>
+                <div style="font-size:0.9rem; opacity:0.9;" id="server-1-info">-명 참여 중</div>
+            </button>
+            
+            <button onclick="window.selectServer('2')" style="
+                flex: 1;
+                min-width: 200px;
+                max-width: 250px;
+                padding: 40px 30px;
+                background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
+                color: white;
+                border: none;
+                border-radius: 20px;
+                cursor: pointer;
+                font-size: 1.5rem;
+                font-weight: bold;
+                box-shadow: 0 10px 30px rgba(155, 89, 182, 0.4);
+                transition: all 0.3s;
+            " onmouseover="this.style.transform='translateY(-10px) scale(1.05)'; this.style.boxShadow='0 15px 40px rgba(155, 89, 182, 0.6)';" onmouseout="this.style.transform=''; this.style.boxShadow='0 10px 30px rgba(155, 89, 182, 0.4)';">
+                <div style="font-size:1.8rem; margin-bottom:10px; font-weight:bold;">판도라</div>
+                <div style="font-size:0.9rem; opacity:0.9;" id="server-2-info">-명 참여 중</div>
+            </button>
+        </div>
+        
+        <p style="margin-top:40px; font-size:0.9rem; opacity:0.7;">
+            💡 선택한 서버에서 퀘스트를 진행합니다. 나중에 변경 가능합니다.
+        </p>
+    </div>
+</div>
+
 <div id="loading-cover" style="display:none;">서버 연결 중...</div>
 
 <div class="container" id="main-container">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
         <div>
-            <h1 style="margin:0;">🛡️ 에카 작위 퀘스트<span class="version-badge">v4.4.2</span></h1>
-            <span style="color:#e67e22; font-weight:bold; font-size:0.85rem;">● hunterquest-fbdee 서버 연동됨 (최적화 버전)</span>
+            <h1 style="margin:0;">
+                🛡️ 에카 작위 퀘스트
+                <span class="version-badge">v4.5.0</span>
+            </h1>
+            <span style="color:#27ae60; font-weight:bold; font-size:0.85rem;">● hunterquest-fbdee 서버 연동됨 (멀티서버 버전)</span>
         </div>
         <div style="display:flex; gap:8px;">
             <button class="btn-reset" id="btn-reset-count" style="background-color:#f39c12;">완료횟수초기화</button>
             <button class="btn-reset" id="btn-reset-all">전체 초기화</button>
         </div>
     </div>
+
+    <!-- 현재 서버 표시 -->
+    <section id="current-server-box" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 8px; padding: 15px 25px; margin-bottom: 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px; transition: background 0.5s ease;">
+        <div style="display:flex; align-items:center; gap:15px;">
+            <div>
+                <div style="font-size:0.85rem; opacity:0.8;">현재 접속 서버</div>
+                <div style="font-size:1.8rem; font-weight:bold; margin-top:3px;" id="current-server-name">진기르</div>
+            </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:15px;">
+            <div style="text-align:right;">
+                <div style="font-size:0.85rem; opacity:0.8;">참여 인원</div>
+                <div style="font-size:1.5rem; font-weight:bold; margin-top:3px;" id="current-server-count">-명</div>
+            </div>
+            <button onclick="window.showServerSelection()" style="
+                padding: 12px 20px;
+                background: rgba(255,255,255,0.2);
+                border: 2px solid white;
+                color: white;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 1rem;
+                font-weight: bold;
+                transition: all 0.3s;
+            " onmouseover="this.style.background='white'; this.style.color='#667eea';" onmouseout="this.style.background='rgba(255,255,255,0.2)'; this.style.color='white';">
+                🔄 서버 변경
+            </button>
+        </div>
+    </section>
 
     <div class="stats">
         <div class="stat-box">전체: <span id="total-cnt">0</span></div>
@@ -140,12 +239,12 @@
     </div>
 
     <section>
-        <h2>🔥 진행 중 (3 Slots)</h2>
+        <h2>🔥 <span id="server-title">1번 서버</span> - 진행 중 (3 Slots)</h2>
         <div class="slots-container" id="slots-container"></div>
     </section>
 
     <section style="background: white;">
-        <h2>⏳ 대기 명단 (역할별 보기)</h2>
+        <h2>⏳ <span id="server-queue-title">1번 서버</span> - 대기 명단 (역할별 보기)</h2>
         <div style="margin-bottom:15px; background:#e8f6f3; padding:10px; border-radius:4px; color:#16a085; font-size:0.9rem; line-height: 1.5;">
             <strong>🚀 룰 안내:</strong><br>
             <strong>🎯 순서:</strong> 1.완료 횟수 적음 &gt; 2.신청 순서 (선착순)<br>
@@ -268,13 +367,16 @@
 
     // 🚨 비밀번호가 해시값으로 변경되어 소스코드 노출 방지
     const CONSTANTS = {
-        VERSION: "4.4.2",
+        VERSION: "4.5.0",
         MAX_ACTIVE_SLOTS: 3,
         LOG_DISPLAY_COUNT: 100,
         SITE_PASSWORD_HASH: "170842",   
         RESET_PASSWORD_HASH: "18653f",  
         EDIT_PASSWORD_HASH: "1ac23e"    
     };
+
+    // 멀티서버: 현재 선택된 서버
+    let currentServer = localStorage.getItem('currentServer') || "1";
 
     const firebaseConfig = {
         apiKey: "AIzaSyBJ9CRer5FEjA1_yZ5g1jBypaX_3Cpqqyo",
@@ -295,6 +397,47 @@
     const generateUniqueId = (existingUsers) => {
         if (existingUsers.length === 0) return 1;
         return Math.max(...existingUsers.map(u => u.id || 0)) + 1;
+    };
+
+    /**
+     * 멀티서버: 사용자의 특정 서버 데이터 가져오기
+     */
+    const getUserServerData = (user, serverNum) => {
+        if (!user.servers) user.servers = {};
+        if (!user.servers[serverNum]) {
+            user.servers[serverNum] = {
+                status: "idle",
+                role: "",
+                startTime: null,
+                waitingTime: null,
+                isYielded: false,
+                yieldOrder: 0
+            };
+        }
+        return user.servers[serverNum];
+    };
+
+    /**
+     * 멀티서버: 서버별 가상 사용자 목록 생성
+     */
+    const getServerUsers = (users, serverNum) => {
+        return users.map(user => {
+            const serverData = getUserServerData(user, serverNum);
+            return {
+                id: user.id,
+                name: user.name,
+                completedCount: user.completedCount || 0,
+                status: serverData.status,
+                role: serverData.role,
+                startTime: serverData.startTime,
+                waitingTime: serverData.waitingTime,
+                isYielded: serverData.isYielded,
+                yieldOrder: serverData.yieldOrder,
+                // 원본 참조 유지 (저장 시 필요)
+                _originalUser: user,
+                _serverNum: serverNum
+            };
+        });
     };
 
     const sortWaitingUsers = (users) => {
@@ -388,9 +531,12 @@
         const input = document.getElementById('password-input').value;
         const errorMsg = document.getElementById('password-error');
         if (getHash(input) === CONSTANTS.SITE_PASSWORD_HASH) {
+            // 비밀번호 성공 → 서버 선택 화면으로
             document.getElementById('lock-screen').style.display = 'none';
-            document.getElementById('main-container').style.display = 'block';
+            document.getElementById('server-selection-screen').style.display = 'flex';
             document.getElementById('loading-cover').style.display = 'flex';
+            
+            // Firebase 시작 (데이터만 로드, 화면은 안 보임)
             startFirebase(); 
         } else {
             errorMsg.style.display = 'block';
@@ -399,12 +545,106 @@
         }
     };
 
+    // 서버 선택
+    window.selectServer = (serverNum) => {
+        currentServer = serverNum;
+        localStorage.setItem('currentServer', serverNum);
+        
+        // 서버 선택 화면 숨기고 메인 화면 표시
+        document.getElementById('server-selection-screen').style.display = 'none';
+        document.getElementById('main-container').style.display = 'block';
+        
+        // 현재 서버 정보 업데이트
+        updateCurrentServerDisplay();
+        
+        // 화면 렌더링
+        render();
+    };
+
+    // 서버 변경 버튼 클릭
+    window.showServerSelection = () => {
+        document.getElementById('main-container').style.display = 'none';
+        document.getElementById('server-selection-screen').style.display = 'flex';
+        updateServerSelectionInfo();
+    };
+
+    // 현재 서버 표시 업데이트
+    function updateCurrentServerDisplay() {
+        const serverInfo = {
+            '1': { 
+                name: '진기르',
+                color: 'linear-gradient(135deg, #3498db 0%, #2980b9 100%)' // 파란색
+            },
+            '2': { 
+                name: '판도라',
+                color: 'linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%)' // 보라색
+            }
+        };
+        
+        const info = serverInfo[currentServer] || { 
+            name: currentServer + '번 서버',
+            color: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+        };
+        
+        document.getElementById('current-server-name').textContent = info.name;
+        
+        // 서버별 배경 색상 변경
+        const serverBox = document.getElementById('current-server-box');
+        if (serverBox) {
+            serverBox.style.background = info.color;
+        }
+        
+        // 제목에도 서버 이름 표시
+        document.getElementById('server-title').textContent = info.name;
+        document.getElementById('server-queue-title').textContent = info.name;
+        
+        // 참여 인원 업데이트
+        updateCurrentServerCount();
+    }
+
+    // 현재 서버 인원 수 업데이트
+    function updateCurrentServerCount() {
+        const users = getValidUsers(window.users);
+        let count = 0;
+        
+        users.forEach(user => {
+            const serverData = getUserServerData(user, currentServer);
+            if (serverData.status === 'waiting' || serverData.status === 'active') {
+                count++;
+            }
+        });
+        
+        document.getElementById('current-server-count').textContent = `${count}명`;
+    }
+
+    // 서버 선택 화면 정보 업데이트
+    function updateServerSelectionInfo() {
+        const users = getValidUsers(window.users);
+        
+        for (let i = 1; i <= 2; i++) {
+            const serverNum = String(i);
+            let count = 0;
+            
+            users.forEach(user => {
+                const serverData = getUserServerData(user, serverNum);
+                if (serverData.status === 'waiting' || serverData.status === 'active') {
+                    count++;
+                }
+            });
+            
+            const elem = document.getElementById(`server-${i}-info`);
+            if (elem) {
+                elem.textContent = `${count}명 참여 중`;
+            }
+        }
+    }
+
     function startFirebase() {
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
         
-        const dbRef = ref(db, 'eka_quest_users');
-        window.changeLogRef = ref(db, 'eka_change_logs');
+        const dbRef = ref(db, 'eka_quest_users_2');
+        window.changeLogRef = ref(db, 'eka_change_logs_2');
 
         window.users = [];
         window.MAX_ACTIVE = CONSTANTS.MAX_ACTIVE_SLOTS;
@@ -415,13 +655,21 @@
             const timestamp = new Date().toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
             const logEntry = { timestamp, userId, userName, field, oldValue: String(oldValue), newValue: String(newValue), changedBy };
             const uniqueKey = Date.now() + '_' + (logCounter++);
-            set(ref(db, 'eka_change_logs/' + uniqueKey), logEntry).catch(e => console.error('로그 저장 실패:', e));
+            set(ref(db, 'eka_change_logs_2/' + uniqueKey), logEntry).catch(e => console.error('로그 저장 실패:', e));
         };
 
         onValue(dbRef, (snapshot) => {
             const data = snapshot.val();
             window.users = data ? getValidUsers(data) : [];
-            render(); 
+            
+            // 서버 선택 화면 정보 업데이트 (데이터만)
+            updateServerSelectionInfo();
+            
+            // 이미 서버를 선택한 경우에만 render
+            if (document.getElementById('main-container').style.display === 'block') {
+                render();
+            }
+            
             document.getElementById('loading-cover').style.display = 'none';
         }, (error) => {
             alert('서버 연결 실패:\n' + error.message);
@@ -451,12 +699,65 @@
         }, 1000);
     }
 
+    /**
+     * 멀티서버: 서버 전환
+     */
+    window.switchServer = (serverNum) => {
+        currentServer = serverNum;
+        localStorage.setItem('currentServer', serverNum);
+        
+        // 버튼 활성화 상태 업데이트
+        document.querySelectorAll('.server-btn').forEach(btn => {
+            if (btn.dataset.server === serverNum) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+        
+        // 제목 업데이트
+        document.getElementById('server-title').textContent = `${serverNum}번 서버`;
+        document.getElementById('server-queue-title').textContent = `${serverNum}번 서버`;
+        document.getElementById('current-server-label').textContent = `${serverNum}번 서버`;
+        
+        // 화면 다시 렌더링
+        render();
+    };
+
+    /**
+     * 멀티서버: 서버별 인원 수 업데이트
+     */
+    function updateServerCounts() {
+        const users = getValidUsers(window.users);
+        
+        for (let i = 1; i <= 4; i++) {
+            const serverNum = String(i);
+            let count = 0;
+            
+            users.forEach(user => {
+                const serverData = getUserServerData(user, serverNum);
+                if (serverData.status === 'waiting' || serverData.status === 'active') {
+                    count++;
+                }
+            });
+            
+            const elem = document.getElementById(`server-${i}-count`);
+            if (elem) {
+                elem.textContent = `${count}명`;
+            }
+        }
+    }
+
     function render() {
         const users = getValidUsers(window.users);
-        const waitingUsers = sortWaitingUsers(users.filter(u => u.status === 'waiting'));
+        
+        // 멀티서버: 현재 서버의 가상 사용자 목록 생성
+        const serverUsers = getServerUsers(users, currentServer);
+        
+        const waitingUsers = sortWaitingUsers(serverUsers.filter(u => u.status === 'waiting'));
         
         // 진행 중인 사용자를 역할 순서대로 정렬: 테이너 → 퍼포 → 하이드
-        const activeUsers = users.filter(u => u.status === 'active').sort((a, b) => {
+        const activeUsers = serverUsers.filter(u => u.status === 'active').sort((a, b) => {
             const roleOrder = { '테이너': 1, '퍼포': 2, '하이드': 3 };
             return (roleOrder[a.role] || 999) - (roleOrder[b.role] || 999);
         });
@@ -469,7 +770,11 @@
 
         renderActiveSlots(activeUsers);
         renderQueueColumns(waitingUsers, currentRoles, activeUsers.length);
-        renderParticipantTable(users);
+        renderParticipantTable(serverUsers);
+        
+        // 멀티서버: 서버 정보 업데이트
+        updateCurrentServerDisplay();
+        updateServerSelectionInfo();
     }
     
     function renderActiveSlots(activeUsers) {
@@ -676,37 +981,53 @@
     window.confirmRole = (role) => {
         if (!role) return alert('퀘스트를 선택해주세요!');
         
+        // 멀티서버: 현재 서버의 데이터 체크
         const localUser = getValidUsers(window.users).find(u => u.id === window.targetUserId);
-        if (localUser && localUser.status === 'waiting') {
-            alert('이미 대기 중입니다!\n\n현재 대기 역할: ' + localUser.role);
-            window.closeModal();
-            return;
+        if (localUser) {
+            const serverData = getUserServerData(localUser, currentServer);
+            if (serverData.status === 'waiting') {
+                alert('이미 대기 중입니다!\n\n현재 대기 역할: ' + serverData.role);
+                window.closeModal();
+                return;
+            }
         }
         
         window.saveData((currentData) => {
             const validData = getValidUsers(currentData);
             const user = validData.find(u => u.id === window.targetUserId);
             if (user) {
-                if (user.status === 'waiting') return validData; 
-                window.logChange(user.id, user.name, 'action', '', `${role} 대기열 등록`, '대기 등록');
+                // 멀티서버: 서버 데이터 가져오기
+                const serverData = getUserServerData(user, currentServer);
                 
-                user.status = 'waiting'; 
-                user.role = role; 
-                user.waitingTime = Date.now(); 
-                user.isYielded = false;
+                if (serverData.status === 'waiting') return validData;
+                
+                window.logChange(user.id, user.name, 'action', '', `[${currentServer}서버] ${role} 대기열 등록`, '대기 등록');
+                
+                serverData.status = 'waiting';
+                serverData.role = role;
+                serverData.waitingTime = Date.now();
+                serverData.isYielded = false;
 
                 // 신규 등록자가 새로운 1순위가 되면 양보 내역 초기화
-                const sameRoleWaiting = validData.filter(u => u.status === 'waiting' && u.role === role);
-                const hadYielded = sameRoleWaiting.some(u => u.isYielded);
+                const sameRoleWaiting = validData.filter(u => {
+                    const sd = getUserServerData(u, currentServer);
+                    return sd.status === 'waiting' && sd.role === role;
+                });
+                
+                const hadYielded = sameRoleWaiting.some(u => getUserServerData(u, currentServer).isYielded);
                 if (hadYielded) {
                     const baseSorted = [...sameRoleWaiting].sort((a, b) => {
+                        const asd = getUserServerData(a, currentServer);
+                        const bsd = getUserServerData(b, currentServer);
                         if (a.completedCount !== b.completedCount) return a.completedCount - b.completedCount;
-                        return (a.waitingTime || 0) - (b.waitingTime || 0);
+                        return (asd.waitingTime || 0) - (bsd.waitingTime || 0);
                     });
                     const newFront = baseSorted[0];
                     if (newFront && newFront.id === user.id) {
-                        sameRoleWaiting.forEach(u => { u.isYielded = false; });
-                        window.logChange(user.id, user.name, 'action', '', '신규 1순위 등록으로 양보 대기열 초기화', '대기 등록');
+                        sameRoleWaiting.forEach(u => {
+                            getUserServerData(u, currentServer).isYielded = false;
+                        });
+                        window.logChange(user.id, user.name, 'action', '', `[${currentServer}서버] 신규 1순위 등록으로 양보 초기화`, '대기 등록');
                     }
                 }
             }
@@ -722,26 +1043,37 @@
             const validData = getValidUsers(currentData);
             const user = validData.find(u => u.id === id);
             if (user) {
-                const targetRole = user.role;
-                window.logChange(user.id, user.name, 'action', '', `${user.role || '대기'} 취소`, '대기 취소');
+                // 멀티서버: 현재 서버 데이터
+                const serverData = getUserServerData(user, currentServer);
+                const targetRole = serverData.role;
                 
-                const sameRole = validData.filter(u => u.status === 'waiting' && u.role === targetRole);
-                const baseSorted = [...sameRole].sort((a, b) => {
-                    if (a.completedCount !== b.completedCount) return a.completedCount - b.completedCount;
-                    return (a.waitingTime || 0) - (b.waitingTime || 0);
+                window.logChange(user.id, user.name, 'action', '', `[${currentServer}서버] ${serverData.role || '대기'} 취소`, '대기 취소');
+                
+                const sameRole = validData.filter(u => {
+                    const sd = getUserServerData(u, currentServer);
+                    return sd.status === 'waiting' && sd.role === targetRole;
                 });
-                const activeFront = baseSorted.find(u => !u.isYielded);
+                
+                const baseSorted = [...sameRole].sort((a, b) => {
+                    const asd = getUserServerData(a, currentServer);
+                    const bsd = getUserServerData(b, currentServer);
+                    if (a.completedCount !== b.completedCount) return a.completedCount - b.completedCount;
+                    return (asd.waitingTime || 0) - (bsd.waitingTime || 0);
+                });
+                
+                const activeFront = baseSorted.find(u => !getUserServerData(u, currentServer).isYielded);
                 const isActiveFront = activeFront && activeFront.id === id;
                 
-                user.status = 'idle'; 
-                user.waitingTime = null; 
-                user.role = ''; 
-                user.isYielded = false;
+                serverData.status = 'idle';
+                serverData.waitingTime = null;
+                serverData.role = '';
+                serverData.isYielded = false;
                 
                 if (isActiveFront) {
                     validData.forEach(u => {
-                        if (u.status === 'waiting' && u.role === targetRole) {
-                            u.isYielded = false;
+                        const sd = getUserServerData(u, currentServer);
+                        if (sd.status === 'waiting' && sd.role === targetRole) {
+                            sd.isYielded = false;
                         }
                     });
                 }
@@ -753,38 +1085,67 @@
     window.cancelWaitingWithConfirm = (id) => { if (confirm('대기를 취소하시겠습니까?')) window.cancelWaiting(id); };
     
     window.startWork = (id) => {
+        // 멀티서버: 현재 서버의 데이터로 체크
         const localUsers = getValidUsers(window.users);
-        const localActive = localUsers.filter(u => u.status === 'active');
-        if (localActive.length >= CONSTANTS.MAX_ACTIVE_SLOTS) { alert('슬롯이 꽉 찼습니다.'); return; }
+        const serverUsers = getServerUsers(localUsers, currentServer);
+        const localActive = serverUsers.filter(u => u.status === 'active');
         
-        const localUser = localUsers.find(u => u.id === id);
+        if (localActive.length >= CONSTANTS.MAX_ACTIVE_SLOTS) { 
+            alert('슬롯이 꽉 찼습니다.'); 
+            return; 
+        }
+        
+        const localUser = serverUsers.find(u => u.id === id);
         if (!localUser || !localUser.role) return;
-        if (localActive.some(au => au.role === localUser.role)) { alert(`🚫 [${localUser.role}] 퀘스트는 이미 진행 중입니다.`); return; }
+        if (localActive.some(au => au.role === localUser.role)) { 
+            alert(`🚫 [${localUser.role}] 퀘스트는 이미 진행 중입니다.`); 
+            return; 
+        }
         
         window.saveData((currentData) => {
             const validData = getValidUsers(currentData);
-            const activeUsers = validData.filter(u => u.status === 'active');
+            
+            // 멀티서버: 현재 서버의 활성 사용자 체크
+            const activeUsers = validData.filter(u => {
+                const sd = getUserServerData(u, currentServer);
+                return sd.status === 'active';
+            });
+            
             if (activeUsers.length >= CONSTANTS.MAX_ACTIVE_SLOTS) return validData;
             
             const user = validData.find(u => u.id === id);
-            if (!user || !user.role) return validData;
-            if (activeUsers.some(au => au.role === user.role)) return validData;
+            if (!user) return validData;
+            
+            const serverData = getUserServerData(user, currentServer);
+            if (!serverData.role) return validData;
+            
+            // 같은 역할 체크
+            if (activeUsers.some(au => getUserServerData(au, currentServer).role === serverData.role)) {
+                return validData;
+            }
 
-            // Bug 5 fix: 1순위가 아닌 사람은 입장 불가 (UI에서 막지만 트랜잭션에서도 방어)
-            const sameRoleQueue = validData.filter(u => u.status === 'waiting' && u.role === user.role);
-            const queueSorted = sortWaitingUsers(sameRoleQueue);
+            // 1순위가 아닌 사람은 입장 불가
+            const sameRoleQueue = validData.filter(u => {
+                const sd = getUserServerData(u, currentServer);
+                return sd.status === 'waiting' && sd.role === serverData.role;
+            });
+            
+            const serverQueueUsers = getServerUsers(sameRoleQueue, currentServer);
+            const queueSorted = sortWaitingUsers(serverQueueUsers);
             if (queueSorted.length > 0 && queueSorted[0].id !== user.id) return validData;
             
-            const targetRole = user.role;
-            window.logChange(user.id, user.name, 'action', '', `${user.role} 입장`, '입장');
+            const targetRole = serverData.role;
+            window.logChange(user.id, user.name, 'action', '', `[${currentServer}서버] ${serverData.role} 입장`, '입장');
             
-            user.status = 'active'; 
-            user.startTime = Date.now();
-            user.isYielded = false;
+            serverData.status = 'active';
+            serverData.startTime = Date.now();
+            serverData.isYielded = false;
             
+            // 같은 역할 양보 초기화
             validData.forEach(u => {
-                if (u.status === 'waiting' && u.role === targetRole) {
-                    u.isYielded = false;
+                const sd = getUserServerData(u, currentServer);
+                if (sd.status === 'waiting' && sd.role === targetRole) {
+                    sd.isYielded = false;
                 }
             });
             
@@ -798,16 +1159,25 @@
             const validData = getValidUsers(currentData);
             const user = validData.find(u => u.id === id);
             if (user) {
-                const targetRole = user.role;
+                // 멀티서버: 현재 서버 데이터
+                const serverData = getUserServerData(user, currentServer);
+                const targetRole = serverData.role;
+                
+                // 완료 횟수는 전역 (모든 서버 공유)
                 user.completedCount += 1;
-                window.logChange(user.id, user.name, 'action', '', `${user.role} 완료 (${user.completedCount}회)`, '완료');
-                user.status = 'idle'; 
-                user.startTime = null; 
-                user.role = '';
-                // Bug 3 fix: 종료 시 같은 역할 대기열의 양보 상태 초기화 (startWork 없이도 고착 방지)
+                
+                window.logChange(user.id, user.name, 'action', '', `[${currentServer}서버] ${serverData.role} 완료 (${user.completedCount}회)`, '완료');
+                
+                serverData.status = 'idle';
+                serverData.startTime = null;
+                serverData.role = '';
+                serverData.isYielded = false;
+                
+                // 종료 시 같은 역할 대기열의 양보 상태 초기화
                 validData.forEach(u => {
-                    if (u.status === 'waiting' && u.role === targetRole) {
-                        u.isYielded = false;
+                    const sd = getUserServerData(u, currentServer);
+                    if (sd.status === 'waiting' && sd.role === targetRole) {
+                        sd.isYielded = false;
                     }
                 });
             }
@@ -819,32 +1189,45 @@
         window.saveData((currentData) => {
             const validData = getValidUsers(currentData);
             const user = validData.find(u => u && u.id === currentId);
-            if (!user || !user.role) return validData;
-            if (user.status !== 'waiting') return validData; // Bug 2 fix: active 상태에서 실행 방지
+            if (!user) return validData;
             
-            const sameRoleWaiting = validData.filter(u => u && u.status === 'waiting' && u.role === user.role);
+            // 멀티서버: 현재 서버 데이터
+            const serverData = getUserServerData(user, currentServer);
+            if (!serverData.role) return validData;
+            if (serverData.status !== 'waiting') return validData;
             
-            // Bug 6 fix: 혼자 대기 중일 때 양보 불가 (즉시 초기화 방지)
+            const sameRoleWaiting = validData.filter(u => {
+                const sd = getUserServerData(u, currentServer);
+                return u && sd.status === 'waiting' && sd.role === serverData.role;
+            });
+            
+            // 혼자 대기 중일 때 양보 불가
             if (sameRoleWaiting.length <= 1) return validData;
 
-            // Bug B fix: 1순위가 아닌 사람은 양보 불가 (UI에서 막지만 트랜잭션에서도 방어)
+            // 1순위가 아닌 사람은 양보 불가
             const baseSortedForYield = [...sameRoleWaiting].sort((a, b) => {
+                const asd = getUserServerData(a, currentServer);
+                const bsd = getUserServerData(b, currentServer);
                 if (a.completedCount !== b.completedCount) return a.completedCount - b.completedCount;
-                return (a.waitingTime || 0) - (b.waitingTime || 0);
+                return (asd.waitingTime || 0) - (bsd.waitingTime || 0);
             });
-            const currentFront = baseSortedForYield.find(u => !u.isYielded);
+            
+            const currentFront = baseSortedForYield.find(u => !getUserServerData(u, currentServer).isYielded);
             if (!currentFront || currentFront.id !== user.id) return validData;
             
-            user.isYielded = true;
+            serverData.isYielded = true;
             
-            const allYielded = sameRoleWaiting.every(x => x.isYielded);
+            const allYielded = sameRoleWaiting.every(x => getUserServerData(x, currentServer).isYielded);
             if (allYielded) {
-                sameRoleWaiting.forEach(x => { x.isYielded = false; });
-                window.logChange(user.id, user.name, 'action', '', '전원 양보하여 대기열 초기화', '양보 초기화');
+                sameRoleWaiting.forEach(x => { 
+                    getUserServerData(x, currentServer).isYielded = false; 
+                });
+                window.logChange(user.id, user.name, 'action', '', `[${currentServer}서버] 전원 양보하여 초기화`, '양보 초기화');
             } else {
-                const sorted = sortWaitingUsers(validData.filter(u => u.status === 'waiting')).filter(u => u.role === user.role);
+                const serverQueueUsers = getServerUsers(validData, currentServer).filter(u => u.status === 'waiting');
+                const sorted = sortWaitingUsers(serverQueueUsers).filter(u => u.role === serverData.role);
                 const nextUser = sorted.find(x => !x.isYielded);
-                window.logChange(user.id, user.name, 'action', '', `양보 대기열 진입 (다음: ${nextUser ? nextUser.name : '없음'})`, '양보');
+                window.logChange(user.id, user.name, 'action', '', `[${currentServer}서버] 양보 (다음: ${nextUser ? nextUser.name : '없음'})`, '양보');
             }
             
             return validData;
