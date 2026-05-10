@@ -1065,25 +1065,25 @@ function getAttendanceTimeStatus(bossTimeStr) {
     const diffMs = now.getTime() - bossTime.getTime(); // 양수: 보스 시간 지남
     const diffMin = diffMs / 60000;
     
-    // 정시 이전: 출석 불가
-    if (diffMin < 0) {
-        const remain = Math.ceil(-diffMin);
-        return { allowed: false, status: null, message: `출석 시작까지 ${remain}분 남음 (${bossTimeStr}부터 가능)` };
+    // 5분 전보다 이전: 출석 불가
+    if (diffMin < -5) {
+        const remain = Math.ceil(-diffMin - 5);
+        return { allowed: false, status: null, message: `출석 시작까지 ${remain}분 남음 (${bossTimeStr} 5분 전부터 가능)` };
     }
     
-    // 10분 이후: 출석 종료
-    if (diffMin > 10) {
-        const past = Math.floor(diffMin - 10);
+    // 5분 이후: 출석 종료
+    if (diffMin > 5) {
+        const past = Math.floor(diffMin - 5);
         return { allowed: false, status: null, message: `출석 종료됨 (${bossTimeStr} 기준 ${past}분 전 종료)` };
     }
     
-    // 0~10분 구간: 출석 가능
-    if (diffMin <= 5) {
-        // 정시 ~ 5분 후: 참석
+    // -5 ~ +5분 구간: 출석 가능
+    if (diffMin <= 0) {
+        // 5분 전 ~ 정시: 참석
         return { allowed: true, status: 'present', message: '⭕ 참석 처리됩니다' };
     } else {
-        // 5분 후 ~ 10분 후: 지각
-        return { allowed: true, status: 'late', message: '🕐 지각 처리됩니다 (5분 경과)' };
+        // 정시 이후 ~ 5분 후: 지각
+        return { allowed: true, status: 'late', message: '🕐 지각 처리됩니다 (보스 시간 지남)' };
     }
 };
 
@@ -1102,11 +1102,11 @@ function getCurrentBoss() {
     todaySchedules.forEach(s => {
         const [hours, minutes] = s.time.split(':').map(Number);
         const scheduleTime = hours * 60 + minutes;
-        const diff = currentTime - scheduleTime; // 양수: 보스 시간 지남, 음수: 아직 안됨
+        const diff = scheduleTime - currentTime; // 양수: 아직 시간 안됨, 음수: 시간 지남
         
-        // 정시부터 10분 후까지 (0~10분 윈도우)
-        if (diff >= 0 && diff <= 10 && diff < minDiff) {
-            minDiff = diff;
+        // 5분 전부터 5분 후까지 (-5 ~ +5분 윈도우)
+        if (diff >= -5 && diff <= 5 && Math.abs(diff) < minDiff) {
+            minDiff = Math.abs(diff);
             closestBoss = s;
         }
     });
@@ -2238,14 +2238,20 @@ async function exportToGoogleSheets() {
         const url = prompt(
             '⚙️ Google Apps Script URL을 입력하세요:\n\n' +
             '1. script.google.com에서 Apps Script 배포\n' +
-            '2. "웹 앱 URL" 복사\n' +
-            '3. 여기에 붙여넣기\n\n' +
+            '2. "배포" → "새 배포" → "웹 앱" 선택\n' +
+            '3. "웹 앱 URL" 복사 (끝이 /exec로 끝남)\n' +
+            '4. 여기에 붙여넣기\n\n' +
             '(한 번만 설정하면 저장됩니다)',
             'https://script.google.com/macros/s/AKfycby.../exec'
         );
         
         if (!url || !url.includes('script.google.com')) {
-            alert('올바른 URL을 입력해주세요.');
+            alert('❌ 올바른 URL을 입력해주세요.\n\n형식: https://script.google.com/macros/s/AKfycby.../exec');
+            return;
+        }
+        
+        if (!url.endsWith('/exec')) {
+            alert('⚠️ URL이 /exec로 끝나야 합니다!\n\n다시 확인해주세요.');
             return;
         }
         
@@ -2253,6 +2259,8 @@ async function exportToGoogleSheets() {
     }
     
     const appsScriptUrl = localStorage.getItem('appsScriptUrl');
+    
+    console.log('🔗 Apps Script URL:', appsScriptUrl);
     
     // 로딩 표시
     const loadingDiv = document.createElement('div');
@@ -2262,7 +2270,7 @@ async function exportToGoogleSheets() {
         transform: translate(-50%, -50%);
         background: white; padding: 30px; border-radius: 12px;
         box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-        z-index: 10000; text-align: center; min-width: 260px;
+        z-index: 10000; text-align: center; min-width: 300px;
     `;
     loadingDiv.innerHTML = `
         <div style="font-size: 3rem; margin-bottom: 15px;">⏳</div>
@@ -2274,6 +2282,7 @@ async function exportToGoogleSheets() {
     const updateStatus = (msg) => {
         const el = document.getElementById('export-gs-status');
         if (el) el.textContent = msg;
+        console.log('📊', msg);
     };
     
     try {
@@ -2289,29 +2298,67 @@ async function exportToGoogleSheets() {
         const endDate = new Date();
         endDate.setHours(23, 59, 59, 999);
         
+        console.log('📅 기간:', formatLocalDate(startDate), '~', formatLocalDate(endDate));
+        
         updateStatus('출석 데이터 로드 중...');
         const attendanceData = await fetchAttendanceData(startDate, endDate);
+        
+        console.log('📦 출석 데이터:', Object.keys(attendanceData).length, '개');
         
         updateStatus('스크린샷 형식 생성 중...');
         const rows = generateScreenshotFormatRows(attendanceData);
         
+        console.log('📋 생성된 행:', rows.length, '행 x', rows[0]?.length || 0, '열');
+        console.log('📋 데이터 미리보기:', rows.slice(0, 3));
+        
+        if (rows.length === 0 || rows[0].length === 0) {
+            throw new Error('생성된 데이터가 없습니다.');
+        }
+        
         updateStatus('구글 시트 전송 중...');
         
-        await fetch(appsScriptUrl, {
+        const payload = JSON.stringify({ summary: rows, details: [] });
+        console.log('📤 전송 데이터 크기:', payload.length, 'bytes');
+        
+        const response = await fetch(appsScriptUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'text/plain' },
             mode: 'no-cors',
-            body: JSON.stringify({ summary: rows, details: [] })
+            body: payload
         });
         
+        console.log('📬 응답:', response);
+        
         loadingDiv.remove();
-        alert('✅ 데이터 전송 완료!\n\n구글 드라이브에서 생성된 시트를 확인하세요.\n(내 드라이브 → 최근 문서)');
+        
+        alert(
+            '✅ 데이터 전송 완료!\n\n' +
+            '구글 드라이브에서 확인하세요:\n' +
+            '1. 내 드라이브 → 최근 문서\n' +
+            '2. "헌터혈맹 출석 - 2026-XX-XX ~ 2026-XX-XX" 검색\n\n' +
+            '💡 안 보이면:\n' +
+            '- F12 → Console 탭에서 로그 확인\n' +
+            '- Apps Script 배포 URL 재확인\n' +
+            '- Apps Script 실행 로그 확인'
+        );
+        
         window.open('https://drive.google.com/drive/recent', '_blank');
         
     } catch (error) {
         loadingDiv.remove();
-        console.error('Error:', error);
-        alert('⚠️ 구글 시트 전송 실패\n\nApps Script URL을 다시 확인해주세요.');
+        console.error('❌ 에러:', error);
+        console.error('❌ 상세:', error.message, error.stack);
+        
+        alert(
+            '⚠️ 구글 시트 전송 실패\n\n' +
+            '에러: ' + error.message + '\n\n' +
+            '해결 방법:\n' +
+            '1. Apps Script URL 확인\n' +
+            '2. Apps Script 배포 상태 확인\n' +
+            '3. F12 → Console 탭에서 로그 확인\n' +
+            '4. Apps Script 실행 로그 확인'
+        );
+        
         if (confirm('Apps Script URL을 다시 설정하시겠습니까?')) {
             resetAppsScriptUrl();
         }
@@ -2319,97 +2366,106 @@ async function exportToGoogleSheets() {
 }
 
 // 스크린샷 형식 행 생성
-// 형식: 이름/참석횟수/참석률(왼쪽) + 날짜별 보스 참석자 목록(오른쪽)
+// 형식: 사용자별로 각 날짜/보스에 출석했는지 표시
 function generateScreenshotFormatRows(attendanceData) {
-    // 날짜별 보스 그룹화
-    const dateGroups = {};
-    Object.keys(attendanceData).forEach(key => {
-        const idx = key.indexOf('_');
-        const dateStr = idx >= 0 ? key.substring(0, idx) : key;
-        const bossId = idx >= 0 ? key.substring(idx + 1) : '';
-        if (!dateGroups[dateStr]) dateGroups[dateStr] = [];
-        const boss = schedules.find(s => s.id === bossId);
-        if (boss) {
-            dateGroups[dateStr].push({
-                bossId,
+    // 이번 주 월~일 날짜 계산
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const monday = new Date(now);
+    const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
+    monday.setDate(monday.getDate() + daysToMonday);
+    monday.setHours(0, 0, 0, 0);
+    
+    // 날짜별 보스 목록 생성 (월~일)
+    const weekData = [];
+    for (let i = 0; i < 7; i++) {
+        const date = new Date(monday);
+        date.setDate(date.getDate() + i);
+        const dateStr = formatLocalDate(date);
+        const dayOfWeek = date.getDay();
+        const monthDay = `${date.getMonth() + 1}-${date.getDate()}`;
+        
+        // 해당 요일의 스케줄 가져오기
+        const daySchedules = schedules
+            .filter(s => s.dayOfWeek === dayOfWeek)
+            .sort((a, b) => a.time.localeCompare(b.time));
+        
+        daySchedules.forEach(boss => {
+            const attendanceKey = `${dateStr}_${boss.id}`;
+            const attendees = attendanceData[attendanceKey]?.attendees || {};
+            
+            weekData.push({
+                dateStr: dateStr,
+                monthDay: monthDay,
+                bossId: boss.id,
                 bossName: boss.name,
                 time: boss.time,
-                attendees: attendanceData[key].attendees || {}
+                attendees: attendees
             });
-        }
-    });
-    
-    const sortedDates = Object.keys(dateGroups).sort();
-    
-    // 보스 컬럼 목록 (날짜별 시간순 정렬)
-    const bossColumns = [];
-    sortedDates.forEach(dateStr => {
-        const date = new Date(dateStr);
-        const monthDay = `${date.getMonth() + 1}/${date.getDate()}`;
-        dateGroups[dateStr]
-            .sort((a, b) => a.time.localeCompare(b.time))
-            .forEach(boss => {
-                // 참석자 목록 (present + late, 참석 횟수 많은 순으로 정렬)
-                const attendeeNames = [];
-                Object.keys(boss.attendees).forEach(userId => {
-                    const status = normalizeStatus(boss.attendees[userId]);
-                    if (status === 'present' || status === 'late') {
-                        const user = users.find(u => u.id === parseInt(userId));
-                        if (user) attendeeNames.push(user.name);
-                    }
-                });
-                bossColumns.push({ dateStr, monthDay, bossName: boss.bossName, attendeeNames });
-            });
-    });
-    
-    // 멤버 통계 계산 (참석횟수 높은 순 정렬)
-    const userStats = users.map(user => {
-        let attendCount = 0, totalCount = 0;
-        Object.values(attendanceData).forEach(record => {
-            const status = normalizeStatus(record.attendees?.[user.id]);
-            if (status === 'present' || status === 'late' || status === 'absent') totalCount++;
-            if (status === 'present' || status === 'late') attendCount++;
         });
-        const rate = totalCount > 0 ? Math.round(attendCount / totalCount * 100) : 0;
-        return { name: user.name, attendCount, rate };
-    }).sort((a, b) => b.attendCount - a.attendCount || a.name.localeCompare(b.name));
+    }
+    
+    if (weekData.length === 0) {
+        return [['이름', '참석횟수', '참석률', '데이터 없음']];
+    }
     
     const rows = [];
     
-    // 헤더 행 1: 날짜 그룹 (같은 날짜는 첫 컬럼에만 표시)
-    const header1 = ['', '참석횟수', '참석률'];
+    // 헤더 행 1: 날짜 (병합용 - 같은 날짜는 첫 컬럼에만 표시)
+    const header1 = ['', '참석', '참석률'];
     let prevDate = null;
-    bossColumns.forEach(col => {
-        header1.push(col.dateStr !== prevDate ? col.monthDay : '');
-        prevDate = col.dateStr;
+    weekData.forEach(data => {
+        if (data.monthDay !== prevDate) {
+            header1.push(data.monthDay);
+            prevDate = data.monthDay;
+        } else {
+            header1.push('');
+        }
     });
     rows.push(header1);
     
     // 헤더 행 2: 이름 + 보스명
-    const header2 = ['이름', '', ''];
-    bossColumns.forEach(col => header2.push(col.bossName));
+    const header2 = ['이름', '횟수', ''];
+    weekData.forEach(data => {
+        header2.push(data.bossName);
+    });
     rows.push(header2);
     
-    // 데이터 행: 최대 행 수 결정
-    const maxRows = Math.max(
-        userStats.length,
-        bossColumns.length > 0 ? Math.max(...bossColumns.map(c => c.attendeeNames.length)) : 0
-    );
-    
-    for (let i = 0; i < maxRows; i++) {
+    // 각 사용자별로 행 생성
+    users.forEach(user => {
         const row = [];
-        // 왼쪽: 멤버 통계
-        if (i < userStats.length) {
-            row.push(userStats[i].name, userStats[i].attendCount, userStats[i].rate + '%');
-        } else {
-            row.push('', '', '');
-        }
-        // 오른쪽: 보스별 참석자 (세로로 나열)
-        bossColumns.forEach(col => {
-            row.push(i < col.attendeeNames.length ? col.attendeeNames[i] : '');
+        
+        // 참석 통계 계산
+        let attendCount = 0;
+        let totalCount = 0;
+        
+        weekData.forEach(data => {
+            const status = normalizeStatus(data.attendees[user.id]);
+            if (status === 'present' || status === 'late') {
+                attendCount++;
+            }
+            if (status === 'present' || status === 'late' || status === 'absent') {
+                totalCount++;
+            }
         });
+        
+        const rate = totalCount > 0 ? Math.round(attendCount / totalCount * 100) : 0;
+        
+        // 왼쪽: 이름, 참석횟수, 참석률
+        row.push(user.name, attendCount, rate + '%');
+        
+        // 오른쪽: 각 보스별 출석 표시 (출석했으면 O 표시)
+        weekData.forEach(data => {
+            const status = normalizeStatus(data.attendees[user.id]);
+            if (status === 'present' || status === 'late') {
+                row.push('O');  // 출석 표시
+            } else {
+                row.push('');   // 미출석
+            }
+        });
+        
         rows.push(row);
-    }
+    });
     
     return rows;
 }
