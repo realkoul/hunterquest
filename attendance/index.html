@@ -1171,7 +1171,56 @@ function renderTodaySchedules() {
     
     // 현재 보스 출석 인원 표시
     showCurrentAttendees(currentBoss);
+    
+    // 출석 종료 시 자동 불참 처리
+    autoMarkAbsent(currentBoss);
 };
+
+// 출석 종료 시 자동 불참 처리
+function autoMarkAbsent(boss) {
+    if (!boss) return;
+    
+    const timeStatus = getAttendanceTimeStatus(boss.time);
+    
+    // 출석 시간이 아직 종료되지 않았으면 리턴
+    if (timeStatus.allowed) return;
+    
+    // 출석 시간이 종료되었는지 확인 (5분 이후)
+    const now = new Date();
+    const [h, m] = boss.time.split(':').map(Number);
+    const bossTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+    const diffMin = (now.getTime() - bossTime.getTime()) / 60000;
+    
+    // 5분 이후부터 자동 불참 처리
+    if (diffMin <= 5) return;
+    
+    const today = formatLocalDate(now);
+    const attendanceKey = `${today}_${boss.id}`;
+    
+    db.ref(`boss_attendance/${attendanceKey}`).once('value', (snapshot) => {
+        const attendanceData = snapshot.val() || { attendees: {} };
+        const attendees = attendanceData.attendees || {};
+        
+        let updated = false;
+        
+        // 모든 사용자 확인
+        users.forEach(user => {
+            const status = normalizeStatus(attendees[user.id]);
+            
+            // 출석/지각이 아닌 경우 불참으로 처리
+            if (status !== 'present' && status !== 'late') {
+                attendees[user.id] = 'absent';
+                updated = true;
+            }
+        });
+        
+        // 업데이트가 있으면 Firebase에 저장
+        if (updated) {
+            db.ref(`boss_attendance/${attendanceKey}/attendees`).set(attendees);
+            console.log('✅ 자동 불참 처리 완료:', attendanceKey);
+        }
+    });
+}
 
 // 현재 보스 출석 인원 표시
 function showCurrentAttendees(boss) {
@@ -1221,6 +1270,7 @@ function showCurrentAttendees(boss) {
         // 출석 데이터 분류
         const present = [];
         const late = [];
+        const absent = [];
         
         Object.entries(attendanceData.attendees).forEach(([userId, data]) => {
             const user = users.find(u => u.id === parseInt(userId));
@@ -1235,11 +1285,13 @@ function showCurrentAttendees(boss) {
                     present.push(userInfo);
                 } else if (status === 'late') {
                     late.push(userInfo);
+                } else if (status === 'absent') {
+                    absent.push(userInfo);
                 }
             }
         });
         
-        const total = present.length + late.length;
+        const total = present.length + late.length + absent.length;
         
         if (total === 0) {
             section.style.display = 'none';
@@ -1248,9 +1300,9 @@ function showCurrentAttendees(boss) {
         
         // 서버별로 그룹화
         const serverGroups = {
-            'jingir': { present: [], late: [] },
-            'pandora': { present: [], late: [] },
-            'support': { present: [], late: [] }
+            'jingir': { present: [], late: [], absent: [] },
+            'pandora': { present: [], late: [], absent: [] },
+            'support': { present: [], late: [], absent: [] }
         };
         
         present.forEach(user => {
@@ -1259,6 +1311,10 @@ function showCurrentAttendees(boss) {
         
         late.forEach(user => {
             serverGroups[user.server].late.push(user.name);
+        });
+        
+        absent.forEach(user => {
+            serverGroups[user.server].absent.push(user.name);
         });
         
         // HTML 생성
@@ -1319,6 +1375,38 @@ function showCurrentAttendees(boss) {
                             </div>
                             <div style="color: #b9770e; font-size: 0.9rem;">
                                 ${serverGroups[server].late.join(', ')}
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+        
+        // 불참자
+        if (absent.length > 0) {
+            html += `
+                <div style="margin-bottom: 10px;">
+                    <div style="font-weight: bold; color: #c0392b; margin-bottom: 10px; font-size: 1rem;">
+                        ❌ 불참 (${absent.length}명)
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+            `;
+            
+            ['jingir', 'pandora', 'support'].forEach(server => {
+                if (serverGroups[server].absent.length > 0) {
+                    const serverName = servers[server] || server;
+                    html += `
+                        <div style="flex: 1; min-width: 200px; padding: 10px; background: #fadbd8; border-radius: 6px;">
+                            <div style="color: #c0392b; font-size: 0.85rem; font-weight: bold; margin-bottom: 6px;">
+                                ${serverName} (${serverGroups[server].absent.length}명)
+                            </div>
+                            <div style="color: #a93226; font-size: 0.9rem;">
+                                ${serverGroups[server].absent.join(', ')}
                             </div>
                         </div>
                     `;
