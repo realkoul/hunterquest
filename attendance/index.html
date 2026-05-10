@@ -346,6 +346,7 @@
         <div class="card">
             <h2>👥 개인별 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 월~일, 출석 체크된 보스 기준)</span></h2>
             <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+                <input type="text" id="stats-search-user" placeholder="🔍 이름 검색..." onkeyup="filterStats()" style="flex: 1 1 200px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
                 <select id="stats-server-filter" onchange="filterStats()" style="flex: 0 0 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px; background: white;">
                     <option value="all">전체 서버</option>
                     <option value="jingir">진기르</option>
@@ -2146,30 +2147,64 @@ function renderStats(stats) {
     
     const userStatsArray = Object.values(stats.userStats);
     
+    // 검색어 필터
+    const searchTerm = document.getElementById('stats-search-user')?.value.toLowerCase() || '';
+    
     // 서버 필터 적용
     const serverFilter = document.getElementById('stats-server-filter')?.value || 'all';
-    const filteredStats = serverFilter === 'all' 
-        ? userStatsArray 
-        : userStatsArray.filter(s => s.server === serverFilter);
+    
+    let filteredStats = userStatsArray;
+    
+    // 검색어 필터 적용
+    if (searchTerm) {
+        filteredStats = filteredStats.filter(s => s.userName.toLowerCase().includes(searchTerm));
+    }
+    
+    // 서버 필터 적용
+    if (serverFilter !== 'all') {
+        filteredStats = filteredStats.filter(s => s.server === serverFilter);
+    }
     
     const avgRate = filteredStats.length > 0 
         ? (filteredStats.reduce((sum, s) => sum + parseFloat(s.rate), 0) / filteredStats.length).toFixed(1)
         : 0;
     document.getElementById('stat-avg-rate').textContent = avgRate + '%';
     
-    // 전체 인원, 참여율 내림차순으로 정렬
+    // 내 이름 목록 가져오기
+    const myNames = (typeof getMyNames === 'function') ? getMyNames() : [];
+    const myNamesSet = new Set(myNames);
+    
+    // 정렬: 내 이름 우선, 그 다음 참여율 순
     const sorted = filteredStats.slice().sort((a, b) => {
+        const aIsMine = myNamesSet.has(a.userName);
+        const bIsMine = myNamesSet.has(b.userName);
+        
+        // 내 이름 우선
+        if (aIsMine && !bIsMine) return -1;
+        if (!aIsMine && bIsMine) return 1;
+        
+        // 내 이름끼리는 등록 순서 유지
+        if (aIsMine && bIsMine) {
+            return myNames.indexOf(a.userName) - myNames.indexOf(b.userName);
+        }
+        
+        // 나머지는 참여율 내림차순
         const rateDiff = parseFloat(b.rate) - parseFloat(a.rate);
         if (rateDiff !== 0) return rateDiff;
+        
         // 참여율 동률이면 이름 가나다순
         return a.userName.localeCompare(b.userName, 'ko');
     });
+    
     const tbody = document.getElementById('stats-tbody');
     
     tbody.innerHTML = sorted.map((s, i) => {
         const serverName = servers[s.server] || '미지정';
+        const isMyName = myNamesSet.has(s.userName);
+        const rowStyle = isMyName ? 'background: #fff3cd; border-left: 4px solid #ffc107;' : '';
+        
         return `
-            <tr>
+            <tr style="${rowStyle}">
                 <td>${i + 1}</td>
                 <td><a href="javascript:void(0)" onclick="showUserBossCalendar('${s.userName}')" style="color: #3498db; text-decoration: none; font-weight: bold; cursor: pointer;">${s.userName}</a></td>
                 <td>${serverName}</td>
@@ -2184,7 +2219,12 @@ function renderStats(stats) {
     // 표시 인원수 안내
     const countInfo = document.getElementById('stats-count-info');
     if (countInfo) {
-        countInfo.textContent = `표시: ${sorted.length}명`;
+        const myNameCount = sorted.filter(s => myNamesSet.has(s.userName)).length;
+        if (myNameCount > 0) {
+            countInfo.innerHTML = `표시: ${sorted.length}명 <span style="color: #ffc107; font-weight: bold;">(내 이름: ${myNameCount}명)</span>`;
+        } else {
+            countInfo.textContent = `표시: ${sorted.length}명`;
+        }
     }
 };
 
