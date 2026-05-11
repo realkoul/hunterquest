@@ -1,22 +1,2435 @@
-<div class="card">
-<h2>👥 개인별 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 월~일, 출석 체크된 보스 기준)</span></h2>
-<div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>헌터혈맹 출석관리 v1.7</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Malgun Gothic', sans-serif; background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); min-height: 100vh; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: #ecf0f1; border-radius: 12px; padding: 30px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
+        
+        /* 헤더 */
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
+        .header h1 { color: #2c3e50; font-size: 2rem; }
+        .version { background: #5D6D7E; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.9rem; margin-left: 10px; }
+        .btn-back { padding: 10px 20px; background: #7f8c8d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: all 0.3s; }
+        .btn-back:hover { background: #5d6d7e; transform: translateY(-2px); }
+        
+        /* Tab */
+        .tabs { display: flex; gap: 5px; border-bottom: 2px solid #bdc3c7; margin-bottom: 20px; flex-wrap: wrap; }
+        .tab { padding: 12px 24px; background: white; border: none; border-bottom: 3px solid transparent; cursor: pointer; font-weight: bold; color: #7f8c8d; transition: all 0.3s; }
+        .tab:hover { color: #5D6D7E; }
+        .tab.active { color: #2c3e50; border-bottom-color: #2c3e50; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        /* 카드 */
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.08); }
+        .card h2 { color: #2c3e50; margin-bottom: 15px; }
+        
+        /* 버튼 */
+        .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: all 0.3s; }
+        .btn-primary { background: #5D6D7E; color: white; }
+        .btn-primary:hover { background: #4a5a6a; transform: translateY(-2px); }
+        .btn-success { background: #16a085; color: white; }
+        .btn-success:hover { background: #138d75; }
+        .btn-danger { background: #c0392b; color: white; }
+        .btn-danger:hover { background: #a93226; }
+        .btn-warning { background: #d68910; color: white; }
+        .btn-warning:hover { background: #b9770e; }
+        
+        /* 입력 */
+        input, select, textarea { width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 1rem; margin-bottom: 10px; }
+        input:focus, select:focus, textarea:focus { border-color: #3498db; outline: none; }
+        
+        /* 테이블 */
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e0e0e0; }
+        th { background: #34495e; color: white; font-weight: bold; }
+        tr:hover { background: #f8f9fa; }
+        
+        /* 출석 상태 */
+        .status-badge { display: inline-block; padding: 5px 12px; border-radius: 4px; font-weight: bold; font-size: 0.85rem; }
+        .status-present { background: #16a085; color: white; }
+        .status-absent { background: #c0392b; color: white; }
+        .status-late { background: #d68910; color: white; }
+        
+        /* O/X 버튼 */
+        .attendance-btn { padding: 8px 16px; border: 2px solid; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 0.9rem; transition: all 0.3s; margin: 0 3px; }
+        .attendance-btn.btn-o { border-color: #16a085; color: #16a085; background: white; }
+        .attendance-btn.btn-o:hover { background: #16a085; color: white; }
+        .attendance-btn.btn-o.active { background: #16a085; color: white; }
+        .attendance-btn.btn-x { border-color: #c0392b; color: #c0392b; background: white; }
+        .attendance-btn.btn-x:hover { background: #c0392b; color: white; }
+        .attendance-btn.btn-x.active { background: #c0392b; color: white; }
+        
+        /* 통계 */
+        .stat-box { background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }
+        .stat-box h3 { font-size: 2.5rem; margin-bottom: 5px; }
+        .stat-box p { opacity: 0.9; }
+        
+        /* 보스 스케줄 카드 */
+        .schedule-card { background: #ecf0f1; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #5D6D7E; }
+        .schedule-card h3 { color: #2c3e50; margin-bottom: 8px; }
+        .schedule-info { color: #7f8c8d; font-size: 0.9rem; margin-bottom: 10px; }
+        .schedule-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        
+        /* 모달 */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: white; padding: 30px; border-radius: 12px; max-width: 600px; width: 90%; max-height: 90vh; overflow-y: auto; }
+        
+        /* 알림 애니메이션 */
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
+        
+        /* 빠른 출석 배너 */
+        .quick-attend-banner {
+            background: linear-gradient(135deg, #16a085 0%, #138d75 100%);
+            border-radius: 8px; padding: 14px 16px; margin-top: 12px;
+        }
+        .quick-attend-banner .banner-label {
+            color: rgba(255,255,255,0.85); font-size: 0.8rem; margin-bottom: 8px;
+        }
+        .quick-attend-banner .banner-btns {
+            display: flex; flex-wrap: wrap; gap: 8px;
+        }
+        .quick-attend-btn {
+            flex: 1; min-width: 100px; padding: 10px 14px;
+            background: white; color: #16a085;
+            border: none; border-radius: 6px;
+            cursor: pointer; font-size: 0.95rem; font-weight: bold;
+            transition: all 0.2s; white-space: nowrap;
+        }
+        .quick-attend-btn:hover { background: #e8f8f5; transform: translateY(-1px); }
+        .quick-attend-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* 반응형 */
+        @media (max-width: 768px) {
+            .header { flex-direction: column; align-items: flex-start; }
+            .header h1 { font-size: 1.5rem; }
+            .tabs { flex-direction: column; flex-wrap: nowrap; }
+            .tab { width: 100%; text-align: left; white-space: nowrap; }
+            
+            /* 출석 체크 테이블 - 컴팩트 카드 레이아웃 */
+            #attendance-table thead { display: none; }
+            #attendance-table, #attendance-tbody, #attendance-tbody tr {
+                display: block;
+            }
+            #attendance-tbody tr {
+                background: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 8px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            }
+            #attendance-tbody td {
+                display: block;
+                padding: 0;
+                border: none;
+                text-align: left;
+            }
+            
+            /* 이름 - 크고 굵게 강조 (이제 첫번째) */
+            #attendance-tbody td:first-child {
+                font-size: 1.2rem;
+                font-weight: bold;
+                color: #2c3e50;
+                margin-bottom: 6px;
+            }
+            #attendance-tbody td:first-child::before {
+                display: none;
+            }
+            
+            /* 팀과 상태를 한 줄에 */
+            #attendance-tbody td:nth-child(2),
+            #attendance-tbody td:nth-child(3) {
+                display: inline-block;
+                font-size: 0.85rem;
+                margin-right: 10px;
+                margin-bottom: 8px;
+            }
+            #attendance-tbody td:nth-child(2)::before {
+                content: '팀: ';
+                color: #7f8c8d;
+                font-weight: normal;
+            }
+            #attendance-tbody td:nth-child(3)::before {
+                display: none;
+            }
+            
+            /* 버튼 영역 */
+            #attendance-tbody td:last-child {
+                display: flex;
+                gap: 6px;
+                margin-top: 8px;
+            }
+            #attendance-tbody td:last-child::before {
+                display: none;
+            }
+            
+            /* 버튼 최적화 - 컴팩트하게 */
+            .attendance-btn {
+                padding: 8px 16px;
+                font-size: 0.95rem;
+                margin: 0;
+                flex: 1;
+                border-width: 2px;
+            }
+            
+            /* 카드 패딩 줄이기 */
+            .card { padding: 12px; margin-bottom: 12px; }
+            
+            /* 보스 관리 테이블 - 가로 스크롤 */
+            .card table {
+                display: block;
+                overflow-x: auto;
+                white-space: nowrap;
+                -webkit-overflow-scrolling: touch;
+            }
+            .card table th,
+            .card table td {
+                font-size: 0.85rem;
+                padding: 8px 6px;
+            }
+        }
+        
+        /* 매우 작은 화면 (400px 이하) */
+        @media (max-width: 400px) {
+            .container { padding: 12px; }
+            .header h1 { font-size: 1.3rem; }
+            #attendance-tbody tr { padding: 10px; }
+            #attendance-tbody td:first-child { font-size: 1.1rem; }
+            .attendance-btn {
+                padding: 8px 12px;
+                font-size: 0.9rem;
+            }
+            .btn { padding: 8px 12px; font-size: 0.9rem; }
+            .card { padding: 10px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- 🔒 로그인 모달 -->
+<div id="login-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10000; align-items: center; justify-content: center;">
+    <div style="background: white; padding: 40px; border-radius: 12px; max-width: 400px; width: 90%; box-shadow: 0 10px 40px rgba(0,0,0,0.3);">
+        <h2 style="text-align: center; color: #2c3e50; margin-bottom: 10px;">🔒 헌터혈맹 출석관리</h2>
+        <p style="text-align: center; color: #7f8c8d; margin-bottom: 30px; font-size: 0.9rem;">관리자 로그인이 필요합니다</p>
+        
+        <div style="margin-bottom: 20px;">
+            <input type="email" id="admin-email" placeholder="이메일" style="width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 1rem; margin-bottom: 10px;">
+            <input type="password" id="admin-password" placeholder="비밀번호" style="width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 1rem;">
+        </div>
+        
+        <button onclick="adminLogin()" style="width: 100%; padding: 12px; background: #5D6D7E; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-bottom: 10px; font-size: 1rem;">
+            🔑 관리자 로그인
+        </button>
+        
+        <button onclick="guestMode()" style="width: 100%; padding: 12px; background: #95a5a6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem;">
+            👤 일반 사용자로 계속
+        </button>
+        
+        <div id="login-error" style="display: none; margin-top: 15px; padding: 10px; background: #fadbd8; color: #c0392b; border-radius: 6px; text-align: center; font-size: 0.9rem;"></div>
+        <div id="login-loading" style="display: none; margin-top: 15px; text-align: center; color: #7f8c8d;">
+            ⏳ 로그인 중...
+        </div>
+    </div>
+</div>
+
+<!-- 🔑 관리자 상태 표시 -->
+<div id="admin-badge" style="display: none; position: fixed; top: 10px; right: 10px; z-index: 9999;">
+    <div style="background: #e74c3c; color: white; padding: 8px 15px; border-radius: 20px; font-weight: bold; box-shadow: 0 2px 10px rgba(0,0,0,0.2); display: flex; align-items: center; gap: 10px;">
+        <span id="admin-email-display">🔑 관리자</span>
+        <button onclick="adminLogout()" style="background: white; color: #e74c3c; border: none; padding: 4px 10px; border-radius: 12px; cursor: pointer; font-size: 0.8rem; font-weight: bold;">
+            로그아웃
+        </button>
+    </div>
+</div>
+
+<div class="container">
+    <!-- 헤더 -->
+    <div class="header">
+        <div>
+            <h1>📅 헌터혈맹 출석관리<span class="version">v1.7</span></h1>
+            <p style="color:#7f8c8d; margin-top:8px;">● hunterquest-fbdee 서버 (테스트 DB)</p>
+        </div>
+        <button class="btn-back" onclick="window.location.href='index.html'">
+            ← 퀘스트로 돌아가기
+        </button>
+    </div>
+    
+    <!-- Tab -->
+    <div class="tabs">
+        <button class="tab active" onclick="switchTab('attendance')">📋 출석 체크</button>
+        <button class="tab" onclick="switchTab('schedules')">📊 주간출석현황</button>
+        <button class="tab" onclick="switchTab('stats')">📈 통계</button>
+        <button class="tab" onclick="switchTab('users')">⚙️ 관리페이지</button>
+    </div>
+    
+    <!-- Tab 1: 출석 체크 -->
+    <div id="tab-attendance" class="tab-content active">
+        <div class="card">
+            <h2>📅 현재 진행 중인 보스</h2>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px; align-items: center; flex-wrap: wrap;">
+                <label style="color: #2c3e50; font-weight: bold;">보스 선택:</label>
+                <select id="boss-selector" onchange="changeBoss()" style="flex: 1; min-width: 250px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px; background: white;">
+                    <option value="current">⭐ 현재 진행 중인 보스 (자동)</option>
+                </select>
+            </div>
+            <div id="today-schedules"></div>
+        </div>
+        
+        <!-- 성물 필요 인원 -->
+        <div class="card" id="relic-alert-section" style="display: none;">
+            <h2>⚠️ 성물 필요 인원</h2>
+            <div id="relic-alert-list" style="margin-top: 10px;"></div>
+        </div>
+        
+        <!-- 아이템 드랍 기록 -->
+        <div class="card" id="item-drop-section" style="display: none;">
+            <h2>📦 아이템 드랍</h2>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; align-items: center;">
+                <select id="drop-item-select" style="flex: 1; min-width: 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
+                    <option value="">아이템 선택</option>
+                </select>
+                <select id="drop-winner-select" style="flex: 1; min-width: 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
+                    <option value="">획득자 선택</option>
+                </select>
+                <button class="btn btn-primary" onclick="addDrop()" style="padding: 10px 20px; font-size: 1rem;">➕ 추가</button>
+            </div>
+            <div id="drops-list"></div>
+        </div>
+        
+        <div class="card">
+            <h2>📋 출석 체크</h2>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+                <input type="text" id="search-user" placeholder="🔍 이름 검색..." onkeyup="filterAttendanceTable()" style="flex: 1; min-width: 200px; margin: 0;">
+                <select id="server-filter" onchange="filterAttendanceTable()" style="flex: 0 0 150px; margin: 0;">
+                    <option value="all">전체 서버</option>
+                    <option value="jingir">진기르</option>
+                    <option value="pandora">판도라</option>
+                    <option value="support">지원</option>
+                </select>
+                <button class="btn btn-primary" onclick="showMyNameModal()" style="flex: 0 0 auto; margin: 0; padding: 10px 20px; font-size: 1rem;">
+                    ⭐ 내 이름
+                </button>
+            </div>
+            <div id="my-name-display" style="display: none; margin-bottom: 15px; padding: 12px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+                <div style="color: #856404; font-weight: bold; margin-bottom: 10px;">📌 내 이름 (빠른 출석)</div>
+                <div id="my-names-quick-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            </div>
+            <p style="color: #7f8c8d; font-size: 0.9rem; margin-bottom: 10px;">
+                표시: <strong id="filtered-count">0</strong>명 / 전체: <strong id="total-count">0</strong>명
+            </p>
+            <div style="overflow-x: auto;">
+                <table id="attendance-table">
+                    <thead>
+                        <tr>
+                            <th width="25%">이름</th>
+                            <th width="15%">서버</th>
+                            <th width="20%">상태</th>
+                            <th>관리</th>
+                        </tr>
+                    </thead>
+                    <tbody id="attendance-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+        
+    </div>
+    
+    <!-- Tab 2: 통계 -->
+    <div id="tab-stats" class="tab-content">
+        <div class="card">
+            <h2>📊 전체 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 월~일)</span></h2>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:15px; margin-top:20px;">
+                <div class="stat-box">
+                    <h3 id="stat-total-schedules">0</h3>
+                    <p>총 보스 횟수</p>
+                </div>
+                <div class="stat-box">
+                    <h3 id="stat-checked-bosses">0</h3>
+                    <p>출석 체크된 보스</p>
+                </div>
+                <div class="stat-box">
+                    <h3 id="stat-avg-rate">0%</h3>
+                    <p>평균 참여율<br><span style="font-size: 0.7rem; opacity: 0.7;">(출석 체크된 보스 기준)</span></p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>👥 개인별 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 월~일, 출석 체크된 보스 기준)</span></h2>
+            <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
                 <input type="text" id="stats-search-user" placeholder="🔍 이름 검색..." onkeyup="filterStats()" style="flex: 1 1 200px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
-<select id="stats-server-filter" onchange="filterStats()" style="flex: 0 0 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px; background: white;">
-<option value="all">전체 서버</option>
-<option value="jingir">진기르</option>
-@@ -2146,30 +2147,64 @@ <h2>✅ 출석 체크 완료 <span style="color: #7f8c8d; font-size: 0.9rem; fon
+                <select id="stats-server-filter" onchange="filterStats()" style="flex: 0 0 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px; background: white;">
+                    <option value="all">전체 서버</option>
+                    <option value="jingir">진기르</option>
+                    <option value="pandora">판도라</option>
+                    <option value="support">지원</option>
+                </select>
+            </div>
+            <div style="overflow: auto; max-height: 600px; border: 1px solid #e0e0e0; border-radius: 6px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="position: sticky; top: 0; z-index: 1;">순위</th>
+                            <th style="position: sticky; top: 0; z-index: 1;">이름</th>
+                            <th style="position: sticky; top: 0; z-index: 1;">서버</th>
+                            <th style="position: sticky; top: 0; z-index: 1;">참석</th>
+                            <th style="position: sticky; top: 0; z-index: 1;">불참</th>
+                            <th style="position: sticky; top: 0; z-index: 1;">지각</th>
+                            <th style="position: sticky; top: 0; z-index: 1;">참여율</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stats-tbody"></tbody>
+                </table>
+            </div>
+            <div id="stats-count-info" style="margin-top: 10px; color: #7f8c8d; font-size: 0.9rem; text-align: right;"></div>
+        </div>
+        
+        <div class="card">
+            <button class="btn btn-success" onclick="exportToGoogleSheets()">📊 구글 시트로 내보내기</button>
+            <button class="btn btn-primary" onclick="exportToCSV()" style="margin-left: 10px;">📥 CSV로 내보내기</button>
+        </div>
+    </div>
+    
+    <!-- Tab 3: 보스 관리 -->
+    <!-- Tab 2: 주간출석현황 -->
+    <div id="tab-schedules" class="tab-content">
+        <div class="card">
+            <h2>📅 주간 보스 스케줄</h2>
+            <p style="color: #7f8c8d; margin-bottom: 20px;">
+                요일별 보스 일정을 확인합니다.
+            </p>
+            <div id="weekly-schedules-calendar"></div>
+        </div>
+    </div>
+    
+    <!-- Tab 4: 명단 관리 -->
+    <div id="tab-users" class="tab-content">
+        <div class="card">
+            <h2>👥 길드원 명단 관리</h2>
+            <p style="color: #7f8c8d; margin-bottom: 20px;">
+                길드원을 추가하거나 서버 정보를 수정할 수 있습니다.
+            </p>
+            
+            <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
+                <input type="text" id="user-search" placeholder="🔍 이름 검색..." onkeyup="filterUserList()" style="flex: 1; min-width: 200px; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
+                <select id="user-server-filter" onchange="filterUserList()" style="flex: 0 0 150px; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
+                    <option value="all">전체 서버</option>
+                    <option value="jingir">진기르</option>
+                    <option value="pandora">판도라</option>
+                    <option value="support">지원</option>
+                </select>
+                <button class="btn btn-success" onclick="showAddUserModal()" style="flex: 0 0 auto; padding: 10px; font-size: 1rem; white-space: nowrap;">
+                    ➕ 사용자 추가
+                </button>
+            </div>
+            
+            <p style="color: #7f8c8d; font-size: 0.9rem; margin-bottom: 10px;">
+                표시: <strong id="filtered-user-count">0</strong>명 / 전체: <strong id="total-user-count">0</strong>명
+            </p>
+            
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th width="8%">ID</th>
+                            <th width="20%">이름</th>
+                            <th width="15%">서버</th>
+                            <th width="20%">성물</th>
+                            <th width="12%">상태</th>
+                            <th>관리</th>
+                        </tr>
+                    </thead>
+                    <tbody id="user-list-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- 보스 아이템 설정 -->
+        <div class="card">
+            <h2>📦 보스 아이템 설정</h2>
+            <p style="color: #7f8c8d; margin-bottom: 20px;">
+                각 보스별로 드랍되는 아이템을 관리합니다. 출석 체크 시 선택할 수 있습니다.
+            </p>
+            
+            <div style="margin-bottom: 15px;">
+                <label style="color: #2c3e50; font-weight: bold; margin-bottom: 8px; display: block;">보스 선택:</label>
+                <select id="admin-boss-selector" onchange="loadAdminBossItems()" style="width: 100%; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
+                    <option value="">보스를 선택하세요</option>
+                </select>
+            </div>
+            
+            <div id="admin-boss-items-container" style="display: none;">
+                <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+                    <input type="text" id="admin-new-item-name" placeholder="아이템 이름 입력..." style="flex: 1; min-width: 200px; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
+                    <button class="btn btn-success" onclick="addAdminBossItem()" style="padding: 10px 20px; font-size: 1rem;">➕ 아이템 추가</button>
+                </div>
+                <div id="admin-boss-items-list" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; padding: 15px; background: #f8f9fa; border-radius: 6px;"></div>
+            </div>
+        </div>
+        
+        <!-- 보스 스케줄 관리 -->
+        <div class="card">
+            <h2>⚙️ 보스 스케줄 관리</h2>
+            <p style="color: #7f8c8d; margin-bottom: 20px;">
+                보스의 요일과 시간을 설정합니다.
+            </p>
+            <button class="btn btn-primary" onclick="showAddScheduleModal()" style="padding: 10px 20px; font-size: 1rem;">+ 새 스케줄 추가</button>
+            <div id="schedules-list" style="margin-top:20px;"></div>
+        </div>
+        
+        <!-- 데이터 관리 -->
+        <div class="card">
+            <h2>🗑️ 데이터 관리</h2>
+            <p style="color: #7f8c8d; margin-bottom: 20px;">
+                오래된 출석 데이터를 삭제하거나 관리합니다.
+            </p>
+            
+            <div style="display: flex; flex-direction: column; gap: 15px;">
+                <div style="padding: 15px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+                    <div style="font-weight: bold; color: #856404; margin-bottom: 8px;">⚠️ 7일 이전 데이터 삭제</div>
+                    <div style="color: #856404; font-size: 0.9rem; margin-bottom: 10px;">
+                        7일보다 오래된 출석 데이터를 삭제합니다. 이 작업은 되돌릴 수 없습니다.
+                    </div>
+                    <button class="btn btn-danger" onclick="deleteOldData(7)" style="padding: 8px 16px; font-size: 0.9rem;">
+                        🗑️ 7일 이전 데이터 삭제
+                    </button>
+                </div>
+                
+                <div style="padding: 15px; background: #fadbd8; border-left: 4px solid #e74c3c; border-radius: 4px;">
+                    <div style="font-weight: bold; color: #c0392b; margin-bottom: 8px;">⚠️ 특정 날짜 데이터 삭제</div>
+                    <div style="color: #c0392b; font-size: 0.9rem; margin-bottom: 10px;">
+                        테스트 데이터나 특정 날짜의 출석 데이터를 삭제합니다.
+                    </div>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <input type="date" id="delete-date-input" style="flex: 1; min-width: 200px; padding: 8px; font-size: 0.9rem; border: 2px solid #e0e0e0; border-radius: 4px;">
+                        <button class="btn btn-danger" onclick="deleteDataByDate()" style="padding: 8px 16px; font-size: 0.9rem;">
+                            🗑️ 선택한 날짜 삭제
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
-const userStatsArray = Object.values(stats.userStats);
+<!-- 스케줄 추가/수정 모달 -->
+<div id="modal-schedule" class="modal">
+    <div class="modal-content">
+        <h2 id="modal-title">새 보스 스케줄</h2>
+        <input type="hidden" id="schedule-id">
+        <label>스케줄 이름:</label>
+        <input type="text" id="schedule-name" placeholder="예: 월요일 저녁 보스">
+        <label>요일:</label>
+        <select id="schedule-day">
+            <option value="0">일요일</option>
+            <option value="1">월요일</option>
+            <option value="2">화요일</option>
+            <option value="3">수요일</option>
+            <option value="4">목요일</option>
+            <option value="5">금요일</option>
+            <option value="6">토요일</option>
+        </select>
+        <label>시간:</label>
+        <input type="time" id="schedule-time">
+        <label>설명 (선택):</label>
+        <input type="text" id="schedule-desc" placeholder="예: 발루나">
+        <div style="display:flex; gap:10px; margin-top:20px;">
+            <button class="btn btn-primary" onclick="saveSchedule()" style="flex:1;">저장</button>
+            <button class="btn btn-danger" onclick="closeModal()" style="flex:1;">취소</button>
+        </div>
+    </div>
+</div>
 
+<!-- 사용자 추가 모달 -->
+<div id="add-user-modal" class="modal">
+    <div class="modal-content" style="max-width: 400px;">
+        <h2 style="margin-bottom: 20px;">➕ 사용자 추가</h2>
+        <p style="color: #7f8c8d; margin-bottom: 15px; line-height: 1.6;">
+            새로운 길드원을 출석 체크 리스트에 추가합니다.
+        </p>
+        
+        <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: bold; color: #2c3e50;">이름</label>
+            <input type="text" id="new-user-name" placeholder="예: 헌터야해" style="width: 100%; padding: 12px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: bold; color: #2c3e50;">서버</label>
+            <select id="new-user-server" style="width: 100%; padding: 12px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
+                <option value="">선택하세요...</option>
+                <option value="jingir">진기르</option>
+                <option value="pandora">판도라</option>
+                <option value="support">지원</option>
+            </select>
+        </div>
+        
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-success" onclick="addNewUser()" style="flex: 1;">추가</button>
+            <button class="btn btn-danger" onclick="closeAddUserModal()" style="flex: 1;">취소</button>
+        </div>
+    </div>
+</div>
+
+<!-- 사용자 수정 모달 -->
+<div id="edit-user-modal" class="modal">
+    <div class="modal-content" style="max-width: 400px;">
+        <h2 style="margin-bottom: 20px;">✏️ 사용자 정보 수정</h2>
+        <p style="color: #7f8c8d; margin-bottom: 15px; line-height: 1.6;">
+            사용자의 서버 정보를 변경합니다.
+        </p>
+        
+        <input type="hidden" id="edit-user-id">
+        
+        <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: bold; color: #2c3e50;">이름</label>
+            <input type="text" id="edit-user-name" readonly style="width: 100%; padding: 12px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px; background: #f5f5f5; color: #7f8c8d;">
+            <p style="color: #95a5a6; font-size: 0.85rem; margin-top: 5px;">* 이름은 변경할 수 없습니다</p>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: bold; color: #2c3e50;">서버</label>
+            <select id="edit-user-server" style="width: 100%; padding: 12px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
+                <option value="">선택하세요...</option>
+                <option value="jingir">진기르</option>
+                <option value="pandora">판도라</option>
+                <option value="support">지원</option>
+            </select>
+        </div>
+        
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-success" onclick="updateUser()" style="flex: 1;">저장</button>
+            <button class="btn btn-danger" onclick="closeEditUserModal()" style="flex: 1;">취소</button>
+        </div>
+    </div>
+</div>
+
+<!-- 성물 관리 모달 -->
+<div id="relic-modal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <h2 style="margin-bottom: 20px;">📖 <span id="relic-user-name"></span> 님의 성물 관리</h2>
+        <p style="color: #7f8c8d; margin-bottom: 15px; line-height: 1.6;">
+            <strong>보유한 성물</strong>을 체크하세요. 없는 성물이 출석 체크 화면에 표시됩니다.
+        </p>
+        
+        <input type="hidden" id="relic-user-id">
+        
+        <div style="margin-bottom: 20px;">
+            <h3 style="color: #2c3e50; margin-bottom: 10px; font-size: 1rem;">🏰 오만의 탑 (1~10층)</h3>
+            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px;">
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman1" value="oman1" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>1층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman2" value="oman2" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>2층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman3" value="oman3" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>3층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman4" value="oman4" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>4층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman5" value="oman5" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>5층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman6" value="oman6" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>6층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman7" value="oman7" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>7층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman8" value="oman8" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>8층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman9" value="oman9" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>9층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-oman10" value="oman10" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>10층</span>
+                </label>
+            </div>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <h3 style="color: #2c3e50; margin-bottom: 10px; font-size: 1rem;">⚔️ 에스카로스 (1~5층)</h3>
+            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px;">
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-esca1" value="esca1" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>1층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-esca2" value="esca2" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>2층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-esca3" value="esca3" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>3층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-esca4" value="esca4" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>4층</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="relic-esca5" value="esca5" style="margin-right: 5px; width: 18px; height: 18px;">
+                    <span>5층</span>
+                </label>
+            </div>
+        </div>
+        
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-success" onclick="saveRelics()" style="flex: 1;">저장</button>
+            <button class="btn btn-danger" onclick="closeRelicModal()" style="flex: 1;">취소</button>
+        </div>
+    </div>
+</div>
+
+<!-- 구글 시트 내보내기 모달 -->
+<div id="export-modal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <h2 style="margin-bottom: 20px;">📊 구글 시트로 내보내기</h2>
+        <p style="color: #7f8c8d; margin-bottom: 20px; line-height: 1.6;">
+            출석 데이터를 CSV 형식으로 내보냅니다. 구글 시트에서 가져오기하여 사용할 수 있습니다.
+        </p>
+        
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; color: #2c3e50; font-weight: bold; margin-bottom: 10px;">📅 기간 선택:</label>
+            <select id="export-date-range" style="width: 100%; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
+                <option value="7">최근 7일</option>
+                <option value="30">최근 30일</option>
+                <option value="90">최근 90일</option>
+                <option value="all">전체 기간</option>
+            </select>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; color: #2c3e50; font-weight: bold; margin-bottom: 10px;">📋 내보낼 시트:</label>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="export-attendance" checked style="margin-right: 8px; width: 18px; height: 18px;">
+                    <span>출석 현황 (메인)</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="export-personal" checked style="margin-right: 8px; width: 18px; height: 18px;">
+                    <span>개인별 통계</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="export-boss" checked style="margin-right: 8px; width: 18px; height: 18px;">
+                    <span>보스별 통계</span>
+                </label>
+            </div>
+        </div>
+        
+        <div id="export-progress" style="display: none; margin-bottom: 20px; padding: 15px; background: #e8f4f8; border-radius: 6px;">
+            <div style="color: #2c3e50; font-weight: bold; margin-bottom: 8px;">📥 내보내는 중...</div>
+            <div id="export-status" style="color: #5d6d7e; font-size: 0.9rem;">준비 중...</div>
+        </div>
+        
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-success" onclick="startExport()" style="flex: 1;">내보내기</button>
+            <button class="btn btn-danger" onclick="closeExportModal()" style="flex: 1;">취소</button>
+        </div>
+    </div>
+</div>
+
+<!-- 내 이름 설정 모달 (1~5번 슬롯) -->
+<div id="my-name-modal" class="modal">
+    <div class="modal-content" style="max-width: 480px;">
+        <h2 style="margin-bottom: 12px;">⭐ 내 이름 설정 (최대 5명)</h2>
+        <p style="color: #7f8c8d; margin-bottom: 18px; line-height: 1.6; font-size: 0.9rem;">
+            여러 캐릭터를 운영하는 경우 1~5번 슬롯에 등록하세요.<br>
+            등록된 이름은 출석 체크 리스트 최상단에 표시되며, 빠른 출석 기능을 사용할 수 있습니다.<br>
+            <span style="color: #c0392b; font-size: 0.85rem;">※ 출석은 보스 시간 기준 ±5분 내에만 가능 (정시 이전: 참석 / 정시 이후: 지각)</span>
+        </p>
+        <div id="my-name-slots" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px;">
+            <!-- 5개 슬롯이 JS로 채워짐 -->
+        </div>
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-primary" onclick="saveMyNames()" style="flex: 1;">저장</button>
+            <button class="btn btn-danger" onclick="closeMyNameModal()" style="flex: 1;">취소</button>
+        </div>
+    </div>
+</div>
+
+<!-- 보스 출석 현황 모달 -->
+<div id="boss-attendance-modal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <h2 id="boss-modal-title" style="margin-bottom: 20px;">보스 출석 현황</h2>
+        <div id="boss-modal-content">
+            <div style="text-align: center; padding: 20px; color: #95a5a6;">
+                불러오는 중...
+            </div>
+        </div>
+        <button class="btn btn-primary" onclick="closeBossModal()" style="width: 100%; margin-top: 20px;">닫기</button>
+    </div>
+</div>
+
+<!-- 개인별 보스 달력 모달 -->
+<div id="user-boss-calendar-modal" class="modal">
+    <div class="modal-content" style="max-width: 800px;">
+        <h2 id="user-calendar-title" style="margin-bottom: 20px;">개인별 보스 출석 현황</h2>
+        <div id="user-calendar-content">
+            <div style="text-align: center; padding: 20px; color: #95a5a6;">
+                불러오는 중...
+            </div>
+        </div>
+        <button class="btn btn-primary" onclick="closeUserCalendarModal()" style="width: 100%; margin-top: 20px;">닫기</button>
+    </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-database-compat.js"></script>
+
+<script>
+// Firebase 초기화
+const firebaseConfig = {
+    apiKey: "AIzaSyBJ9CRer5FEjA1_yZ5g1jBypaX_3Cpqqyo",
+    authDomain: "hunterquest-fbdee.firebaseapp.com",
+    databaseURL: "https://hunterquest-fbdee-default-rtdb.firebaseio.com",
+    projectId: "hunterquest-fbdee",
+    storageBucket: "hunterquest-fbdee.firebasestorage.app",
+    messagingSenderId: "999017602063",
+    appId: "1:999017602063:web:711b798bb7405ddbfe577a",
+    measurementId: "G-13WEG56NZR"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const auth = firebase.auth();  // 인증 시스템 추가
+
+// 전역 변수
+let users = [];
+let schedules = [];
+let todayAttendance = null;
+let currentScheduleId = null;
+let currentScheduleDate = null; // 수동 선택된 과거 보스의 날짜 (null이면 오늘)
+let currentAttendeesListener = null; // 현재 출석 인원 리스너
+let servers = JSON.parse(localStorage.getItem('servers') || '{"jingir":"진기르","pandora":"판도라","support":"지원"}');
+
+// 초기화
+window.onload = function() {
+    // 로그인 상태 확인
+    checkAuthState();
+};
+
+// ===========================================
+// 🔐 로그인 시스템
+// ===========================================
+
+// 관리자 이메일 목록 (Firebase에서 가져옴)
+let adminEmails = [];
+let isAdminUser = false;
+
+// 로그인 상태 확인
+function checkAuthState() {
+    auth.onAuthStateChanged(async (user) => {
+        if (user) {
+            // 로그인됨
+            console.log('✅ 로그인됨:', user.email);
+            
+            // 관리자 이메일 목록 가져오기
+            const snapshot = await db.ref('admin_emails').once('value');
+            const adminEmailsData = snapshot.val() || {};
+            adminEmails = Object.keys(adminEmailsData).map(email => email.replace(',', '.'));
+            
+            // 관리자 여부 확인
+            isAdminUser = adminEmails.includes(user.email);
+            
+            if (isAdminUser) {
+                console.log('🔑 관리자 로그인 성공');
+                showAdminMode(user.email);
+            } else {
+                console.log('👤 일반 사용자 로그인');
+                showGuestMode();
+            }
+            
+            // 데이터 로드
+            loadUsers();
+            loadSchedules();
+            
+            // 1분마다 시간 기반 UI 자동 갱신
+            setInterval(refreshTimeBasedUI, 60000);
+            
+        } else {
+            // 로그아웃 상태 → 로그인 모달 표시
+            console.log('❌ 로그아웃 상태');
+            showLoginModal();
+        }
+    });
+}
+
+// 로그인 모달 표시
+function showLoginModal() {
+    const modal = document.getElementById('login-modal');
+    modal.style.display = 'flex';
+    document.getElementById('login-error').style.display = 'none';
+}
+
+// 로그인 모달 숨김
+function hideLoginModal() {
+    const modal = document.getElementById('login-modal');
+    modal.style.display = 'none';
+}
+
+// 관리자 로그인
+async function adminLogin() {
+    const email = document.getElementById('admin-email').value.trim();
+    const password = document.getElementById('admin-password').value;
+    const errorDiv = document.getElementById('login-error');
+    const loadingDiv = document.getElementById('login-loading');
+    
+    // 유효성 검사
+    if (!email || !password) {
+        errorDiv.textContent = '⚠️ 이메일과 비밀번호를 입력하세요.';
+        errorDiv.style.display = 'block';
+        return;
+    }
+    
+    // 로딩 표시
+    errorDiv.style.display = 'none';
+    loadingDiv.style.display = 'block';
+    
+    try {
+        // Firebase 로그인
+        const userCredential = await auth.signInWithEmailAndPassword(email, password);
+        const user = userCredential.user;
+        
+        console.log('✅ 로그인 성공:', user.email);
+        
+        // 모달은 checkAuthState에서 자동으로 닫힘
+        
+    } catch (error) {
+        loadingDiv.style.display = 'none';
+        
+        let errorMessage = '❌ 로그인 실패';
+        
+        switch (error.code) {
+            case 'auth/invalid-email':
+                errorMessage = '⚠️ 잘못된 이메일 형식입니다.';
+                break;
+            case 'auth/user-not-found':
+                errorMessage = '⚠️ 등록되지 않은 이메일입니다.';
+                break;
+            case 'auth/wrong-password':
+                errorMessage = '⚠️ 비밀번호가 틀렸습니다.';
+                break;
+            case 'auth/too-many-requests':
+                errorMessage = '⚠️ 너무 많은 시도. 잠시 후 다시 시도하세요.';
+                break;
+            default:
+                errorMessage = '❌ 로그인 실패: ' + error.message;
+        }
+        
+        errorDiv.textContent = errorMessage;
+        errorDiv.style.display = 'block';
+    }
+}
+
+// 일반 사용자 모드
+function guestMode() {
+    console.log('👤 일반 사용자 모드로 진입');
+    
+    // 익명 로그인
+    auth.signInAnonymously()
+        .then(() => {
+            console.log('✅ 익명 로그인 성공');
+        })
+        .catch((error) => {
+            console.error('❌ 익명 로그인 실패:', error);
+            alert('⚠️ 연결 실패. 새로고침 후 다시 시도해주세요.');
+        });
+}
+
+// 관리자 모드 UI
+function showAdminMode(email) {
+    hideLoginModal();
+    
+    // 관리자 배지 표시
+    const badge = document.getElementById('admin-badge');
+    const emailDisplay = document.getElementById('admin-email-display');
+    emailDisplay.textContent = `🔑 ${email}`;
+    badge.style.display = 'block';
+    
+    // 관리자 전용 기능 표시
+    document.querySelectorAll('.admin-only').forEach(el => {
+        el.style.display = 'block';
+    });
+    
+    console.log('🎉 관리자 모드 활성화');
+}
+
+// 일반 사용자 모드 UI
+function showGuestMode() {
+    hideLoginModal();
+    
+    // 관리자 전용 기능 숨김
+    document.querySelectorAll('.admin-only').forEach(el => {
+        el.style.display = 'none';
+    });
+    
+    // 안내 메시지
+    const notice = document.createElement('div');
+    notice.style.cssText = `
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: #3498db;
+        color: white;
+        padding: 8px 15px;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        z-index: 9999;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    `;
+    notice.textContent = '👤 조회 전용 모드';
+    document.body.appendChild(notice);
+    
+    console.log('👀 일반 사용자 모드 활성화');
+}
+
+// 로그아웃
+function adminLogout() {
+    if (confirm('로그아웃 하시겠습니까?')) {
+        auth.signOut()
+            .then(() => {
+                console.log('✅ 로그아웃 성공');
+                location.reload();
+            })
+            .catch((error) => {
+                console.error('❌ 로그아웃 실패:', error);
+            });
+    }
+}
+
+// Enter 키로 로그인
+document.addEventListener('DOMContentLoaded', function() {
+    const passwordInput = document.getElementById('admin-password');
+    if (passwordInput) {
+        passwordInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                adminLogin();
+            }
+        });
+    }
+});
+
+// ===========================================
+// 기존 코드 계속...
+// ===========================================
+
+// 시간 기반 UI 갱신 (보스 윈도우 변화 추적)
+function refreshTimeBasedUI() {
+    // 수동 선택 모드면 아무것도 안 함 (관리자가 과거 데이터 수정 중)
+    if (currentScheduleDate) return;
+    
+    const newCurrent = getCurrentBoss();
+    const oldId = currentScheduleId;
+    
+    if (newCurrent && newCurrent.id !== oldId) {
+        // 새 보스로 전환
+        currentScheduleId = newCurrent.id;
+        renderTodaySchedules();
+        loadTodayAttendance();
+        loadBossItems(newCurrent.id);
+        loadDrops(newCurrent.id);
+        console.log('⏰ 시간 변화 → 보스 전환:', newCurrent.name);
+    } else if (!newCurrent && oldId) {
+        // 출석 가능 윈도우 종료
+        currentScheduleId = null;
+        renderTodaySchedules();
+        renderAttendanceTable();
+        const itemSection = document.getElementById('item-drop-section');
+        if (itemSection) itemSection.style.display = 'none';
+        console.log('⏰ 출석 윈도우 종료');
+    } else {
+        // 보스는 그대로지만 시간이 흘러서 정시 전후가 바뀔 수 있음 → 테이블 재렌더링
+        renderAttendanceTable();
+        renderTodaySchedules();
+    }
+}
+
+
+// 보스 선택 드롭다운 채우기
+function populateBossSelector() {
+    const selector = document.getElementById('boss-selector');
+    if (!selector) return;
+    
+    const now = new Date();
+    const days = ['일', '월', '화', '수', '목', '금', '토'];
+    
+    // 현재 옵션
+    selector.innerHTML = '<option value="current">⭐ 현재 진행 중인 보스 (자동)</option>';
+    
+    // 오늘부터 7일 전까지
+    for (let i = 0; i < 7; i++) {
+        const date = new Date(now);
+        date.setDate(date.getDate() - i);
+        
+        const dateStr = formatLocalDate(date); // YYYY-MM-DD
+        const dayOfWeek = date.getDay();
+        const dayLabel = i === 0 ? '오늘' : i === 1 ? '어제' : `${i}일 전`;
+        
+        // 해당 요일의 보스들
+        const daySchedules = schedules.filter(s => s.dayOfWeek === dayOfWeek);
+        
+        if (daySchedules.length > 0) {
+            if (i === 0) {
+                selector.innerHTML += '<option disabled>━━━━━━━━━━━━━━━━</option>';
+            }
+            
+            daySchedules.forEach(boss => {
+                const value = `${dateStr}_${boss.id}`;
+                const label = `${dayLabel} ${boss.time} ${boss.name}`;
+                selector.innerHTML += `<option value="${value}">${label}</option>`;
+            });
+            
+            if (i === 0) {
+                selector.innerHTML += '<option disabled>━━━━━━━━━━━━━━━━</option>';
+            }
+        }
+    }
+}
+
+// 보스 변경
+function changeBoss() {
+    const selector = document.getElementById('boss-selector');
+    const value = selector.value;
+    
+    if (value === 'current') {
+        // 현재 보스로 복귀 (날짜는 오늘)
+        currentScheduleDate = null;
+        const current = getCurrentBoss();
+        if (current) {
+            currentScheduleId = current.id;
+            renderTodaySchedules();
+            renderAttendanceTable();
+            loadBossItems(current.id);
+            loadDrops(current.id);
+            console.log('✅ 현재 보스로 전환:', current.name);
+        } else {
+            currentScheduleId = null;
+            renderTodaySchedules();
+            renderAttendanceTable();
+            document.getElementById('item-drop-section').style.display = 'none';
+            console.log('⚠️ 현재 진행 중인 보스가 없습니다.');
+        }
+    } else {
+        // 수동 선택
+        // value 형식: "2026-05-08_fri_1a25_oman2"
+        // 첫 번째 _만 분리 (날짜와 bossId)
+        const firstUnderscoreIndex = value.indexOf('_');
+        const dateStr = value.substring(0, firstUnderscoreIndex);
+        const bossId = value.substring(firstUnderscoreIndex + 1);
+        
+        console.log('🔍 수동 선택:', { value, dateStr, bossId });
+        
+        const boss = schedules.find(s => s.id === bossId);
+        
+        if (boss) {
+            currentScheduleId = bossId;
+            currentScheduleDate = dateStr; // 과거 날짜 추적
+            
+            // 선택된 보스 정보 표시
+            document.getElementById('today-schedules').innerHTML = `
+                <div style="background: #e8f4f8; padding: 15px; border-radius: 8px; border-left: 4px solid #5D6D7E;">
+                    <div style="color: #2c3e50; font-weight: bold; font-size: 1.1rem; margin-bottom: 8px;">
+                        📌 수동 선택된 보스
+                    </div>
+                    <div style="color: #5d6d7e; margin-bottom: 4px;">
+                        <strong>날짜:</strong> ${dateStr}
+                    </div>
+                    <div style="color: #5d6d7e; margin-bottom: 4px;">
+                        <strong>시간:</strong> ${boss.time}
+                    </div>
+                    <div style="color: #5d6d7e;">
+                        <strong>보스:</strong> ${boss.name}
+                    </div>
+                </div>
+            `;
+            
+            // 해당 날짜의 출석 데이터 로드
+            const attendanceKey = `${dateStr}_${bossId}`;
+            db.ref(`boss_attendance/${attendanceKey}`).once('value', (snapshot) => {
+                todayAttendance = snapshot.val() || { attendees: {} };
+                renderAttendanceTable();
+                loadBossItems(bossId);
+                loadDrops(bossId, dateStr);
+                console.log('✅ 보스 전환:', boss.name, dateStr);
+            });
+        }
+    }
+}
+
+// Tab 전환
+function switchTab(tab) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    event.target.classList.add('active');
+    document.getElementById(`tab-${tab}`).classList.add('active');
+    
+    if (tab === 'stats') loadStats();
+    if (tab === 'users') {
+        renderUserList();
+        populateAdminBossSelector();
+    }
+};
+
+// 사용자 로드
+function loadUsers() {
+    db.ref('boss_attendance_users').on('value', (snapshot) => {
+        const data = snapshot.val();
+        users = data ? Object.values(data).filter(u => u && u.id && u.name) : [];
+        renderAttendanceTable();
+        renderUserList(); // 명단 관리 탭 업데이트
+        
+        // 내 이름 빠른 출석 영역 갱신 (users 배열에 의존)
+        if (typeof updateMyNameDisplay === 'function') {
+            updateMyNameDisplay();
+        }
+        
+        // 사용자 로드 완료 후 URL 파라미터 체크
+        if (users.length > 0) {
+            checkUrlParams();
+        }
+    });
+};
+
+// 스케줄 로드
+function loadSchedules() {
+    db.ref('boss_schedules').on('value', (snapshot) => {
+        const data = snapshot.val();
+        schedules = data ? Object.values(data).filter(s => s && s.isActive) : [];
+        renderSchedules(); // 주간출석현황 탭 (달력)
+        renderSchedulesList(); // 관리페이지 탭 (리스트)
+        renderTodaySchedules();
+        loadTodayAttendance();
+        populateBossSelector(); // 스케줄 로드 완료 후 드롭다운 채우기
+    });
+};
+
+// 오늘 출석 로드
+function loadTodayAttendance() {
+    const currentBoss = getCurrentBoss();
+    if (currentBoss) {
+        const today = formatLocalDate(new Date());
+        const attendanceKey = `${today}_${currentBoss.id}`;
+        db.ref(`boss_attendance/${attendanceKey}`).on('value', (snapshot) => {
+            todayAttendance = snapshot.val();
+            currentScheduleId = currentBoss.id;
+            renderAttendanceTable();
+        });
+    } else {
+        todayAttendance = null;
+        currentScheduleId = null;
+        renderAttendanceTable();
+    }
+};
+
+// 오늘 날짜 가져오기
+function getToday() {
+    const days = ['일', '월', '화', '수', '목', '금', '토'];
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${days[now.getDay()]}요일`;
+};
+
+// 로컬(한국) 시간 기준 YYYY-MM-DD 문자열 생성 (toISOString 타임존 버그 회피)
+function formatLocalDate(date) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
+// 출석 상태 정규화 (문자열/객체 형식 모두 처리)
+function normalizeStatus(data) {
+    if (data === null || data === undefined) return null;
+    if (typeof data === 'string') return data;
+    if (typeof data === 'object') return data.status || null;
+    return null;
+};
+
+// 보스의 출석 가능 시간 상태 판정
+// 반환: { allowed, status, message }
+//   allowed: 지금 출석 체크가 가능한지
+//   status: 'present' (정시 이전 5분 내) | 'late' (정시 이후 5분 내) | null
+//   message: 사용자 안내 문구
+function getAttendanceTimeStatus(bossTimeStr) {
+    if (!bossTimeStr || typeof bossTimeStr !== 'string') {
+        return { allowed: false, status: null, message: '보스 시간 정보 없음' };
+    }
+    const parts = bossTimeStr.split(':');
+    if (parts.length !== 2) {
+        return { allowed: false, status: null, message: '시간 형식 오류' };
+    }
+    const h = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (isNaN(h) || isNaN(m)) {
+        return { allowed: false, status: null, message: '시간 형식 오류' };
+    }
+    
+    const now = new Date();
+    const bossTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+    const diffMs = now.getTime() - bossTime.getTime(); // 양수: 보스 시간 지남
+    const diffMin = diffMs / 60000;
+    
+    // 5분 전보다 이전: 출석 불가
+    if (diffMin < -5) {
+        const remain = Math.ceil(-diffMin - 5);
+        return { allowed: false, status: null, message: `출석 시작까지 ${remain}분 남음 (${bossTimeStr} 5분 전부터 가능)` };
+    }
+    
+    // 5분 이후: 출석 종료
+    if (diffMin > 5) {
+        const past = Math.floor(diffMin - 5);
+        return { allowed: false, status: null, message: `출석 종료됨 (${bossTimeStr} 기준 ${past}분 전 종료)` };
+    }
+    
+    // -5 ~ +5분 구간: 출석 가능
+    if (diffMin <= 0) {
+        // 5분 전 ~ 정시: 참석
+        return { allowed: true, status: 'present', message: '⭕ 참석 처리됩니다' };
+    } else {
+        // 정시 이후 ~ 5분 후: 지각
+        return { allowed: true, status: 'late', message: '🕐 지각 처리됩니다 (보스 시간 지남)' };
+    }
+};
+
+// 현재 시간대에 맞는 보스 찾기 (±5분 윈도우)
+function getCurrentBoss() {
+    // 실제 시간 기반 보스 선택
+    const now = new Date();
+    const today = now.getDay();
+    const currentTime = now.getHours() * 60 + now.getMinutes();
+    
+    const todaySchedules = schedules.filter(s => s.dayOfWeek === today);
+    
+    let closestBoss = null;
+    let minDiff = Infinity;
+    
+    todaySchedules.forEach(s => {
+        const [hours, minutes] = s.time.split(':').map(Number);
+        const scheduleTime = hours * 60 + minutes;
+        const diff = scheduleTime - currentTime; // 양수: 아직 시간 안됨, 음수: 시간 지남
+        
+        // 5분 전부터 5분 후까지 (-5 ~ +5분 윈도우)
+        if (diff >= -5 && diff <= 5 && Math.abs(diff) < minDiff) {
+            minDiff = Math.abs(diff);
+            closestBoss = s;
+        }
+    });
+    
+    return closestBoss;
+};
+
+// 오늘 스케줄 렌더링
+async function renderTodaySchedules() {
+    const container = document.getElementById('today-schedules');
+    const currentBoss = getCurrentBoss();
+    
+    if (!currentBoss) {
+        container.innerHTML = `
+            <div style="padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #95a5a6;">
+                <p style="color:#7f8c8d; margin: 0;">⏰ 현재 출석 가능한 보스가 없습니다.</p>
+                <p style="color:#95a5a6; margin: 6px 0 0 0; font-size: 0.85rem;">출석은 보스 시간 5분전 부터 가능하며 보스 젠 후에 5분뒤 종료 됩니다.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    const timeStatus = getAttendanceTimeStatus(currentBoss.time);
+    
+    let statusBadge;
+    if (timeStatus.status === 'present') {
+        statusBadge = '<span style="display: inline-block; padding: 4px 10px; background: #d5f4e6; color: #16a085; border-radius: 4px; font-size: 0.85rem; font-weight: bold;">⭕ 참석 처리 시간대</span>';
+    } else if (timeStatus.status === 'late') {
+        statusBadge = '<span style="display: inline-block; padding: 4px 10px; background: #fdebd0; color: #d68910; border-radius: 4px; font-size: 0.85rem; font-weight: bold;">🕐 지각 처리 시간대</span>';
+    } else {
+        statusBadge = `<span style="display: inline-block; padding: 4px 10px; background: #f8f9fa; color: #95a5a6; border-radius: 4px; font-size: 0.85rem;">${timeStatus.message}</span>`;
+    }
+    
+    container.innerHTML = `
+        <div class="schedule-card" style="border-left-color: #27ae60;">
+            <h3>🕐 ${currentBoss.time} ${currentBoss.name}</h3>
+            <p style="margin: 8px 0 0 0;">${statusBadge}</p>
+            <p class="schedule-info" style="margin-top: 8px;">${currentBoss.description || ''}</p>
+        </div>
+    `;
+    
+    // 내 이름 등록된 경우 → 출석 가능 시 빠른 출석 버튼 표시
+    if (timeStatus.allowed) {
+        const myNames = getMyNames();
+        const validNames = myNames.filter(name => users.find(u => u.name === name));
+        if (validNames.length > 0) {
+            const btnHtml = validNames.map(name => {
+                const safeName = name.replace(/'/g, "\\'");
+                return `<button class="quick-attend-btn" onclick="quickAttendanceByName('${safeName}')">⭕ ${name} 출석</button>`;
+            }).join('');
+            container.innerHTML += `
+                <div class="quick-attend-banner">
+                    <div class="banner-label">📌 나의 빠른 출석</div>
+                    <div class="banner-btns">${btnHtml}</div>
+                </div>
+            `;
+        }
+    }
+    
+    // 성물 필요 인원 표시
+    await showRelicAlert(currentBoss);
+    
+    // 현재 보스 출석 인원 표시
+    showCurrentAttendees(currentBoss);
+    
+    // 출석 종료 시 자동 불참 처리
+    autoMarkAbsent(currentBoss);
+};
+
+// 출석 종료 시 자동 불참 처리
+function autoMarkAbsent(boss) {
+    if (!boss) return;
+    
+    const timeStatus = getAttendanceTimeStatus(boss.time);
+    
+    // 출석 시간이 아직 종료되지 않았으면 리턴
+    if (timeStatus.allowed) return;
+    
+    // 출석 시간이 종료되었는지 확인 (5분 이후)
+    const now = new Date();
+    const [h, m] = boss.time.split(':').map(Number);
+    const bossTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+    const diffMin = (now.getTime() - bossTime.getTime()) / 60000;
+    
+    // 5분 이후부터 자동 불참 처리
+    if (diffMin <= 5) return;
+    
+    const today = formatLocalDate(now);
+    const attendanceKey = `${today}_${boss.id}`;
+    
+    db.ref(`boss_attendance/${attendanceKey}`).once('value', (snapshot) => {
+        const attendanceData = snapshot.val() || { attendees: {} };
+        const attendees = attendanceData.attendees || {};
+        
+        let updated = false;
+        
+        // 모든 사용자 확인
+        users.forEach(user => {
+            const status = normalizeStatus(attendees[user.id]);
+            
+            // 출석/지각이 아닌 경우 불참으로 처리
+            if (status !== 'present' && status !== 'late') {
+                attendees[user.id] = 'absent';
+                updated = true;
+            }
+        });
+        
+        // 업데이트가 있으면 Firebase에 저장
+        if (updated) {
+            db.ref(`boss_attendance/${attendanceKey}/attendees`).set(attendees);
+            console.log('✅ 자동 불참 처리 완료:', attendanceKey);
+        }
+    });
+}
+
+// 현재 보스 출석 인원 표시
+function showCurrentAttendees(boss) {
+    // 이전 리스너 정리
+    if (currentAttendeesListener) {
+        currentAttendeesListener.off();
+        currentAttendeesListener = null;
+    }
+    
+    if (!boss) {
+        const section = document.getElementById('current-attendees-section');
+        if (section) section.style.display = 'none';
+        return;
+    }
+    
+    const today = new Date().toISOString().split('T')[0];
+    const attendanceKey = `${today}_${boss.id}`;
+    
+    // 새 리스너 등록
+    currentAttendeesListener = db.ref(`boss_attendance/${attendanceKey}`);
+    currentAttendeesListener.on('value', (snapshot) => {
+        const attendanceData = snapshot.val();
+        
+        // 출석 인원 섹션 DOM
+        let section = document.getElementById('current-attendees-section');
+        if (!section) {
+            // 섹션이 없으면 생성
+            const relicSection = document.getElementById('relic-alert-section');
+            section = document.createElement('div');
+            section.id = 'current-attendees-section';
+            section.className = 'card';
+            section.style.display = 'none';
+            
+            // relic-alert-section 다음에 삽입
+            if (relicSection && relicSection.nextSibling) {
+                relicSection.parentNode.insertBefore(section, relicSection.nextSibling);
+            } else if (relicSection) {
+                relicSection.parentNode.appendChild(section);
+            }
+        }
+        
+        if (!attendanceData || !attendanceData.attendees) {
+            section.style.display = 'none';
+            return;
+        }
+        
+        // 출석 데이터 분류
+        const present = [];
+        const late = [];
+        const absent = [];
+        
+        Object.entries(attendanceData.attendees).forEach(([userId, data]) => {
+            const user = users.find(u => u.id === parseInt(userId));
+            if (user) {
+                const status = normalizeStatus(data);
+                const userInfo = {
+                    name: user.name,
+                    server: user.server
+                };
+                
+                if (status === 'present') {
+                    present.push(userInfo);
+                } else if (status === 'late') {
+                    late.push(userInfo);
+                } else if (status === 'absent') {
+                    absent.push(userInfo);
+                }
+            }
+        });
+        
+        const total = present.length + late.length + absent.length;
+        
+        if (total === 0) {
+            section.style.display = 'none';
+            return;
+        }
+        
+        // 서버별로 그룹화
+        const serverGroups = {
+            'jingir': { present: [], late: [], absent: [] },
+            'pandora': { present: [], late: [], absent: [] },
+            'support': { present: [], late: [], absent: [] }
+        };
+        
+        present.forEach(user => {
+            serverGroups[user.server].present.push(user.name);
+        });
+        
+        late.forEach(user => {
+            serverGroups[user.server].late.push(user.name);
+        });
+        
+        absent.forEach(user => {
+            serverGroups[user.server].absent.push(user.name);
+        });
+        
+        // HTML 생성
+        let html = `
+            <h2>✅ 출석 체크 완료 <span style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">(총 ${total}명)</span></h2>
+            <div style="margin-top: 15px;">
+        `;
+        
+        // 참석자
+        if (present.length > 0) {
+            html += `
+                <div style="margin-bottom: 20px;">
+                    <div style="font-weight: bold; color: #16a085; margin-bottom: 10px; font-size: 1rem;">
+                        ⭕ 참석 (${present.length}명)
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+            `;
+            
+            ['jingir', 'pandora', 'support'].forEach(server => {
+                if (serverGroups[server].present.length > 0) {
+                    const serverName = servers[server] || server;
+                    html += `
+                        <div style="flex: 1; min-width: 200px; padding: 10px; background: #d5f4e6; border-radius: 6px;">
+                            <div style="color: #16a085; font-size: 0.85rem; font-weight: bold; margin-bottom: 6px;">
+                                ${serverName} (${serverGroups[server].present.length}명)
+                            </div>
+                            <div style="color: #138d75; font-size: 0.9rem;">
+                                ${serverGroups[server].present.join(', ')}
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+        
+        // 지각자
+        if (late.length > 0) {
+            html += `
+                <div style="margin-bottom: 10px;">
+                    <div style="font-weight: bold; color: #d68910; margin-bottom: 10px; font-size: 1rem;">
+                        🕐 지각 (${late.length}명)
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+            `;
+            
+            ['jingir', 'pandora', 'support'].forEach(server => {
+                if (serverGroups[server].late.length > 0) {
+                    const serverName = servers[server] || server;
+                    html += `
+                        <div style="flex: 1; min-width: 200px; padding: 10px; background: #fef5e7; border-radius: 6px;">
+                            <div style="color: #d68910; font-size: 0.85rem; font-weight: bold; margin-bottom: 6px;">
+                                ${serverName} (${serverGroups[server].late.length}명)
+                            </div>
+                            <div style="color: #b9770e; font-size: 0.9rem;">
+                                ${serverGroups[server].late.join(', ')}
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+        
+        // 불참자
+        if (absent.length > 0) {
+            html += `
+                <div style="margin-bottom: 10px;">
+                    <div style="font-weight: bold; color: #c0392b; margin-bottom: 10px; font-size: 1rem;">
+                        ❌ 불참 (${absent.length}명)
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+            `;
+            
+            ['jingir', 'pandora', 'support'].forEach(server => {
+                if (serverGroups[server].absent.length > 0) {
+                    const serverName = servers[server] || server;
+                    html += `
+                        <div style="flex: 1; min-width: 200px; padding: 10px; background: #fadbd8; border-radius: 6px;">
+                            <div style="color: #c0392b; font-size: 0.85rem; font-weight: bold; margin-bottom: 6px;">
+                                ${serverName} (${serverGroups[server].absent.length}명)
+                            </div>
+                            <div style="color: #a93226; font-size: 0.9rem;">
+                                ${serverGroups[server].absent.join(', ')}
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+        
+        html += `
+            </div>
+        `;
+        
+        section.innerHTML = html;
+        section.style.display = 'block';
+    });
+}
+
+// 성물 필요 인원 표시
+async function showRelicAlert(boss) {
+    const section = document.getElementById('relic-alert-section');
+    const listDiv = document.getElementById('relic-alert-list');
+    
+    if (!boss) {
+        section.style.display = 'none';
+        return;
+    }
+    
+    // 보스 이름에서 필요한 성물 추출
+    const bossName = boss.name;
+    const requiredRelics = [];
+    
+    // 오만 탑
+    if (bossName.includes('오만')) {
+        const matches = bossName.match(/(\d+)(?:\/(\d+))?층?/);
+        if (matches) {
+            requiredRelics.push('oman' + matches[1]);
+            if (matches[2]) {
+                requiredRelics.push('oman' + matches[2]);
+            }
+        }
+    }
+    
+    // 에스카 탑
+    if (bossName.includes('에스카')) {
+        const matches = bossName.match(/(\d+)(?:\/(\d+))?층?/);
+        if (matches) {
+            requiredRelics.push('esca' + matches[1]);
+            if (matches[2]) {
+                requiredRelics.push('esca' + matches[2]);
+            }
+        }
+    }
+    
+    if (requiredRelics.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+    
+    // 오늘 날짜의 출석 데이터 가져오기
+    const today = formatLocalDate(new Date());
+    const attendanceKey = `${today}_${boss.id}`;
+    
+    try {
+        const snapshot = await db.ref(`boss_attendance/${attendanceKey}`).once('value');
+        const attendanceData = snapshot.val();
+        
+        // 출석 데이터가 없으면 숨김
+        if (!attendanceData || !attendanceData.attendees) {
+            section.style.display = 'none';
+            return;
+        }
+        
+        // 출석한 사용자 ID 추출 (출석 + 지각만 포함)
+        const attendedUserIds = new Set();
+        Object.entries(attendanceData.attendees).forEach(([userId, data]) => {
+            const status = normalizeStatus(data);
+            if (status === 'present' || status === 'late') {
+                attendedUserIds.add(parseInt(userId));
+            }
+        });
+        
+        // 출석한 사용자가 없으면 숨김
+        if (attendedUserIds.size === 0) {
+            section.style.display = 'none';
+            return;
+        }
+        
+        // 출석한 사용자 중에서 성물이 없는 사람 찾기
+        const usersNeedingRelics = users.filter(user => {
+            // 출석하지 않은 사용자는 제외
+            if (!attendedUserIds.has(user.id)) {
+                return false;
+            }
+            
+            const missingRelics = user.missingRelics || [];
+            return requiredRelics.some(relic => missingRelics.includes(relic));
+        });
+        
+        if (usersNeedingRelics.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+        
+        // 성물별로 그룹화
+        const relicGroups = {};
+        requiredRelics.forEach(relic => {
+            const usersWithoutThis = usersNeedingRelics.filter(user => {
+                const missingRelics = user.missingRelics || [];
+                return missingRelics.includes(relic);
+            });
+            
+            if (usersWithoutThis.length > 0) {
+                const relicName = relic.startsWith('oman') 
+                    ? '오만 ' + relic.replace('oman', '') + '층'
+                    : '에스카 ' + relic.replace('esca', '') + '층';
+                relicGroups[relicName] = usersWithoutThis;
+            }
+        });
+        
+        // 표시
+        let html = '';
+        Object.keys(relicGroups).forEach(relicName => {
+            const userList = relicGroups[relicName];
+            const serverGroups = {
+                'jingir': [],
+                'pandora': [],
+                'support': []
+            };
+            
+            userList.forEach(user => {
+                serverGroups[user.server].push(user.name);
+            });
+            
+            html += `
+                <div style="margin-bottom: 15px; padding: 12px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+                    <div style="font-weight: bold; color: #856404; margin-bottom: 8px; font-size: 1.05rem;">
+                        📖 ${relicName} 필요 (${userList.length}명)
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+            `;
+            
+            if (serverGroups['jingir'].length > 0) {
+                html += `
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="color: #5d6d7e; font-size: 0.85rem; font-weight: bold; margin-bottom: 4px;">진기르 (${serverGroups['jingir'].length}명)</div>
+                        <div style="color: #856404; font-size: 0.9rem;">${serverGroups['jingir'].join(', ')}</div>
+                    </div>
+                `;
+            }
+            
+            if (serverGroups['pandora'].length > 0) {
+                html += `
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="color: #5d6d7e; font-size: 0.85rem; font-weight: bold; margin-bottom: 4px;">판도라 (${serverGroups['pandora'].length}명)</div>
+                        <div style="color: #856404; font-size: 0.9rem;">${serverGroups['pandora'].join(', ')}</div>
+                    </div>
+                `;
+            }
+            
+            if (serverGroups['support'].length > 0) {
+                html += `
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="color: #5d6d7e; font-size: 0.85rem; font-weight: bold; margin-bottom: 4px;">지원 (${serverGroups['support'].length}명)</div>
+                        <div style="color: #856404; font-size: 0.9rem;">${serverGroups['support'].join(', ')}</div>
+                    </div>
+                `;
+            }
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        });
+        
+        listDiv.innerHTML = html;
+        section.style.display = 'block';
+        
+    } catch (error) {
+        console.error('성물 알림 오류:', error);
+        section.style.display = 'none';
+    }
+}
+
+// 출석 테이블 렌더링
+function renderAttendanceTable() {
+    const tbody = document.getElementById('attendance-tbody');
+    const searchTerm = document.getElementById('search-user').value.toLowerCase();
+    const serverFilter = document.getElementById('server-filter') ? document.getElementById('server-filter').value : 'all';
+    
+    // 필터링
+    let filteredUsers = users.filter(u => {
+        // 검색 필터
+        const matchesSearch = u.name.toLowerCase().includes(searchTerm);
+        
+        // 서버 필터
+        let matchesServer = true;
+        if (serverFilter !== 'all') {
+            matchesServer = u.server === serverFilter;
+        }
+        
+        return matchesSearch && matchesServer;
+    });
+    
+    // 내 이름 목록 가져오기 (1~5개)
+    const myNames = (typeof getMyNames === 'function') ? getMyNames() : [];
+    const myNamesSet = new Set(myNames);
+    
+    // 내 이름들을 최상단에 표시하도록 정렬 (등록 순서 유지)
+    filteredUsers.sort((a, b) => {
+        const aIsMine = myNamesSet.has(a.name);
+        const bIsMine = myNamesSet.has(b.name);
+        if (aIsMine && !bIsMine) return -1;
+        if (!aIsMine && bIsMine) return 1;
+        if (aIsMine && bIsMine) {
+            // 둘 다 내 이름이면 등록 순서 유지
+            return myNames.indexOf(a.name) - myNames.indexOf(b.name);
+        }
+        // 나머지는 가나다 순
+        return a.name.localeCompare(b.name, 'ko');
+    });
+    
+    // 카운트 업데이트
+    if (document.getElementById('filtered-count')) {
+        document.getElementById('filtered-count').textContent = filteredUsers.length;
+    }
+    if (document.getElementById('total-count')) {
+        document.getElementById('total-count').textContent = users.length;
+    }
+    
+    tbody.innerHTML = filteredUsers.map(u => {
+        const attendanceData = todayAttendance?.attendees?.[u.id];
+        // 문자열 형식('present')과 객체 형식({status:'present'}) 모두 처리
+        const status = normalizeStatus(attendanceData) || 'absent';
+        const serverName = servers[u.server] || '미지정';
+        const isMyName = myNamesSet.has(u.name);
+        
+        let statusHtml = '';
+        if (status === 'present') statusHtml = '<span class="status-badge status-present">⭕ 참석</span>';
+        else if (status === 'late') statusHtml = '<span class="status-badge status-late">🕐 지각</span>';
+        else statusHtml = '<span class="status-badge status-absent">❌ 불참</span>';
+        
+        // 성물 표시
+        const missingRelics = u.missingRelics || [];
+        
+        // 오만과 에스카로 분리
+        const omanRelics = missingRelics
+            .filter(r => r.startsWith('oman'))
+            .map(r => r.replace('oman', ''))
+            .sort((a, b) => parseInt(a) - parseInt(b));
+        
+        const escaRelics = missingRelics
+            .filter(r => r.startsWith('esca'))
+            .map(r => r.replace('esca', ''))
+            .sort((a, b) => parseInt(a) - parseInt(b));
+        
+        const relicParts = [];
+        if (omanRelics.length > 0) relicParts.push('오 ' + omanRelics.join(' '));
+        if (escaRelics.length > 0) relicParts.push('에 ' + escaRelics.join(' '));
+        
+        const relicBadges = relicParts.join('  ');
+        
+        const relicHtml = relicBadges 
+            ? `<div style="font-size: 0.75rem; color: #e74c3c; font-weight: bold; margin-bottom: 3px; background: #fadbd8; display: inline-block; padding: 2px 6px; border-radius: 3px;">${relicBadges}</div><br>`
+            : '';
+        
+        // 모드별 출석 버튼 구성
+        // 자동 모드 (currentScheduleDate=null): ⭕ 출석 버튼만 (시간 따라 참석/지각 자동 결정)
+        // 수동 모드 (currentScheduleDate=과거날짜): 참석/지각/불참 모두 (관리자 수정용)
+        let actionButtonsHtml;
+        if (currentScheduleDate) {
+            actionButtonsHtml = `
+                <button class="attendance-btn btn-o ${status==='present'?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 참석</button>
+                <button class="attendance-btn btn-late ${status==='late'?'active':''}" onclick="updateAttendance(${u.id}, 'late')" style="background: ${status==='late' ? '#d68910' : '#f5cba7'}; color: ${status==='late' ? 'white' : '#5d4037'};">🕐 지각</button>
+                <button class="attendance-btn btn-x ${status==='absent'?'active':''}" onclick="updateAttendance(${u.id}, 'absent')">❌ 불참</button>
+            `;
+        } else {
+            const isMarked = status === 'present' || status === 'late';
+            actionButtonsHtml = `
+                <button class="attendance-btn btn-o ${isMarked?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 출석</button>
+            `;
+        }
+        
+        return `
+            <tr style="${isMyName ? 'background: #fff3cd; border-left: 4px solid #ffc107;' : ''}">
+                <td data-label="이름">${relicHtml}<strong>${u.name}</strong></td>
+                <td data-label="서버">${serverName}</td>
+                <td data-label="상태">${statusHtml}</td>
+                <td data-label="관리">${actionButtonsHtml}</td>
+            </tr>
+        `;
+    }).join('');
+};
+
+// 출석 체크 필터
+function filterAttendanceTable() {
+    renderAttendanceTable();
+};
+
+// 출석 업데이트
+// 자동 모드(currentScheduleDate=null): 시간 기반으로 status 자동 결정 (참석/지각). 시간 외엔 거부.
+// 수동 모드(currentScheduleDate=선택된 과거 날짜): requestedStatus 그대로 저장 (관리자 수정용)
+function updateAttendance(userId, requestedStatus) {
+    if (!currentScheduleId) {
+        alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±5분 내에만 가능합니다.');
+        return;
+    }
+    
+    let finalStatus = requestedStatus;
+    let dateForKey;
+    
+    if (currentScheduleDate) {
+        // 수동 선택 모드 — 과거 데이터 수정. requestedStatus 그대로 사용.
+        dateForKey = currentScheduleDate;
+    } else {
+        // 자동 모드 — 보스 시간 기준 ±5분 검증 + 자동 status 결정
+        const boss = schedules.find(s => s.id === currentScheduleId);
+        if (!boss) {
+            alert('보스 정보를 찾을 수 없습니다. 페이지를 새로고침해주세요.');
+            return;
+        }
+        const timeStatus = getAttendanceTimeStatus(boss.time);
+        if (!timeStatus.allowed) {
+            alert(`⚠️ ${timeStatus.message}\n\n출석은 보스 시간 기준 ±5분 내에만 가능합니다.`);
+            return;
+        }
+        // 시간으로 자동 결정 (인자 무시) — 정시 이전이면 참석, 이후면 지각
+        finalStatus = timeStatus.status;
+        dateForKey = formatLocalDate(new Date());
+    }
+    
+    const attendanceKey = `${dateForKey}_${currentScheduleId}`;
+    
+    console.log('📝 출석 업데이트:', { attendanceKey, userId, finalStatus, mode: currentScheduleDate ? '수동' : '자동' });
+    
+    const updates = {};
+    updates[`boss_attendance/${attendanceKey}/attendees/${userId}`] = finalStatus;
+    
+    db.ref().update(updates).then(() => {
+        console.log('✅ 출석 업데이트 완료:', attendanceKey);
+        // 수동 선택 상태에서는 todayAttendance 캐시도 즉시 갱신 (UI 반영)
+        if (currentScheduleDate) {
+            if (!todayAttendance) todayAttendance = { attendees: {} };
+            if (!todayAttendance.attendees) todayAttendance.attendees = {};
+            todayAttendance.attendees[userId] = finalStatus;
+            renderAttendanceTable();
+        }
+    });
+};
+
+// 스케줄 렌더링
+function renderSchedules() {
+    const container = document.getElementById('weekly-schedules-calendar');
+    if (!container) return; // 주간출석현황 탭이 아니면 종료
+    
+    const days = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+    
+    console.log('📋 보스 관리 렌더링:', schedules.length, '개');
+    
+    if (schedules.length === 0) {
+        container.innerHTML = `
+            <p style="color:#e74c3c; background:#fee; padding:15px; border-radius:8px; border-left:4px solid #e74c3c;">
+                <strong>⚠️ 등록된 스케줄이 없습니다.</strong><br>
+                Firebase에서 boss_schedules를 확인하세요.
+            </p>
+        `;
+        return;
+    }
+    
+    // 요일별로 그룹화
+    const schedulesByDay = {};
+    for (let i = 0; i <= 6; i++) {
+        schedulesByDay[i] = [];
+    }
+    
+    schedules.forEach(s => {
+        schedulesByDay[s.dayOfWeek].push(s);
+    });
+    
+    // 각 요일의 스케줄을 시간순 정렬
+    Object.keys(schedulesByDay).forEach(day => {
+        schedulesByDay[day].sort((a, b) => a.time.localeCompare(b.time));
+    });
+    
+    // 달력 형식 HTML 생성
+    container.innerHTML = `
+        <style>
+            .calendar-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin-top: 20px;
+            }
+            .day-column {
+                background: white;
+                border: 2px solid #e0e0e0;
+                border-radius: 8px;
+                overflow: hidden;
+            }
+            .day-column.sunday { border-color: #c0392b; }
+            .day-column.saturday { border-color: #2980b9; }
+            .day-header {
+                background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
+                color: white;
+                padding: 12px;
+                text-align: center;
+                font-weight: bold;
+                font-size: 1.1rem;
+            }
+            .day-header.sunday { background: linear-gradient(135deg, #c0392b 0%, #a93226 100%); }
+            .day-header.saturday { background: linear-gradient(135deg, #2980b9 0%, #21618c 100%); }
+            .boss-item {
+                padding: 8px 12px;
+                border-bottom: 1px solid #f0f0f0;
+                transition: background 0.2s;
+            }
+            .boss-item:hover {
+                background: #f8f9fa;
+            }
+            .boss-item:last-child {
+                border-bottom: none;
+            }
+            .boss-time {
+                color: #5D6D7E;
+                font-weight: bold;
+                font-size: 0.85rem;
+                display: inline-block;
+                margin-right: 8px;
+            }
+            .boss-name {
+                color: #2c3e50;
+                font-weight: bold;
+                display: inline-block;
+            }
+            .empty-day {
+                padding: 20px;
+                text-align: center;
+                color: #95a5a6;
+                font-style: italic;
+            }
+            .stats-summary {
+                background: #ecf0f1;
+                padding: 15px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                display: flex;
+                justify-content: space-around;
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+            .stat-item {
+                text-align: center;
+            }
+            .stat-item .number {
+                font-size: 2rem;
+                font-weight: bold;
+                color: #5D6D7E;
+            }
+            .stat-item .label {
+                color: #7f8c8d;
+                font-size: 0.9rem;
+            }
+            
+            @media (max-width: 768px) {
+                .calendar-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+        
+        <div class="stats-summary">
+            <div class="stat-item">
+                <div class="number">${schedules.length}</div>
+                <div class="label">총 보스 수</div>
+            </div>
+            <div class="stat-item">
+                <div class="number">${Object.keys(schedulesByDay).filter(d => schedulesByDay[d].length > 0).length}</div>
+                <div class="label">활동 요일</div>
+            </div>
+            <div class="stat-item">
+                <div class="number">${Math.max(...Object.values(schedulesByDay).map(arr => arr.length))}</div>
+                <div class="label">최대 일일 보스</div>
+            </div>
+        </div>
+        
+        <div class="calendar-grid">
+            ${[1, 2, 3, 4, 5, 6, 0].map(dayIndex => {
+                const dayClass = dayIndex === 0 ? 'sunday' : dayIndex === 6 ? 'saturday' : '';
+                const daySchedules = schedulesByDay[dayIndex];
+                
+                return `
+                    <div class="day-column ${dayClass}">
+                        <div class="day-header ${dayClass}">
+                            ${days[dayIndex]}
+                            <div style="font-size: 0.85rem; opacity: 0.9; margin-top: 4px;">
+                                ${daySchedules.length}개
+                            </div>
+                        </div>
+                        ${daySchedules.length === 0 
+                            ? '<div class="empty-day">휴식</div>'
+                            : daySchedules.map(s => `
+                                <div class="boss-item" onclick="showBossAttendance('${s.id}', '${s.name}')" style="cursor: pointer;">
+                                    <span class="boss-time">🕐 ${s.time}</span>
+                                    <span class="boss-name">${s.name}</span>
+                                </div>
+                            `).join('')
+                        }
+                    </div>
+                `;
+            }).join('')}
+        </div>
+        
+        <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #3498db;">
+            <p style="margin: 0; color: #7f8c8d;">
+                💡 <strong>팁:</strong> 각 보스를 클릭하면 상세 정보를 볼 수 있습니다. 
+                스케줄 수정이 필요하면 Firebase Console에서 직접 수정하세요.
+            </p>
+        </div>
+    `;
+};
+
+// 관리페이지용 스케줄 리스트 렌더링
+function renderSchedulesList() {
+    const container = document.getElementById('schedules-list');
+    if (!container) return;
+    
+    const days = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+    
+    if (schedules.length === 0) {
+        container.innerHTML = `
+            <p style="color:#e74c3c; background:#fee; padding:15px; border-radius:8px; border-left:4px solid #e74c3c; margin-top: 20px;">
+                <strong>⚠️ 등록된 스케줄이 없습니다.</strong><br>
+                위의 [+ 새 스케줄 추가] 버튼을 클릭하여 보스를 추가하세요.
+            </p>
+        `;
+        return;
+    }
+    
+    // 요일별, 시간순 정렬
+    const sortedSchedules = [...schedules].sort((a, b) => {
+        if (a.dayOfWeek !== b.dayOfWeek) return a.dayOfWeek - b.dayOfWeek;
+        return a.time.localeCompare(b.time);
+    });
+    
+    container.innerHTML = `
+        <div style="margin-top: 20px;">
+            ${sortedSchedules.map(s => `
+                <div style="background: white; border: 2px solid #e0e0e0; border-radius: 8px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="font-weight: bold; color: #2c3e50; font-size: 1.1rem; margin-bottom: 5px;">
+                            ${s.name}
+                        </div>
+                        <div style="color: #7f8c8d; font-size: 0.9rem;">
+                            <span style="display: inline-block; margin-right: 15px;">
+                                📅 ${days[s.dayOfWeek]}
+                            </span>
+                            <span style="display: inline-block;">
+                                🕐 ${s.time}
+                            </span>
+                        </div>
+                        ${s.description ? `<div style="color: #95a5a6; font-size: 0.85rem; margin-top: 5px;">${s.description}</div>` : ''}
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary" onclick="showEditScheduleModal('${s.id}')" style="padding: 8px 16px; font-size: 0.9rem;">
+                            ✏️ 수정
+                        </button>
+                        <button class="btn btn-danger" onclick="deleteSchedule('${s.id}')" style="padding: 8px 16px; font-size: 0.9rem;">
+                            🗑️ 삭제
+                        </button>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+// 스케줄 추가 모달
+function showAddScheduleModal() {
+    document.getElementById('modal-title').textContent = '새 보스 스케줄';
+    document.getElementById('schedule-id').value = '';
+    document.getElementById('schedule-name').value = '';
+    document.getElementById('schedule-day').value = '1';
+    document.getElementById('schedule-time').value = '20:00';
+    document.getElementById('schedule-desc').value = '';
+    document.getElementById('modal-schedule').classList.add('active');
+};
+
+// 스케줄 수정 모달
+function editSchedule(schedule) {
+    document.getElementById('modal-title').textContent = '보스 스케줄 수정';
+    document.getElementById('schedule-id').value = schedule.id;
+    document.getElementById('schedule-name').value = schedule.name;
+    document.getElementById('schedule-day').value = schedule.dayOfWeek;
+    document.getElementById('schedule-time').value = schedule.time;
+    document.getElementById('schedule-desc').value = schedule.description || '';
+    document.getElementById('modal-schedule').classList.add('active');
+};
+
+// 스케줄 수정 모달 (ID로 찾기)
+function showEditScheduleModal(scheduleId) {
+    const schedule = schedules.find(s => s.id === scheduleId);
+    if (!schedule) {
+        alert('스케줄을 찾을 수 없습니다.');
+        return;
+    }
+    editSchedule(schedule);
+}
+
+// 스케줄 저장
+function saveSchedule() {
+    const id = document.getElementById('schedule-id').value || `schedule_${Date.now()}`;
+    const name = document.getElementById('schedule-name').value.trim();
+    const day = parseInt(document.getElementById('schedule-day').value);
+    const time = document.getElementById('schedule-time').value;
+    const desc = document.getElementById('schedule-desc').value.trim();
+    
+    if (!name || !time) {
+        alert('이름과 시간을 입력해주세요.');
+        return;
+    }
+    
+    const schedule = {
+        id: id,
+        name: name,
+        dayOfWeek: day,
+        time: time,
+        description: desc,
+        isActive: true,
+        createdAt: new Date().toISOString()
+    };
+    
+    db.ref(`boss_schedules/${id}`).set(schedule).then(() => {
+        alert('저장되었습니다!');
+        closeModal();
+    });
+};
+
+// 스케줄 삭제
+function deleteSchedule(id) {
+    if (!confirm('정말 삭제하시겠습니까?')) return;
+    
+    db.ref(`boss_schedules/${id}`).remove().then(() => {
+        alert('삭제되었습니다!');
+    });
+};
+
+// 모달 닫기
+function closeModal() {
+    document.getElementById('modal-schedule').classList.remove('active');
+};
+
+// 통계 로드
+function loadStats() {
+    // 실제 출석 데이터에서 통계 계산 (최근 7일)
+    db.ref('boss_attendance').once('value', (snapshot) => {
+        const attendanceData = snapshot.val() || {};
+        const stats = calculateStats(attendanceData);
+        renderStats(stats);
+    });
+};
+
+// 통계 계산 (이번 주 월~일 기준)
+function calculateStats(attendanceData) {
+    const userStats = {};
+    
+    // 이번 주 월요일 계산
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0(일) ~ 6(토)
+    const monday = new Date(now);
+    // 월요일까지 거슬러 올라가기 (일요일이면 -6, 월요일이면 0)
+    const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
+    monday.setDate(monday.getDate() + daysToMonday);
+    monday.setHours(0, 0, 0, 0);
+    const mondayStr = formatLocalDate(monday);
+    
+    console.log('📅 이번 주 월요일:', mondayStr);
+    
+    // 이번 주에 스케줄된 총 보스 수 계산 (UI 표시용 — '이번 주 총 스케줄')
+    let totalSchedules = 0;
+    const thisWeek = [];
+    for (let i = 0; i < 7; i++) {
+        const date = new Date(monday);
+        date.setDate(date.getDate() + i);
+        const dateStr = formatLocalDate(date);
+        const dayOfWeekNum = date.getDay();
+        
+        // 해당 요일의 스케줄 수
+        const daySchedules = schedules.filter(s => s.dayOfWeek === dayOfWeekNum);
+        totalSchedules += daySchedules.length;
+        
+        thisWeek.push({
+            dateStr: dateStr,
+            dayOfWeek: dayOfWeekNum,
+            scheduledCount: daySchedules.length
+        });
+    }
+    
+    console.log('📊 이번 주 총 스케줄:', totalSchedules, '개');
+    
+    // 모든 사용자에 대해 통계 객체 초기화 (한번도 마킹 안 된 사람도 포함되도록)
+    users.forEach(u => {
+        userStats[String(u.id)] = {
+            userId: String(u.id),
+            userName: u.name,
+            server: u.server || '',
+            present: 0,
+            absent: 0,
+            late: 0,
+            total: 0  // 이 값은 더 이상 분모로 쓰지 않음 (참고용)
+        };
+    });
+    
+    // 이번 주 출석 체크가 실제로 진행된 보스 수 (참여율 분모로 사용)
+    let weeklyBossCount = 0;
+    
+    Object.entries(attendanceData).forEach(([key, attendance]) => {
+        // 날짜 추출 (YYYY-MM-DD_bossId 형식)
+        const dateStr = key.split('_')[0];
+        
+        // 이번 주 월요일 이후 데이터만 처리
+        if (dateStr < mondayStr) {
+            return;
+        }
+        
+        // 출석자가 한 명이라도 있는 경우만 '진행된 보스'로 카운트
+        const attendees = attendance.attendees || {};
+        if (Object.keys(attendees).length === 0) return;
+        
+        weeklyBossCount++;
+        
+        // 모든 사용자에 대해 이 보스의 출석 상태 확인
+        // (마킹 안 된 사용자는 어떤 컬럼에도 들어가지 않지만 분모에는 포함됨)
+        users.forEach(u => {
+            const uid = String(u.id);
+            if (!userStats[uid]) return;
+            
+            // 문자열 키와 숫자 키 둘 다 시도 (기존 데이터 호환)
+            const raw = attendees[uid] !== undefined ? attendees[uid] : attendees[u.id];
+            const status = normalizeStatus(raw);
+            
+            if (status === 'present') {
+                userStats[uid].present++;
+            } else if (status === 'absent') {
+                userStats[uid].absent++;
+            } else if (status === 'late') {
+                userStats[uid].late++;
+            }
+            
+            // total은 이 사용자가 마킹된 횟수 (참고용, 분모로는 안 씀)
+            if (status) userStats[uid].total++;
+        });
+    });
+    
+    console.log('📊 이번 주 출석 체크된 보스:', weeklyBossCount, '개');
+    
+    // 참여율 계산 — 분모는 '이번 주 출석 체크된 보스 수'
+    Object.values(userStats).forEach(stat => {
+        stat.rate = weeklyBossCount > 0 
+            ? ((stat.present + stat.late) / weeklyBossCount * 100).toFixed(1) 
+            : '0.0';
+    });
+    
+    return { userStats, totalSchedules, weeklyBossCount };
+};
+
+// 통계 렌더링
+function renderStats(stats) {
+    document.getElementById('stat-total-schedules').textContent = stats.totalSchedules;
+    
+    // 출석 체크된 보스 수
+    const checkedEl = document.getElementById('stat-checked-bosses');
+    if (checkedEl) checkedEl.textContent = stats.weeklyBossCount;
+    
+    const userStatsArray = Object.values(stats.userStats);
+    
     // 검색어 필터
     const searchTerm = document.getElementById('stats-search-user')?.value.toLowerCase() || '';
     
-// 서버 필터 적용
-const serverFilter = document.getElementById('stats-server-filter')?.value || 'all';
-    const filteredStats = serverFilter === 'all' 
-        ? userStatsArray 
-        : userStatsArray.filter(s => s.server === serverFilter);
+    // 서버 필터 적용
+    const serverFilter = document.getElementById('stats-server-filter')?.value || 'all';
     
     let filteredStats = userStatsArray;
     
@@ -29,19 +2442,18 @@ const serverFilter = document.getElementById('stats-server-filter')?.value || 'a
     if (serverFilter !== 'all') {
         filteredStats = filteredStats.filter(s => s.server === serverFilter);
     }
-
-const avgRate = filteredStats.length > 0 
-? (filteredStats.reduce((sum, s) => sum + parseFloat(s.rate), 0) / filteredStats.length).toFixed(1)
-: 0;
-document.getElementById('stat-avg-rate').textContent = avgRate + '%';
-
-    // 전체 인원, 참여율 내림차순으로 정렬
+    
+    const avgRate = filteredStats.length > 0 
+        ? (filteredStats.reduce((sum, s) => sum + parseFloat(s.rate), 0) / filteredStats.length).toFixed(1)
+        : 0;
+    document.getElementById('stat-avg-rate').textContent = avgRate + '%';
+    
     // 내 이름 목록 가져오기
     const myNames = (typeof getMyNames === 'function') ? getMyNames() : [];
     const myNamesSet = new Set(myNames);
     
     // 정렬: 내 이름 우선, 그 다음 참여율 순
-const sorted = filteredStats.slice().sort((a, b) => {
+    const sorted = filteredStats.slice().sort((a, b) => {
         const aIsMine = myNamesSet.has(a.userName);
         const bIsMine = myNamesSet.has(b.userName);
         
@@ -55,36 +2467,2293 @@ const sorted = filteredStats.slice().sort((a, b) => {
         }
         
         // 나머지는 참여율 내림차순
-const rateDiff = parseFloat(b.rate) - parseFloat(a.rate);
-if (rateDiff !== 0) return rateDiff;
+        const rateDiff = parseFloat(b.rate) - parseFloat(a.rate);
+        if (rateDiff !== 0) return rateDiff;
         
-// 참여율 동률이면 이름 가나다순
-return a.userName.localeCompare(b.userName, 'ko');
-});
+        // 참여율 동률이면 이름 가나다순
+        return a.userName.localeCompare(b.userName, 'ko');
+    });
     
-const tbody = document.getElementById('stats-tbody');
-
-tbody.innerHTML = sorted.map((s, i) => {
-const serverName = servers[s.server] || '미지정';
+    const tbody = document.getElementById('stats-tbody');
+    
+    tbody.innerHTML = sorted.map((s, i) => {
+        const serverName = servers[s.server] || '미지정';
         const isMyName = myNamesSet.has(s.userName);
         const rowStyle = isMyName ? 'background: #fff3cd; border-left: 4px solid #ffc107;' : '';
         
-return `
-            <tr>
+        return `
             <tr style="${rowStyle}">
-               <td>${i + 1}</td>
-               <td><a href="javascript:void(0)" onclick="showUserBossCalendar('${s.userName}')" style="color: #3498db; text-decoration: none; font-weight: bold; cursor: pointer;">${s.userName}</a></td>
-               <td>${serverName}</td>
-@@ -2184,7 +2219,12 @@ <h2>✅ 출석 체크 완료 <span style="color: #7f8c8d; font-size: 0.9rem; fon
-// 표시 인원수 안내
-const countInfo = document.getElementById('stats-count-info');
-if (countInfo) {
-        countInfo.textContent = `표시: ${sorted.length}명`;
+                <td>${i + 1}</td>
+                <td><a href="javascript:void(0)" onclick="showUserBossCalendar('${s.userName}')" style="color: #3498db; text-decoration: none; font-weight: bold; cursor: pointer;">${s.userName}</a></td>
+                <td>${serverName}</td>
+                <td>${s.present}</td>
+                <td>${s.absent}</td>
+                <td>${s.late}</td>
+                <td><strong>${s.rate}%</strong></td>
+            </tr>
+        `;
+    }).join('');
+    
+    // 표시 인원수 안내
+    const countInfo = document.getElementById('stats-count-info');
+    if (countInfo) {
         const myNameCount = sorted.filter(s => myNamesSet.has(s.userName)).length;
         if (myNameCount > 0) {
             countInfo.innerHTML = `표시: ${sorted.length}명 <span style="color: #ffc107; font-weight: bold;">(내 이름: ${myNameCount}명)</span>`;
         } else {
             countInfo.textContent = `표시: ${sorted.length}명`;
         }
-}
+    }
 };
+
+// 통계 필터
+function filterStats() {
+    // Firebase에서 데이터 다시 가져와서 계산
+    db.ref('boss_attendance').once('value', (snapshot) => {
+        const attendanceData = snapshot.val() || {};
+        const stats = calculateStats(attendanceData);
+        renderStats(stats);
+    });
+}
+
+// CSV Export
+function exportToCSV() {
+    // 현재 표시된 통계 데이터 사용
+    const statsTable = document.getElementById('stats-tbody');
+    if (!statsTable || statsTable.children.length === 0) {
+        alert('내보낼 통계 데이터가 없습니다.');
+        return;
+    }
+    
+    let csv = '\uFEFF'; // BOM 추가 (Excel 한글 깨짐 방지)
+    
+    // === 섹션 1: 통계 요약 ===
+    csv += '=== 통계 요약 ===\n';
+    csv += '이름,서버,참석,불참,지각,참여율\n';
+    
+    // 테이블에서 직접 데이터 추출
+    Array.from(statsTable.children).forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length >= 7) {
+            const name = cells[1].textContent.trim();
+            const server = cells[2].textContent.trim();
+            const present = cells[3].textContent.trim();
+            const absent = cells[4].textContent.trim();
+            const late = cells[5].textContent.trim();
+            const rate = cells[6].textContent.trim();
+            
+            csv += `${name},${server},${present},${absent},${late},${rate}\n`;
+        }
+    });
+    
+    csv += '\n'; // 빈 줄
+    
+    // === 섹션 2: 상세 출석 내역 ===
+    csv += '=== 상세 출석 내역 ===\n';
+    csv += '이름,날짜,보스,상태\n';
+    
+    // Firebase에서 출석 데이터 가져오기
+    db.ref('boss_attendance').once('value', (snapshot) => {
+        const attendanceData = snapshot.val() || {};
+        const detailRecords = [];
+        
+        // 출석 데이터 파싱
+        Object.entries(attendanceData).forEach(([key, attendance]) => {
+            // key 형식: "2026-05-07_fri_1225_oman1"
+            const parts = key.split('_');
+            const date = parts[0]; // 날짜
+            const bossId = parts.slice(1).join('_'); // 보스 ID
+            
+            // 해당 보스 정보 찾기
+            const boss = schedules.find(s => s.id === bossId);
+            const bossName = boss ? boss.name : bossId;
+            
+            // 출석자 데이터
+            if (attendance.attendees) {
+                Object.entries(attendance.attendees).forEach(([userId, data]) => {
+                    const user = users.find(u => u.id === parseInt(userId));
+                    const userName = user ? user.name : `사용자${userId}`;
+                    // 문자열/객체 형식 모두 처리
+                    const normalized = normalizeStatus(data);
+                    const status = normalized === 'present' ? '참석' : 
+                                 normalized === 'late' ? '지각' : 
+                                 normalized === 'absent' ? '불참' : '미기록';
+                    
+                    detailRecords.push({
+                        name: userName,
+                        date: date,
+                        boss: bossName,
+                        status: status
+                    });
+                });
+            }
+        });
+        
+        // 이름순, 날짜순 정렬
+        detailRecords.sort((a, b) => {
+            if (a.name !== b.name) return a.name.localeCompare(b.name, 'ko');
+            return a.date.localeCompare(b.date);
+        });
+        
+        // CSV에 추가
+        detailRecords.forEach(record => {
+            csv += `${record.name},${record.date},${record.boss},${record.status}\n`;
+        });
+        
+        // 상세 내역이 없으면 안내 메시지
+        if (detailRecords.length === 0) {
+            csv += '(출석 기록이 없습니다. 테스트 모드이거나 실제 출석 체크를 하지 않았습니다.)\n';
+        }
+        
+        // 다운로드
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `헌터혈맹_보스출석통계_상세_${formatLocalDate(new Date())}.csv`;
+        link.click();
+        
+        console.log('✅ CSV 다운로드 완료 (상세 내역 포함)');
+    });
+};
+
+// Apps Script URL 재설정 (콘솔 또는 버튼에서 호출 가능)
+function resetAppsScriptUrl() {
+    const current = localStorage.getItem('appsScriptUrl') || '';
+    const url = prompt(
+        '⚙️ Google Apps Script URL을 다시 입력하세요:\n\n' +
+        '1. script.google.com → 배포 → 배포 관리\n' +
+        '2. 웹 앱 URL 복사\n' +
+        '3. 여기에 붙여넣기\n\n' +
+        '현재 설정된 URL:',
+        current
+    );
+    if (!url) return;
+    if (!url.includes('script.google.com')) {
+        alert('❌ 올바른 Apps Script URL이 아닙니다.');
+        return;
+    }
+    localStorage.setItem('appsScriptUrl', url);
+    alert('✅ Apps Script URL이 저장되었습니다.');
+}
+
+// Google Sheets Export
+async function exportToGoogleSheets() {
+    const APPS_SCRIPT_URL = localStorage.getItem('appsScriptUrl');
+    
+    if (!APPS_SCRIPT_URL) {
+        const url = prompt(
+            '⚙️ Google Apps Script URL을 입력하세요:\n\n' +
+            '1. script.google.com에서 Apps Script 배포\n' +
+            '2. "배포" → "새 배포" → "웹 앱" 선택\n' +
+            '3. "웹 앱 URL" 복사 (끝이 /exec로 끝남)\n' +
+            '4. 여기에 붙여넣기\n\n' +
+            '(한 번만 설정하면 저장됩니다)',
+            'https://script.google.com/macros/s/AKfycby.../exec'
+        );
+        
+        if (!url || !url.includes('script.google.com')) {
+            alert('❌ 올바른 URL을 입력해주세요.\n\n형식: https://script.google.com/macros/s/AKfycby.../exec');
+            return;
+        }
+        
+        if (!url.endsWith('/exec')) {
+            alert('⚠️ URL이 /exec로 끝나야 합니다!\n\n다시 확인해주세요.');
+            return;
+        }
+        
+        localStorage.setItem('appsScriptUrl', url);
+    }
+    
+    const appsScriptUrl = localStorage.getItem('appsScriptUrl');
+    
+    console.log('🔗 Apps Script URL:', appsScriptUrl);
+    
+    // 로딩 표시
+    const loadingDiv = document.createElement('div');
+    loadingDiv.id = 'export-gs-loading';
+    loadingDiv.style.cssText = `
+        position: fixed; top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        background: white; padding: 30px; border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        z-index: 10000; text-align: center; min-width: 300px;
+    `;
+    loadingDiv.innerHTML = `
+        <div style="font-size: 3rem; margin-bottom: 15px;">⏳</div>
+        <div style="font-size: 1.2rem; font-weight: bold; color: #2c3e50;">데이터 수집 중...</div>
+        <div id="export-gs-status" style="color: #7f8c8d; margin-top: 10px; font-size: 0.9rem;">Firebase 데이터 로드 중...</div>
+    `;
+    document.body.appendChild(loadingDiv);
+    
+    const updateStatus = (msg) => {
+        const el = document.getElementById('export-gs-status');
+        if (el) el.textContent = msg;
+        console.log('📊', msg);
+    };
+    
+    try {
+        // 이번 주 데이터 (월~일)
+        const now = new Date();
+        const dayOfWeek = now.getDay();
+        const monday = new Date(now);
+        const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
+        monday.setDate(monday.getDate() + daysToMonday);
+        monday.setHours(0, 0, 0, 0);
+        
+        const startDate = monday;
+        const endDate = new Date();
+        endDate.setHours(23, 59, 59, 999);
+        
+        console.log('📅 기간:', formatLocalDate(startDate), '~', formatLocalDate(endDate));
+        
+        updateStatus('출석 데이터 로드 중...');
+        const attendanceData = await fetchAttendanceData(startDate, endDate);
+        
+        console.log('📦 출석 데이터:', Object.keys(attendanceData).length, '개');
+        
+        updateStatus('스크린샷 형식 생성 중...');
+        const rows = generateScreenshotFormatRows(attendanceData);
+        
+        console.log('📋 생성된 행:', rows.length, '행 x', rows[0]?.length || 0, '열');
+        console.log('📋 데이터 미리보기:', rows.slice(0, 3));
+        
+        if (rows.length === 0 || rows[0].length === 0) {
+            throw new Error('생성된 데이터가 없습니다.');
+        }
+        
+        updateStatus('구글 시트 전송 중...');
+        
+        const payload = JSON.stringify({ summary: rows, details: [] });
+        console.log('📤 전송 데이터 크기:', payload.length, 'bytes');
+        
+        const response = await fetch(appsScriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            mode: 'no-cors',
+            body: payload
+        });
+        
+        console.log('📬 응답:', response);
+        
+        loadingDiv.remove();
+        
+        alert(
+            '✅ 데이터 전송 완료!\n\n' +
+            '구글 드라이브에서 확인하세요:\n' +
+            '1. 내 드라이브 → 최근 문서\n' +
+            '2. "헌터혈맹 출석 - 2026-XX-XX ~ 2026-XX-XX" 검색\n\n' +
+            '💡 안 보이면:\n' +
+            '- F12 → Console 탭에서 로그 확인\n' +
+            '- Apps Script 배포 URL 재확인\n' +
+            '- Apps Script 실행 로그 확인'
+        );
+        
+        window.open('https://drive.google.com/drive/recent', '_blank');
+        
+    } catch (error) {
+        loadingDiv.remove();
+        console.error('❌ 에러:', error);
+        console.error('❌ 상세:', error.message, error.stack);
+        
+        alert(
+            '⚠️ 구글 시트 전송 실패\n\n' +
+            '에러: ' + error.message + '\n\n' +
+            '해결 방법:\n' +
+            '1. Apps Script URL 확인\n' +
+            '2. Apps Script 배포 상태 확인\n' +
+            '3. F12 → Console 탭에서 로그 확인\n' +
+            '4. Apps Script 실행 로그 확인'
+        );
+        
+        if (confirm('Apps Script URL을 다시 설정하시겠습니까?')) {
+            resetAppsScriptUrl();
+        }
+    }
+}
+
+// 스크린샷 형식 행 생성
+// 형식: 사용자별로 각 날짜/보스에 출석했는지 표시
+function generateScreenshotFormatRows(attendanceData) {
+    // 이번 주 월~일 날짜 계산
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const monday = new Date(now);
+    const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
+    monday.setDate(monday.getDate() + daysToMonday);
+    monday.setHours(0, 0, 0, 0);
+    
+    // 날짜별 보스 목록 생성 (월~일)
+    const weekData = [];
+    for (let i = 0; i < 7; i++) {
+        const date = new Date(monday);
+        date.setDate(date.getDate() + i);
+        const dateStr = formatLocalDate(date);
+        const dayOfWeek = date.getDay();
+        const monthDay = `${date.getMonth() + 1}-${date.getDate()}`;
+        
+        // 해당 요일의 스케줄 가져오기
+        const daySchedules = schedules
+            .filter(s => s.dayOfWeek === dayOfWeek)
+            .sort((a, b) => a.time.localeCompare(b.time));
+        
+        daySchedules.forEach(boss => {
+            const attendanceKey = `${dateStr}_${boss.id}`;
+            const attendees = attendanceData[attendanceKey]?.attendees || {};
+            
+            weekData.push({
+                dateStr: dateStr,
+                monthDay: monthDay,
+                bossId: boss.id,
+                bossName: boss.name,
+                time: boss.time,
+                attendees: attendees
+            });
+        });
+    }
+    
+    if (weekData.length === 0) {
+        return [['이름', '참석횟수', '참석률', '데이터 없음']];
+    }
+    
+    const rows = [];
+    
+    // 헤더 행 1: 날짜 (병합용 - 같은 날짜는 첫 컬럼에만 표시)
+    const header1 = ['', '참석', '참석률'];
+    let prevDate = null;
+    weekData.forEach(data => {
+        if (data.monthDay !== prevDate) {
+            header1.push(data.monthDay);
+            prevDate = data.monthDay;
+        } else {
+            header1.push('');
+        }
+    });
+    rows.push(header1);
+    
+    // 헤더 행 2: 이름 + 보스명
+    const header2 = ['이름', '횟수', ''];
+    weekData.forEach(data => {
+        header2.push(data.bossName);
+    });
+    rows.push(header2);
+    
+    // 각 사용자별로 행 생성
+    users.forEach(user => {
+        const row = [];
+        
+        // 참석 통계 계산
+        let attendCount = 0;
+        let totalCount = 0;
+        
+        weekData.forEach(data => {
+            const status = normalizeStatus(data.attendees[user.id]);
+            if (status === 'present' || status === 'late') {
+                attendCount++;
+            }
+            if (status === 'present' || status === 'late' || status === 'absent') {
+                totalCount++;
+            }
+        });
+        
+        const rate = totalCount > 0 ? Math.round(attendCount / totalCount * 100) : 0;
+        
+        // 왼쪽: 이름, 참석횟수, 참석률
+        row.push(user.name, attendCount, rate + '%');
+        
+        // 오른쪽: 각 보스별 출석 표시 (출석했으면 O 표시)
+        weekData.forEach(data => {
+            const status = normalizeStatus(data.attendees[user.id]);
+            if (status === 'present' || status === 'late') {
+                row.push('O');  // 출석 표시
+            } else {
+                row.push('');   // 미출석
+            }
+        });
+        
+        rows.push(row);
+    });
+    
+    return rows;
+}
+
+// 보스 출석 현황 모달 표시
+function showBossAttendance(bossId, bossName) {
+    const modal = document.getElementById('boss-attendance-modal');
+    const title = document.getElementById('boss-modal-title');
+    const content = document.getElementById('boss-modal-content');
+    
+    title.textContent = `${bossName} 출석 현황 (이번 주)`;
+    content.innerHTML = '<div style="text-align: center; padding: 20px; color: #95a5a6;">불러오는 중...</div>';
+    modal.classList.add('active');
+    
+    // 이번 주 월요일부터 일요일까지 출석 데이터 가져오기
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const monday = new Date(now);
+    const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
+    monday.setDate(monday.getDate() + daysToMonday);
+    monday.setHours(0, 0, 0, 0);
+    
+    db.ref('boss_attendance').once('value', (snapshot) => {
+        const allAttendanceData = snapshot.val() || {};
+        
+        // 이번 주의 해당 보스 출석 데이터만 필터링
+        const thisWeekData = [];
+        for (let i = 0; i < 7; i++) {
+            const date = new Date(monday);
+            date.setDate(date.getDate() + i);
+            const dateStr = formatLocalDate(date);
+            const attendanceKey = `${dateStr}_${bossId}`;
+            
+            if (allAttendanceData[attendanceKey]) {
+                thisWeekData.push({
+                    dateStr: dateStr,
+                    dayName: ['일', '월', '화', '수', '목', '금', '토'][date.getDay()],
+                    data: allAttendanceData[attendanceKey]
+                });
+            }
+        }
+        
+        if (thisWeekData.length === 0) {
+            content.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #95a5a6;">
+                    <div style="font-size: 3rem; margin-bottom: 10px;">📭</div>
+                    <div style="font-size: 1.1rem;">이번 주 출석 체크 데이터가 없습니다</div>
+                </div>
+            `;
+            return;
+        }
+        
+        // HTML 생성 - 날짜별로 표시
+        let html = '';
+        
+        thisWeekData.forEach(dayData => {
+            const attendees = dayData.data.attendees || {};
+            
+            // 출석 데이터 분류
+            const present = [];
+            const late = [];
+            const absent = [];
+            
+            Object.entries(attendees).forEach(([userId, data]) => {
+                const user = users.find(u => u.id === parseInt(userId));
+                if (user) {
+                    // 객체 형식과 문자열 형식 모두 처리
+                    const status = typeof data === 'string' ? data : (data?.status || data);
+                    
+                    const userInfo = {
+                        name: user.name,
+                        server: servers[user.server] || '미지정',
+                        status: status
+                    };
+                    
+                    if (status === 'present') present.push(userInfo);
+                    else if (status === 'late') late.push(userInfo);
+                    else if (status === 'absent') absent.push(userInfo);
+                }
+            });
+            
+            const total = present.length + absent.length + late.length;
+            const rate = total > 0 ? ((present.length + late.length) / total * 100).toFixed(1) : 0;
+            
+            html += `
+                <div style="margin-bottom: 20px; border: 2px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 12px; background: #34495e; color: white; font-weight: bold;">
+                        📅 ${dayData.dateStr} (${dayData.dayName}) - 참여율 ${rate}% (${present.length + late.length}/${total}명)
+                    </div>
+                    <div style="padding: 15px;">
+            `;
+            
+            // 참석자
+            if (present.length > 0) {
+                html += `
+                    <div style="margin-bottom: 15px;">
+                        <h4 style="color: #16a085; margin-bottom: 8px; font-size: 0.95rem;">
+                            ⭕ 참석 (${present.length}명)
+                        </h4>
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                            ${present.map(u => `
+                                <span style="background: #d5f4e6; color: #16a085; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem;">
+                                    ${u.name}
+                                </span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // 지각자
+            if (late.length > 0) {
+                html += `
+                    <div style="margin-bottom: 15px;">
+                        <h4 style="color: #d68910; margin-bottom: 8px; font-size: 0.95rem;">
+                            🕐 지각 (${late.length}명)
+                        </h4>
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                            ${late.map(u => `
+                                <span style="background: #fef5e7; color: #d68910; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem;">
+                                    ${u.name}
+                                </span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // 불참자
+            if (absent.length > 0) {
+                html += `
+                    <div style="margin-bottom: 15px;">
+                        <h4 style="color: #c0392b; margin-bottom: 8px; font-size: 0.95rem;">
+                            ❌ 불참 (${absent.length}명)
+                        </h4>
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                            ${absent.map(u => `
+                                <span style="background: #fadbd8; color: #c0392b; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem;">
+                                    ${u.name}
+                                </span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        });
+        
+        content.innerHTML = html;
+    });
+}
+
+// 보스 출석 현황 모달 닫기
+function closeBossModal() {
+    document.getElementById('boss-attendance-modal').classList.remove('active');
+}
+
+// 개인별 보스 달력 표시
+function showUserBossCalendar(userName) {
+    const modal = document.getElementById('user-boss-calendar-modal');
+    const title = document.getElementById('user-calendar-title');
+    const content = document.getElementById('user-calendar-content');
+    
+    title.textContent = `${userName} 님의 보스 출석 현황`;
+    content.innerHTML = '<div style="text-align: center; padding: 20px; color: #95a5a6;">불러오는 중...</div>';
+    modal.classList.add('active');
+    
+    // 사용자 찾기
+    const user = users.find(u => u.name === userName);
+    if (!user) {
+        content.innerHTML = '<div style="text-align: center; padding: 20px; color: #e74c3c;">사용자를 찾을 수 없습니다.</div>';
+        return;
+    }
+    
+    console.log('📊 개인별 출석 현황 로드:', userName, 'userId:', user.id);
+    console.log('📅 현재 스케줄 수:', schedules.length);
+    
+    // Firebase에서 이번 주 월~일 출석 데이터 가져오기
+    db.ref('boss_attendance').once('value', (snapshot) => {
+        const attendanceData = snapshot.val() || {};
+        const attendanceKeys = Object.keys(attendanceData);
+        
+        console.log('🔥 Firebase 출석 데이터:', attendanceKeys.length, '개');
+        console.log('🔥 출석 키 목록:', attendanceKeys);
+        
+        // 이번 주 월요일부터 일요일까지 날짜 배열 생성
+        const now = new Date();
+        const dayOfWeek = now.getDay(); // 0(일) ~ 6(토)
+        const monday = new Date(now);
+        const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
+        monday.setDate(monday.getDate() + daysToMonday);
+        monday.setHours(0, 0, 0, 0);
+        
+        const thisWeek = [];
+        for (let i = 0; i < 7; i++) {
+            const date = new Date(monday);
+            date.setDate(date.getDate() + i);
+            thisWeek.push({
+                date: date,
+                dateStr: formatLocalDate(date),
+                dayName: ['일', '월', '화', '수', '목', '금', '토'][date.getDay()],
+                dayOfWeek: date.getDay(),
+                bosses: []
+            });
+        }
+        
+        console.log('📅 이번 주 날짜 (월~일):', thisWeek.map(d => `${d.dateStr}(${d.dayName})`));
+        
+        // 각 날짜별로 출석 데이터 매핑
+        thisWeek.forEach(day => {
+            attendanceKeys.forEach(key => {
+                // key 형식: "2026-05-08_fri_1225_oman1"
+                // 첫 번째 _만 분리 (날짜와 bossId)
+                const firstUnderscoreIndex = key.indexOf('_');
+                const dateStr = key.substring(0, firstUnderscoreIndex);
+                const bossId = key.substring(firstUnderscoreIndex + 1);
+                
+                if (dateStr === day.dateStr) {
+                    console.log(`✅ 날짜 매칭: ${dateStr}, bossId: ${bossId}`);
+                    
+                    // 보스 정보 찾기
+                    const boss = schedules.find(s => s.id === bossId);
+                    
+                    if (boss) {
+                        console.log(`  ✅ 보스 찾음: ${boss.name}`);
+                        
+                        // attendees 확인
+                        const attendees = attendanceData[key].attendees || {};
+                        console.log(`  👥 Attendees 전체:`, attendees);
+                        console.log(`  👥 Attendees 키:`, Object.keys(attendees));
+                        
+                        // userId를 문자열로 변환하여 매칭
+                        const statusStr = attendees[String(user.id)];
+                        const statusNum = attendees[user.id];
+                        const status = statusStr || statusNum;
+                        
+                        console.log(`  👤 사용자 ${user.id} 체크:`, {
+                            'String(user.id)': String(user.id),
+                            'statusStr': statusStr,
+                            'statusNum': statusNum,
+                            'status': status,
+                            'typeof status': typeof status
+                        });
+                        
+                        // status 값 정규화 (객체 형식과 문자열 형식 모두 처리)
+                        const normalizedStatus = normalizeStatus(status);
+                        
+                        // status 값에 따라 분기 (지각 'L' 추가)
+                        let displayStatus;
+                        if (normalizedStatus === 'present') {
+                            displayStatus = 'O';
+                            console.log(`  ✅ 참석!`);
+                        } else if (normalizedStatus === 'absent') {
+                            displayStatus = 'X';
+                            console.log(`  ❌ 불참!`);
+                        } else if (normalizedStatus === 'late') {
+                            displayStatus = 'L';
+                            console.log(`  🕐 지각!`);
+                        } else {
+                            displayStatus = '-';
+                            console.log(`  ⚠️ 미기록 (normalizedStatus: ${normalizedStatus})`);
+                        }
+                        
+                        day.bosses.push({
+                            time: boss.time,
+                            name: boss.name,
+                            status: displayStatus
+                        });
+                    } else {
+                        console.log(`  ❌ 보스 못 찾음: ${bossId}`);
+                        console.log(`  📋 현재 스케줄 ID 목록:`, schedules.map(s => s.id));
+                        
+                        // 보스를 못 찾아도 출석 데이터가 있으면 표시
+                        const attendees = attendanceData[key].attendees || {};
+                        const statusStr = attendees[String(user.id)];
+                        const statusNum = attendees[user.id];
+                        const status = statusStr || statusNum;
+                        const normalizedStatus = normalizeStatus(status);
+                        
+                        if (normalizedStatus) {
+                            const fallbackStatus = normalizedStatus === 'present' ? 'O' 
+                                : normalizedStatus === 'absent' ? 'X' 
+                                : normalizedStatus === 'late' ? 'L' 
+                                : '-';
+                            day.bosses.push({
+                                time: '미확인',
+                                name: `보스 ID: ${bossId}`,
+                                status: fallbackStatus
+                            });
+                        }
+                    }
+                }
+            });
+            
+            // 시간순 정렬
+            day.bosses.sort((a, b) => a.time.localeCompare(b.time));
+            
+            console.log(`📅 ${day.dateStr} (${day.dayName}): ${day.bosses.length}개 보스`);
+        });
+        
+        // 통계 계산 — 메인 통계와 동일한 분모 사용
+        // 분모: 이번 주에 출석 체크가 진행된 보스 수 (= day.bosses의 합계)
+        // 분자: 이 사용자의 (참석 + 지각)
+        let totalPresent = 0;
+        let totalAbsent = 0;
+        let totalLate = 0;
+        let weeklyBossCount = 0; // 이번 주 진행된 보스 수 (분모)
+        let unmarked = 0;        // 보스는 진행됐으나 마킹 안 된 횟수
+        
+        thisWeek.forEach(day => {
+            day.bosses.forEach(boss => {
+                weeklyBossCount++;
+                if (boss.status === 'O') {
+                    totalPresent++;
+                } else if (boss.status === 'X') {
+                    totalAbsent++;
+                } else if (boss.status === 'L') {
+                    totalLate++;
+                } else {
+                    // '-' (미기록): 보스는 진행됐으나 이 사용자가 마킹되지 않음
+                    unmarked++;
+                }
+            });
+        });
+        
+        // 메인 통계와 정확히 동일 공식: (참석+지각) / 이번 주 진행된 보스 수
+        const participationRate = weeklyBossCount > 0 
+            ? ((totalPresent + totalLate) / weeklyBossCount * 100).toFixed(1) 
+            : '0.0';
+        
+        console.log(`📊 통계: 참석 ${totalPresent}, 불참 ${totalAbsent}, 지각 ${totalLate}, 미기록 ${unmarked}, 진행된 보스 ${weeklyBossCount}, 참여율 ${participationRate}%`);
+        
+        // HTML 생성 - 날짜별 카드 형식
+        let html = `
+            <style>
+                .user-calendar-header {
+                    margin-bottom: 20px;
+                    padding: 15px;
+                    background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
+                    border-radius: 8px;
+                    color: white;
+                    text-align: center;
+                }
+                .day-card {
+                    margin-bottom: 15px;
+                    border: 2px solid #e0e0e0;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    background: white;
+                }
+                .day-card-header {
+                    padding: 12px 15px;
+                    background: #34495e;
+                    color: white;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }
+                .day-card-header.sunday {
+                    background: #e74c3c;
+                }
+                .day-card-header.saturday {
+                    background: #3498db;
+                }
+                .day-card-body {
+                    padding: 0;
+                }
+                .boss-row {
+                    display: flex;
+                    padding: 10px 15px;
+                    border-bottom: 1px solid #ecf0f1;
+                    align-items: center;
+                }
+                .boss-row:last-child {
+                    border-bottom: none;
+                }
+                .boss-row:hover {
+                    background: #f8f9fa;
+                }
+                .boss-time {
+                    flex: 0 0 60px;
+                    color: #7f8c8d;
+                    font-size: 0.9rem;
+                }
+                .boss-name {
+                    flex: 1;
+                    font-weight: bold;
+                    color: #2c3e50;
+                }
+                .boss-status {
+                    flex: 0 0 40px;
+                    text-align: center;
+                    font-weight: bold;
+                    font-size: 1.2rem;
+                }
+                .boss-status.present {
+                    color: #16a085;
+                }
+                .boss-status.absent {
+                    color: #c0392b;
+                }
+                .boss-status.late {
+                    color: #d68910;
+                }
+                .boss-status.none {
+                    color: #bdc3c7;
+                    font-size: 0.9rem;
+                }
+                .no-boss {
+                    padding: 20px;
+                    text-align: center;
+                    color: #95a5a6;
+                    font-size: 0.9rem;
+                }
+                .stats-summary {
+                    margin-top: 20px;
+                    padding: 15px;
+                    background: #ecf0f1;
+                    border-radius: 8px;
+                }
+                .stats-grid {
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 10px;
+                }
+                .stat-item {
+                    text-align: center;
+                }
+                .stat-value {
+                    font-size: 1.5rem;
+                    font-weight: bold;
+                    margin-bottom: 5px;
+                }
+                .stat-label {
+                    font-size: 0.85rem;
+                    color: #7f8c8d;
+                }
+                @media (max-width: 768px) {
+                    .boss-row {
+                        padding: 8px 12px;
+                    }
+                    .boss-time {
+                        flex: 0 0 50px;
+                        font-size: 0.8rem;
+                    }
+                    .boss-name {
+                        font-size: 0.9rem;
+                    }
+                    .boss-status {
+                        flex: 0 0 35px;
+                        font-size: 1rem;
+                    }
+                }
+            </style>
+            
+            <div class="user-calendar-header">
+                <div style="font-size: 1.3rem; font-weight: bold; margin-bottom: 5px;">${userName}</div>
+                <div style="opacity: 0.9; font-size: 0.9rem;">최근 7일 보스 출석 현황</div>
+            </div>
+            
+            <div style="margin-bottom: 20px;">
+        `;
+        
+        // 날짜별 카드 생성
+        thisWeek.forEach(day => {
+            const headerClass = day.dayOfWeek === 0 ? 'sunday' : day.dayOfWeek === 6 ? 'saturday' : '';
+            const dateDisplay = `${day.dateStr.substring(5)} (${day.dayName})`;
+            const bossCount = day.bosses.length;
+            const presentCount = day.bosses.filter(b => b.status === 'O').length;
+            const lateCount = day.bosses.filter(b => b.status === 'L').length;
+            const absentCount = day.bosses.filter(b => b.status === 'X').length;
+            
+            html += `
+                <div class="day-card">
+                    <div class="day-card-header ${headerClass}">
+                        <div style="font-weight: bold; font-size: 1rem;">${dateDisplay}</div>
+                        <div style="font-size: 0.85rem; opacity: 0.9;">
+                            ${bossCount > 0 ? `${presentCount + lateCount}/${bossCount} 참석` : '보스 없음'}
+                        </div>
+                    </div>
+                    <div class="day-card-body">
+            `;
+            
+            if (day.bosses.length === 0) {
+                html += `<div class="no-boss">이 날은 보스가 없습니다</div>`;
+            } else {
+                day.bosses.forEach(boss => {
+                    const statusClass = boss.status === 'O' ? 'present' 
+                        : boss.status === 'X' ? 'absent' 
+                        : boss.status === 'L' ? 'late' 
+                        : 'none';
+                    html += `
+                        <div class="boss-row">
+                            <div class="boss-time">${boss.time}</div>
+                            <div class="boss-name">${boss.name}</div>
+                            <div class="boss-status ${statusClass}">${boss.status}</div>
+                        </div>
+                    `;
+                });
+            }
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        });
+        
+        // 통계 요약 (5개 칸: 참석, 지각, 불참, 미기록, 참여율)
+        html += `
+            </div>
+            
+            <div class="stats-summary">
+                <h3 style="margin: 0 0 8px 0; color: #2c3e50; font-size: 1rem;">📊 통계 요약</h3>
+                <div style="color: #7f8c8d; font-size: 0.85rem; margin-bottom: 12px;">
+                    이번 주 진행된 보스: <strong style="color: #2c3e50;">${weeklyBossCount}회</strong> (참여율 분모)
+                </div>
+                <div class="stats-grid" style="grid-template-columns: repeat(5, 1fr);">
+                    <div class="stat-item">
+                        <div class="stat-value" style="color: #16a085;">${totalPresent}</div>
+                        <div class="stat-label">참석</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" style="color: #d68910;">${totalLate}</div>
+                        <div class="stat-label">지각</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" style="color: #c0392b;">${totalAbsent}</div>
+                        <div class="stat-label">불참</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" style="color: #95a5a6;">${unmarked}</div>
+                        <div class="stat-label">미기록</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" style="color: #5D6D7E;">${participationRate}%</div>
+                        <div class="stat-label">참여율</div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        content.innerHTML = html;
+    });
+}
+
+// 개인별 보스 달력 모달 닫기
+function closeUserCalendarModal() {
+    document.getElementById('user-boss-calendar-modal').classList.remove('active');
+}
+
+// 내 이름 설정 모달 표시
+// ========== 사용자 추가 ==========
+
+function showAddUserModal() {
+    document.getElementById('add-user-modal').classList.add('active');
+    document.getElementById('new-user-name').value = '';
+    document.getElementById('new-user-server').value = '';
+    document.getElementById('new-user-name').focus();
+}
+
+function closeAddUserModal() {
+    document.getElementById('add-user-modal').classList.remove('active');
+}
+
+function addNewUser() {
+    const name = document.getElementById('new-user-name').value.trim();
+    const server = document.getElementById('new-user-server').value;
+    
+    // 유효성 검사
+    if (!name) {
+        alert('이름을 입력해주세요.');
+        return;
+    }
+    
+    if (!server) {
+        alert('서버를 선택해주세요.');
+        return;
+    }
+    
+    // 중복 체크
+    if (users.find(u => u.name === name)) {
+        alert(`"${name}"은(는) 이미 등록된 사용자입니다.`);
+        return;
+    }
+    
+    // 새 사용자 ID 생성 (기존 최대 ID + 1)
+    const maxId = users.length > 0 ? Math.max(...users.map(u => u.id)) : 0;
+    const newId = maxId + 1;
+    
+    // Firebase에 저장
+    const newUser = {
+        id: newId,
+        name: name,
+        server: server,
+        isActive: true
+    };
+    
+    db.ref(`boss_attendance_users/${newId}`).set(newUser).then(() => {
+        alert(`✅ "${name}" 님이 추가되었습니다!`);
+        closeAddUserModal();
+        loadUsers(); // 사용자 목록 새로고침
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 사용자 추가 실패: ' + error.message);
+    });
+}
+
+// ========== 사용자 수정 ==========
+
+function showEditUserModal(userId) {
+    const user = users.find(u => u.id === userId);
+    if (!user) {
+        alert('사용자를 찾을 수 없습니다.');
+        return;
+    }
+    
+    document.getElementById('edit-user-modal').classList.add('active');
+    document.getElementById('edit-user-id').value = user.id;
+    document.getElementById('edit-user-name').value = user.name;
+    document.getElementById('edit-user-server').value = user.server || '';
+}
+
+function closeEditUserModal() {
+    document.getElementById('edit-user-modal').classList.remove('active');
+}
+
+function updateUser() {
+    const userId = parseInt(document.getElementById('edit-user-id').value);
+    const server = document.getElementById('edit-user-server').value;
+    
+    if (!server) {
+        alert('서버를 선택해주세요.');
+        return;
+    }
+    
+    const user = users.find(u => u.id === userId);
+    if (!user) {
+        alert('사용자를 찾을 수 없습니다.');
+        return;
+    }
+    
+    // Firebase 업데이트
+    db.ref(`boss_attendance_users/${userId}/server`).set(server).then(() => {
+        const serverName = servers[server] || '미지정';
+        alert(`✅ "${user.name}" 님의 서버가 "${serverName}"(으)로 변경되었습니다!`);
+        closeEditUserModal();
+        loadUsers(); // 사용자 목록 새로고침
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 서버 변경 실패: ' + error.message);
+    });
+}
+
+// ========== 명단 관리 ==========
+
+// 명단 렌더링
+function renderUserList() {
+    const tbody = document.getElementById('user-list-tbody');
+    if (!tbody) return; // 탭이 로드되지 않았으면 종료
+    
+    const searchTerm = document.getElementById('user-search')?.value.toLowerCase() || '';
+    const serverFilter = document.getElementById('user-server-filter')?.value || 'all';
+    
+    // 필터링
+    let filteredUsers = users.filter(u => {
+        const matchesSearch = u.name.toLowerCase().includes(searchTerm);
+        const matchesServer = serverFilter === 'all' || u.server === serverFilter;
+        return matchesSearch && matchesServer;
+    });
+    
+    // ID 순 정렬
+    filteredUsers.sort((a, b) => a.id - b.id);
+    
+    // 카운트 업데이트
+    const filteredCount = document.getElementById('filtered-user-count');
+    const totalCount = document.getElementById('total-user-count');
+    if (filteredCount) filteredCount.textContent = filteredUsers.length;
+    if (totalCount) totalCount.textContent = users.length;
+    
+    tbody.innerHTML = filteredUsers.map(u => {
+        const serverName = servers[u.server] || '미지정';
+        const statusBadge = u.isActive !== false 
+            ? '<span style="color: #16a085; font-weight: bold;">✅ 활성</span>' 
+            : '<span style="color: #95a5a6; font-weight: bold;">⏸ 비활성</span>';
+        
+        // 성물 표시
+        const missingRelics = u.missingRelics || [];
+        const relicDisplay = missingRelics.length > 0 
+            ? missingRelics.map(r => {
+                if (r.startsWith('oman')) return r.replace('oman', '오');
+                if (r.startsWith('esca')) return r.replace('esca', '에');
+                return r;
+            }).join(', ')
+            : '-';
+        
+        return `
+            <tr>
+                <td data-label="ID">${u.id}</td>
+                <td data-label="이름"><strong>${u.name}</strong></td>
+                <td data-label="서버">${serverName}</td>
+                <td data-label="성물">${relicDisplay}</td>
+                <td data-label="상태">${statusBadge}</td>
+                <td data-label="관리">
+                    <button class="btn btn-primary" onclick="showEditUserModal(${u.id})" style="padding: 6px 12px; font-size: 0.9rem;">
+                        ✏️ 수정
+                    </button>
+                    <button class="btn btn-warning" onclick="showRelicModal(${u.id})" style="padding: 6px 12px; font-size: 0.9rem; margin-left: 5px;">
+                        📖 성물
+                    </button>
+                    <button class="btn btn-danger" onclick="deleteUser(${u.id}, '${u.name}')" style="padding: 6px 12px; font-size: 0.9rem; margin-left: 5px;">
+                        🗑️ 삭제
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// 명단 필터
+function filterUserList() {
+    renderUserList();
+}
+
+// 사용자 삭제
+function deleteUser(userId, userName) {
+    if (!confirm(`⚠️ "${userName}" 님을 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 해당 사용자의 출석 기록은 그대로 유지됩니다.`)) {
+        return;
+    }
+    
+    // Firebase에서 삭제
+    db.ref(`boss_attendance_users/${userId}`).remove().then(() => {
+        alert(`✅ "${userName}" 님이 삭제되었습니다.`);
+        loadUsers(); // 사용자 목록 새로고침
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 사용자 삭제 실패: ' + error.message);
+    });
+}
+
+// ========== 성물 관리 ==========
+
+// 성물 모달 열기
+function showRelicModal(userId) {
+    const user = users.find(u => u.id === userId);
+    if (!user) {
+        alert('사용자를 찾을 수 없습니다.');
+        return;
+    }
+    
+    document.getElementById('relic-modal').classList.add('active');
+    document.getElementById('relic-user-id').value = user.id;
+    document.getElementById('relic-user-name').textContent = user.name;
+    
+    // 모든 체크박스 초기화
+    const allRelics = ['oman1', 'oman2', 'oman3', 'oman4', 'oman5', 'oman6', 'oman7', 'oman8', 'oman9', 'oman10', 'esca1', 'esca2', 'esca3', 'esca4', 'esca5'];
+    allRelics.forEach(relic => {
+        const checkbox = document.getElementById(`relic-${relic}`);
+        if (checkbox) checkbox.checked = false;
+    });
+    
+    // 보유한 성물 체크 (없는 성물 제외)
+    const missingRelics = user.missingRelics || [];
+    const ownedRelics = allRelics.filter(relic => !missingRelics.includes(relic));
+    ownedRelics.forEach(relic => {
+        const checkbox = document.getElementById(`relic-${relic}`);
+        if (checkbox) checkbox.checked = true;
+    });
+}
+
+// 성물 모달 닫기
+function closeRelicModal() {
+    document.getElementById('relic-modal').classList.remove('active');
+}
+
+// 성물 저장
+function saveRelics() {
+    const userId = parseInt(document.getElementById('relic-user-id').value);
+    const user = users.find(u => u.id === userId);
+    
+    if (!user) {
+        alert('사용자를 찾을 수 없습니다.');
+        return;
+    }
+    
+    // 체크 안 된 성물 수집 (없는 성물)
+    const allRelics = ['oman1', 'oman2', 'oman3', 'oman4', 'oman5', 'oman6', 'oman7', 'oman8', 'oman9', 'oman10', 'esca1', 'esca2', 'esca3', 'esca4', 'esca5'];
+    const missingRelics = [];
+    
+    allRelics.forEach(relic => {
+        const checkbox = document.getElementById(`relic-${relic}`);
+        if (checkbox && !checkbox.checked) {
+            // 체크 안 된 것 = 없는 성물
+            missingRelics.push(relic);
+        }
+    });
+    
+    // Firebase 업데이트
+    db.ref(`boss_attendance_users/${userId}/missingRelics`).set(missingRelics).then(() => {
+        alert(`✅ "${user.name}" 님의 성물 정보가 저장되었습니다!`);
+        closeRelicModal();
+        loadUsers(); // 사용자 목록 새로고침
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 성물 저장 실패: ' + error.message);
+    });
+}
+
+// ========== 관리페이지 보스 아이템 ==========
+
+let adminCurrentBossId = null;
+let adminCurrentBossItems = [];
+
+// 관리페이지 보스 선택 드롭다운 채우기
+function populateAdminBossSelector() {
+    const selector = document.getElementById('admin-boss-selector');
+    if (!selector) return;
+    
+    selector.innerHTML = '<option value="">보스를 선택하세요</option>' +
+        schedules.map(s => `<option value="${s.id}">${s.name} (${s.time})</option>`).join('');
+}
+
+// 관리페이지에서 보스 아이템 로드
+function loadAdminBossItems() {
+    const selector = document.getElementById('admin-boss-selector');
+    const bossId = selector.value;
+    
+    if (!bossId) {
+        document.getElementById('admin-boss-items-container').style.display = 'none';
+        return;
+    }
+    
+    adminCurrentBossId = bossId;
+    document.getElementById('admin-boss-items-container').style.display = 'block';
+    
+    db.ref(`boss_items/${bossId}`).on('value', (snapshot) => {
+        const data = snapshot.val();
+        adminCurrentBossItems = data?.items || [];
+        renderAdminBossItems();
+    });
+}
+
+// 관리페이지 아이템 목록 렌더링
+function renderAdminBossItems() {
+    const container = document.getElementById('admin-boss-items-list');
+    
+    if (adminCurrentBossItems.length === 0) {
+        container.innerHTML = '<p style="color: #95a5a6; font-size: 0.95rem; margin: 0;">등록된 아이템이 없습니다. 아이템을 추가하세요.</p>';
+        return;
+    }
+    
+    container.innerHTML = adminCurrentBossItems.map((item, index) => `
+        <span style="display: inline-flex; align-items: center; background: #d5f4e6; color: #16a085; padding: 8px 14px; border-radius: 6px; font-size: 1rem; font-weight: 500;">
+            ${item}
+            <button onclick="deleteAdminBossItem(${index})" style="margin-left: 10px; background: none; border: none; color: #c0392b; cursor: pointer; font-size: 1.2rem; padding: 0; line-height: 1; font-weight: bold;">×</button>
+        </span>
+    `).join('');
+}
+
+// 관리페이지 아이템 추가
+function addAdminBossItem() {
+    const input = document.getElementById('admin-new-item-name');
+    const itemName = input.value.trim();
+    
+    if (!itemName) {
+        alert('아이템 이름을 입력하세요.');
+        return;
+    }
+    
+    if (!adminCurrentBossId) {
+        alert('보스를 먼저 선택하세요.');
+        return;
+    }
+    
+    if (adminCurrentBossItems.includes(itemName)) {
+        alert('이미 등록된 아이템입니다.');
+        return;
+    }
+    
+    const newItems = [...adminCurrentBossItems, itemName];
+    
+    db.ref(`boss_items/${adminCurrentBossId}/items`).set(newItems).then(() => {
+        input.value = '';
+        alert(`✅ "${itemName}" 아이템이 추가되었습니다!`);
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 아이템 추가 실패: ' + error.message);
+    });
+}
+
+// 관리페이지 아이템 삭제
+function deleteAdminBossItem(index) {
+    const itemName = adminCurrentBossItems[index];
+    
+    if (!confirm(`"${itemName}" 아이템을 삭제하시겠습니까?`)) {
+        return;
+    }
+    
+    const newItems = adminCurrentBossItems.filter((_, i) => i !== index);
+    
+    db.ref(`boss_items/${adminCurrentBossId}/items`).set(newItems).then(() => {
+        alert(`✅ "${itemName}" 아이템이 삭제되었습니다!`);
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 아이템 삭제 실패: ' + error.message);
+    });
+}
+
+// ========== 데이터 관리 ==========
+
+// 오래된 데이터 삭제
+async function deleteOldData(days) {
+    if (!confirm(`⚠️ 정말로 ${days}일 이전의 데이터를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없습니다!`)) {
+        return;
+    }
+    
+    try {
+        // 기준 날짜 계산
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - days);
+        const cutoffDateStr = formatLocalDate(cutoffDate);
+        
+        console.log(`🗑️ ${cutoffDateStr} 이전 데이터 삭제 시작...`);
+        
+        // Firebase에서 모든 출석 데이터 가져오기
+        const snapshot = await db.ref('boss_attendance').once('value');
+        const attendanceData = snapshot.val() || {};
+        
+        let deleteCount = 0;
+        const deletePromises = [];
+        
+        // 오래된 데이터 찾아서 삭제
+        Object.keys(attendanceData).forEach(key => {
+            const dateStr = key.split('_')[0]; // YYYY-MM-DD
+            
+            if (dateStr < cutoffDateStr) {
+                console.log(`  삭제: ${key}`);
+                deletePromises.push(
+                    db.ref(`boss_attendance/${key}`).remove()
+                );
+                deleteCount++;
+            }
+        });
+        
+        if (deleteCount === 0) {
+            alert(`✅ 삭제할 데이터가 없습니다.\n\n${cutoffDateStr} 이전 데이터가 없습니다.`);
+            return;
+        }
+        
+        // 모든 삭제 작업 실행
+        await Promise.all(deletePromises);
+        
+        alert(`✅ 완료!\n\n${deleteCount}개의 오래된 데이터를 삭제했습니다.`);
+        
+        // 통계 새로고침
+        if (document.getElementById('tab-stats').classList.contains('active')) {
+            loadStats();
+        }
+        
+    } catch (error) {
+        console.error('삭제 오류:', error);
+        alert('⚠️ 삭제 실패: ' + error.message);
+    }
+}
+
+// 특정 날짜 데이터 삭제
+async function deleteDataByDate() {
+    const dateInput = document.getElementById('delete-date-input');
+    const dateStr = dateInput.value;
+    
+    if (!dateStr) {
+        alert('날짜를 선택하세요.');
+        return;
+    }
+    
+    if (!confirm(`⚠️ ${dateStr} 날짜의 모든 출석 데이터를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없습니다!`)) {
+        return;
+    }
+    
+    try {
+        console.log(`🗑️ ${dateStr} 데이터 삭제 시작...`);
+        
+        // Firebase에서 해당 날짜의 모든 키 찾기
+        const snapshot = await db.ref('boss_attendance').once('value');
+        const attendanceData = snapshot.val() || {};
+        
+        let deleteCount = 0;
+        const deletePromises = [];
+        
+        Object.keys(attendanceData).forEach(key => {
+            const keyDateStr = key.split('_')[0]; // YYYY-MM-DD
+            
+            if (keyDateStr === dateStr) {
+                console.log(`  삭제: ${key}`);
+                deletePromises.push(
+                    db.ref(`boss_attendance/${key}`).remove()
+                );
+                deleteCount++;
+            }
+        });
+        
+        if (deleteCount === 0) {
+            alert(`✅ 삭제할 데이터가 없습니다.\n\n${dateStr} 날짜의 출석 데이터가 없습니다.`);
+            return;
+        }
+        
+        // 모든 삭제 작업 실행
+        await Promise.all(deletePromises);
+        
+        alert(`✅ 완료!\n\n${dateStr} 날짜의 ${deleteCount}개 데이터를 삭제했습니다.`);
+        
+        // 입력 필드 초기화
+        dateInput.value = '';
+        
+        // 통계 새로고침
+        if (document.getElementById('tab-stats').classList.contains('active')) {
+            loadStats();
+        }
+        
+    } catch (error) {
+        console.error('삭제 오류:', error);
+        alert('⚠️ 삭제 실패: ' + error.message);
+    }
+}
+
+// ========== 구글 시트 내보내기 ==========
+
+// 내보내기 모달 열기
+function showExportModal() {
+    document.getElementById('export-modal').classList.add('active');
+    document.getElementById('export-progress').style.display = 'none';
+}
+
+// 내보내기 모달 닫기
+function closeExportModal() {
+    document.getElementById('export-modal').classList.remove('active');
+}
+
+// 내보내기 시작
+async function startExport() {
+    const dateRange = document.getElementById('export-date-range').value;
+    const includeAttendance = document.getElementById('export-attendance').checked;
+    const includePersonal = document.getElementById('export-personal').checked;
+    const includeBoss = document.getElementById('export-boss').checked;
+    
+    if (!includeAttendance && !includePersonal && !includeBoss) {
+        alert('최소 1개 이상의 시트를 선택하세요.');
+        return;
+    }
+    
+    // 진행 상황 표시
+    document.getElementById('export-progress').style.display = 'block';
+    updateExportStatus('데이터 수집 중...');
+    
+    try {
+        // 날짜 범위 계산
+        const endDate = new Date();
+        let startDate = new Date();
+        
+        if (dateRange === '7') {
+            startDate.setDate(endDate.getDate() - 7);
+        } else if (dateRange === '30') {
+            startDate.setDate(endDate.getDate() - 30);
+        } else if (dateRange === '90') {
+            startDate.setDate(endDate.getDate() - 90);
+        } else {
+            startDate = new Date(2020, 0, 1); // 전체 기간
+        }
+        
+        // Firebase에서 출석 데이터 가져오기
+        updateExportStatus('출석 데이터 로드 중...');
+        const attendanceData = await fetchAttendanceData(startDate, endDate);
+        
+        // CSV 생성
+        const csvFiles = [];
+        
+        if (includeAttendance) {
+            updateExportStatus('출석 현황 시트 생성 중...');
+            const csv1 = generateAttendanceCSV(attendanceData, startDate, endDate);
+            csvFiles.push({ name: '출석현황', content: csv1 });
+        }
+        
+        if (includePersonal) {
+            updateExportStatus('개인별 통계 시트 생성 중...');
+            const csv2 = generatePersonalStatsCSV(attendanceData);
+            csvFiles.push({ name: '개인별통계', content: csv2 });
+        }
+        
+        if (includeBoss) {
+            updateExportStatus('보스별 통계 시트 생성 중...');
+            const csv3 = generateBossStatsCSV(attendanceData);
+            csvFiles.push({ name: '보스별통계', content: csv3 });
+        }
+        
+        // 다운로드
+        updateExportStatus('파일 다운로드 중...');
+        csvFiles.forEach(file => {
+            downloadCSV(file.content, file.name);
+        });
+        
+        updateExportStatus('✅ 완료!');
+        setTimeout(() => {
+            closeExportModal();
+        }, 1500);
+        
+    } catch (error) {
+        console.error('내보내기 오류:', error);
+        alert('⚠️ 내보내기 실패: ' + error.message);
+        document.getElementById('export-progress').style.display = 'none';
+    }
+}
+
+// 진행 상황 업데이트
+function updateExportStatus(message) {
+    document.getElementById('export-status').textContent = message;
+}
+
+// Firebase에서 출석 데이터 가져오기
+async function fetchAttendanceData(startDate, endDate) {
+    return new Promise((resolve, reject) => {
+        db.ref('boss_attendance').once('value', (snapshot) => {
+            const data = snapshot.val();
+            if (!data) {
+                resolve({});
+                return;
+            }
+            
+            // 날짜 범위 필터링
+            const filtered = {};
+            Object.keys(data).forEach(key => {
+                const dateStr = key.split('_')[0]; // YYYY-MM-DD
+                const recordDate = new Date(dateStr);
+                
+                if (recordDate >= startDate && recordDate <= endDate) {
+                    filtered[key] = data[key];
+                }
+            });
+            
+            resolve(filtered);
+        }, reject);
+    });
+}
+
+// 출석 현황 CSV 생성
+function generateAttendanceCSV(attendanceData, startDate, endDate) {
+    // UTF-8 BOM 추가 (엑셀 한글 깨짐 방지)
+    let csv = '\uFEFF';
+    
+    // 날짜별로 그룹화
+    const dateGroups = {};
+    Object.keys(attendanceData).forEach(key => {
+        // bossId가 밑줄을 포함할 수 있으므로 첫 번째 _만 분리
+        const idx = key.indexOf('_');
+        const dateStr = idx >= 0 ? key.substring(0, idx) : key;
+        const bossId = idx >= 0 ? key.substring(idx + 1) : '';
+        if (!dateGroups[dateStr]) {
+            dateGroups[dateStr] = [];
+        }
+        
+        const boss = schedules.find(s => s.id === bossId);
+        if (boss) {
+            dateGroups[dateStr].push({
+                bossId,
+                bossName: boss.name,
+                time: boss.time,
+                attendance: attendanceData[key].attendees || {}
+            });
+        }
+    });
+    
+    // 날짜 정렬
+    const sortedDates = Object.keys(dateGroups).sort();
+    
+    // 헤더 생성
+    const headers = ['이름', '서버', '성물'];
+    sortedDates.forEach(dateStr => {
+        const date = new Date(dateStr);
+        const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+        const dayName = dayNames[date.getDay()];
+        
+        dateGroups[dateStr].forEach(boss => {
+            headers.push(`${dateStr.substring(5)}(${dayName}) ${boss.bossName} ${boss.time}`);
+        });
+    });
+    headers.push('참석 횟수');
+    headers.push('참석률');
+    
+    csv += headers.join(',') + '\n';
+    
+    // 데이터 생성
+    users.forEach(user => {
+        const row = [];
+        row.push(user.name);
+        row.push(user.server === 'jingir' ? '진기르' : user.server === 'pandora' ? '판도라' : '지원');
+        
+        // 성물
+        const missingRelics = user.missingRelics || [];
+        const omanRelics = missingRelics.filter(r => r.startsWith('oman')).map(r => r.replace('oman', '')).sort((a, b) => parseInt(a) - parseInt(b));
+        const escaRelics = missingRelics.filter(r => r.startsWith('esca')).map(r => r.replace('esca', '')).sort((a, b) => parseInt(a) - parseInt(b));
+        const relicParts = [];
+        if (omanRelics.length > 0) relicParts.push('오' + omanRelics.join(''));
+        if (escaRelics.length > 0) relicParts.push('에' + escaRelics.join(''));
+        row.push(relicParts.join(' '));
+        
+        // 출석 기록
+        let attendCount = 0;
+        let totalCount = 0;
+        
+        sortedDates.forEach(dateStr => {
+            dateGroups[dateStr].forEach(boss => {
+                totalCount++;
+                const status = boss.attendance[user.id];
+                if (status === 'present') {
+                    row.push('⭕');
+                    attendCount++;
+                } else if (status === 'absent') {
+                    row.push('❌');
+                } else {
+                    row.push('');
+                }
+            });
+        });
+        
+        row.push(attendCount);
+        row.push(totalCount > 0 ? Math.round(attendCount / totalCount * 100) + '%' : '0%');
+        
+        csv += row.join(',') + '\n';
+    });
+    
+    return csv;
+}
+
+// 개인별 통계 CSV 생성
+function generatePersonalStatsCSV(attendanceData) {
+    let csv = '\uFEFF';
+    csv += '순위,이름,서버,성물,참석,지각,불참,참석률,연속출석\n';
+    
+    // 각 사용자별 통계 계산
+    const userStats = users.map(user => {
+        let present = 0;
+        let late = 0;
+        let absent = 0;
+        
+        Object.values(attendanceData).forEach(record => {
+            const status = normalizeStatus(record.attendees?.[user.id]);
+            if (status === 'present') present++;
+            else if (status === 'late') late++;
+            else if (status === 'absent') absent++;
+        });
+        
+        const total = present + late + absent;
+        // 메인 TOP 20과 동일 공식: (참석+지각)/총합
+        const rate = total > 0 ? ((present + late) / total * 100).toFixed(1) : 0;
+        
+        // 성물
+        const missingRelics = user.missingRelics || [];
+        const omanRelics = missingRelics.filter(r => r.startsWith('oman')).map(r => r.replace('oman', '')).sort((a, b) => parseInt(a) - parseInt(b));
+        const escaRelics = missingRelics.filter(r => r.startsWith('esca')).map(r => r.replace('esca', '')).sort((a, b) => parseInt(a) - parseInt(b));
+        const relicParts = [];
+        if (omanRelics.length > 0) relicParts.push('오' + omanRelics.join(''));
+        if (escaRelics.length > 0) relicParts.push('에' + escaRelics.join(''));
+        
+        return {
+            name: user.name,
+            server: user.server === 'jingir' ? '진기르' : user.server === 'pandora' ? '판도라' : '지원',
+            relics: relicParts.join(' '),
+            present,
+            late,
+            absent,
+            rate: parseFloat(rate)
+        };
+    });
+    
+    // 참석률 순 정렬
+    userStats.sort((a, b) => b.rate - a.rate);
+    
+    userStats.forEach((stat, index) => {
+        csv += `${index + 1},${stat.name},${stat.server},${stat.relics},${stat.present},${stat.late},${stat.absent},${stat.rate}%,0\n`;
+    });
+    
+    return csv;
+}
+
+// 보스별 통계 CSV 생성
+function generateBossStatsCSV(attendanceData) {
+    let csv = '\uFEFF';
+    csv += '날짜,보스,시간,참석,지각,불참,참석률,불참자\n';
+    
+    Object.keys(attendanceData).sort().forEach(key => {
+        // bossId가 밑줄을 포함할 수 있으므로 첫 번째 _만 분리
+        const idx = key.indexOf('_');
+        const dateStr = idx >= 0 ? key.substring(0, idx) : key;
+        const bossId = idx >= 0 ? key.substring(idx + 1) : '';
+        const boss = schedules.find(s => s.id === bossId);
+        if (!boss) return;
+        
+        const attendees = attendanceData[key].attendees || {};
+        let present = 0;
+        let late = 0;
+        let absent = 0;
+        const absentUsers = [];
+        
+        Object.keys(attendees).forEach(userId => {
+            const status = normalizeStatus(attendees[userId]);
+            if (status === 'present') {
+                present++;
+            } else if (status === 'late') {
+                late++;
+            } else if (status === 'absent') {
+                absent++;
+                const user = users.find(u => u.id === parseInt(userId));
+                if (user) absentUsers.push(user.name);
+            }
+        });
+        
+        const total = present + late + absent;
+        // 메인 TOP 20과 동일: (참석+지각)/총합
+        const rate = total > 0 ? ((present + late) / total * 100).toFixed(1) : 0;
+        
+        csv += `${dateStr},${boss.name},${boss.time},${present},${late},${absent},${rate}%,"${absentUsers.slice(0, 5).join(', ')}"\n`;
+    });
+    
+    return csv;
+}
+
+// CSV 다운로드
+function downloadCSV(content, filename) {
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    const dateStr = formatLocalDate(new Date());
+    link.setAttribute('href', url);
+    link.setAttribute('download', `헌터출석_${filename}_${dateStr}.csv`);
+    link.style.visibility = 'hidden';
+    
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// ========== 아이템 드랍 관리 ==========
+
+let currentBossItems = [];
+let currentDrops = [];
+
+// 보스별 아이템 목록 로드
+function loadBossItems(bossId) {
+    if (!bossId) {
+        document.getElementById('item-drop-section').style.display = 'none';
+        return;
+    }
+    
+    document.getElementById('item-drop-section').style.display = 'block';
+    
+    db.ref(`boss_items/${bossId}`).on('value', (snapshot) => {
+        const data = snapshot.val();
+        currentBossItems = data?.items || [];
+        renderBossItems();
+        updateDropSelects();
+    });
+}
+
+// 아이템 목록 렌더링
+function renderBossItems() {
+    const container = document.getElementById('boss-items-list');
+    
+    if (currentBossItems.length === 0) {
+        container.innerHTML = '<p style="color: #95a5a6; font-size: 0.9rem; margin: 0;">등록된 아이템이 없습니다. 아이템을 추가하세요.</p>';
+        return;
+    }
+    
+    container.innerHTML = currentBossItems.map((item, index) => `
+        <span style="display: inline-flex; align-items: center; background: #d5f4e6; color: #16a085; padding: 5px 10px; border-radius: 4px; font-size: 0.9rem;">
+            ${item}
+            <button onclick="deleteBossItem(${index})" style="margin-left: 8px; background: none; border: none; color: #c0392b; cursor: pointer; font-size: 1rem; padding: 0; line-height: 1;">×</button>
+        </span>
+    `).join('');
+}
+
+// 아이템 추가
+function addBossItem() {
+    const input = document.getElementById('new-item-name');
+    const itemName = input.value.trim();
+    
+    if (!itemName) {
+        alert('아이템 이름을 입력하세요.');
+        return;
+    }
+    
+    if (!currentScheduleId) {
+        alert('보스를 먼저 선택하세요.');
+        return;
+    }
+    
+    if (currentBossItems.includes(itemName)) {
+        alert('이미 등록된 아이템입니다.');
+        return;
+    }
+    
+    const newItems = [...currentBossItems, itemName];
+    
+    db.ref(`boss_items/${currentScheduleId}/items`).set(newItems).then(() => {
+        input.value = '';
+        alert(`✅ "${itemName}" 아이템이 추가되었습니다!`);
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 아이템 추가 실패: ' + error.message);
+    });
+}
+
+// 아이템 삭제
+function deleteBossItem(index) {
+    const itemName = currentBossItems[index];
+    
+    if (!confirm(`"${itemName}" 아이템을 삭제하시겠습니까?`)) {
+        return;
+    }
+    
+    const newItems = currentBossItems.filter((_, i) => i !== index);
+    
+    db.ref(`boss_items/${currentScheduleId}/items`).set(newItems).then(() => {
+        alert(`✅ "${itemName}" 아이템이 삭제되었습니다!`);
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 아이템 삭제 실패: ' + error.message);
+    });
+}
+
+// 드랍 셀렉트 업데이트
+function updateDropSelects() {
+    const itemSelect = document.getElementById('drop-item-select');
+    const winnerSelect = document.getElementById('drop-winner-select');
+    
+    // 아이템 목록
+    itemSelect.innerHTML = '<option value="">아이템 선택</option>' +
+        currentBossItems.map(item => `<option value="${item}">${item}</option>`).join('');
+    
+    // 사용자 목록
+    winnerSelect.innerHTML = '<option value="">획득자 선택</option>' +
+        users.map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+}
+
+// 드랍 기록 로드
+function loadDrops(bossId, dateStr = null) {
+    if (!bossId) return;
+    
+    const date = dateStr || formatLocalDate(new Date());
+    const dropKey = `${date}_${bossId}`;
+    
+    db.ref(`boss_drops/${dropKey}`).on('value', (snapshot) => {
+        const data = snapshot.val();
+        currentDrops = data?.items || [];
+        renderDrops();
+    });
+}
+
+// 드랍 목록 렌더링
+function renderDrops() {
+    const container = document.getElementById('drops-list');
+    
+    if (currentDrops.length === 0) {
+        container.innerHTML = '<p style="color: #95a5a6; text-align: center; padding: 20px;">아직 드랍 기록이 없습니다.</p>';
+        return;
+    }
+    
+    container.innerHTML = currentDrops.map((drop, index) => {
+        const deliveredClass = drop.delivered ? 'status-present' : 'status-absent';
+        const deliveredText = drop.delivered ? '✅ 전달됨' : '⏳ 미전달';
+        
+        return `
+            <div style="background: white; border: 2px solid #e0e0e0; border-radius: 6px; padding: 12px; margin-bottom: 10px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="font-weight: bold; color: #2c3e50; margin-bottom: 5px; font-size: 1.05rem;">${drop.itemName}</div>
+                        <div style="color: #7f8c8d; font-size: 0.9rem;">획득: <strong>${drop.winner}</strong></div>
+                        <div style="color: #95a5a6; font-size: 0.85rem; margin-top: 3px;">${new Date(drop.timestamp).toLocaleString('ko-KR')}</div>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <label style="display: flex; align-items: center; cursor: pointer; padding: 6px 12px; background: ${drop.delivered ? '#d5f4e6' : '#fadbd8'}; border-radius: 4px;">
+                            <input type="checkbox" ${drop.delivered ? 'checked' : ''} onchange="toggleDelivered(${index})" style="margin-right: 6px; width: 18px; height: 18px; cursor: pointer;">
+                            <span style="color: ${drop.delivered ? '#16a085' : '#c0392b'}; font-weight: bold; font-size: 0.9rem;">${deliveredText}</span>
+                        </label>
+                        <button class="btn btn-danger" onclick="deleteDrop(${index})" style="padding: 6px 12px; font-size: 0.9rem;">🗑️</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 드랍 추가
+function addDrop() {
+    const itemSelect = document.getElementById('drop-item-select');
+    const winnerSelect = document.getElementById('drop-winner-select');
+    
+    const itemName = itemSelect.value;
+    const winnerId = parseInt(winnerSelect.value);
+    
+    if (!itemName) {
+        alert('아이템을 선택하세요.');
+        return;
+    }
+    
+    if (!winnerId) {
+        alert('획득자를 선택하세요.');
+        return;
+    }
+    
+    if (!currentScheduleId) {
+        alert('보스를 먼저 선택하세요.');
+        return;
+    }
+    
+    const winner = users.find(u => u.id === winnerId);
+    if (!winner) {
+        alert('획득자를 찾을 수 없습니다.');
+        return;
+    }
+    
+    const date = currentScheduleDate || formatLocalDate(new Date());
+    const dropKey = `${date}_${currentScheduleId}`;
+    
+    const newDrop = {
+        id: Date.now(),
+        itemName: itemName,
+        winner: winner.name,
+        winnerId: winnerId,
+        delivered: false,
+        timestamp: new Date().toISOString()
+    };
+    
+    const newDrops = [...currentDrops, newDrop];
+    
+    db.ref(`boss_drops/${dropKey}/items`).set(newDrops).then(() => {
+        itemSelect.value = '';
+        winnerSelect.value = '';
+        alert(`✅ "${itemName}" 드랍이 기록되었습니다!`);
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 드랍 기록 실패: ' + error.message);
+    });
+}
+
+// 전달 상태 토글
+function toggleDelivered(index) {
+    const drop = currentDrops[index];
+    drop.delivered = !drop.delivered;
+    
+    const date = currentScheduleDate || formatLocalDate(new Date());
+    const dropKey = `${date}_${currentScheduleId}`;
+    
+    db.ref(`boss_drops/${dropKey}/items`).set(currentDrops).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 전달 상태 변경 실패: ' + error.message);
+    });
+}
+
+// 드랍 삭제
+function deleteDrop(index) {
+    const drop = currentDrops[index];
+    
+    if (!confirm(`"${drop.itemName}" 드랍을 삭제하시겠습니까?`)) {
+        return;
+    }
+    
+    const newDrops = currentDrops.filter((_, i) => i !== index);
+    
+    const date = currentScheduleDate || formatLocalDate(new Date());
+    const dropKey = `${date}_${currentScheduleId}`;
+    
+    db.ref(`boss_drops/${dropKey}/items`).set(newDrops).then(() => {
+        alert(`✅ 드랍이 삭제되었습니다!`);
+    }).catch(error => {
+        console.error('Error:', error);
+        alert('⚠️ 드랍 삭제 실패: ' + error.message);
+    });
+}
+
+// ========== 내 이름 설정 (1~5번 슬롯) ==========
+
+const MAX_MY_NAMES = 5;
+const MY_NAMES_KEY = 'myBossAttendanceNames';
+const LEGACY_MY_NAME_KEY = 'myBossAttendanceName';
+
+// localStorage에서 내 이름들 가져오기 (legacy 단일 이름 키와 호환)
+function getMyNames() {
+    try {
+        const raw = localStorage.getItem(MY_NAMES_KEY);
+        if (raw) {
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr)) return arr.filter(n => typeof n === 'string' && n.trim()).slice(0, MAX_MY_NAMES);
+        }
+    } catch (e) {
+        console.warn('내 이름 파싱 실패:', e);
+    }
+    // legacy 마이그레이션: 단일 이름 키만 있으면 슬롯 1로 가져오기
+    const legacyName = localStorage.getItem(LEGACY_MY_NAME_KEY);
+    if (legacyName && legacyName.trim()) {
+        const arr = [legacyName.trim()];
+        localStorage.setItem(MY_NAMES_KEY, JSON.stringify(arr));
+        return arr;
+    }
+    return [];
+}
+
+function setMyNames(names) {
+    const filtered = (names || []).filter(n => typeof n === 'string' && n.trim()).slice(0, MAX_MY_NAMES);
+    localStorage.setItem(MY_NAMES_KEY, JSON.stringify(filtered));
+    // legacy 키도 첫 번째 이름과 동기화 (다른 페이지/탭 호환용)
+    if (filtered.length > 0) {
+        localStorage.setItem(LEGACY_MY_NAME_KEY, filtered[0]);
+    } else {
+        localStorage.removeItem(LEGACY_MY_NAME_KEY);
+    }
+}
+
+// 모달 표시 — 5개 슬롯에 현재 값 채우기
+function showMyNameModal() {
+    const modal = document.getElementById('my-name-modal');
+    const slotsContainer = document.getElementById('my-name-slots');
+    const current = getMyNames();
+    
+    let html = '';
+    for (let i = 0; i < MAX_MY_NAMES; i++) {
+        const value = current[i] || '';
+        html += `
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <label style="flex: 0 0 50px; font-weight: bold; color: #2c3e50;">${i + 1}번</label>
+                <input type="text" class="my-name-slot-input" data-slot="${i}" value="${value.replace(/"/g, '&quot;')}" placeholder="${i === 0 ? '예: 헌터겜블러' : '비워두면 미사용'}" style="flex: 1; padding: 10px; font-size: 1rem; margin: 0;">
+            </div>
+        `;
+    }
+    slotsContainer.innerHTML = html;
+    
+    modal.classList.add('active');
+    setTimeout(() => {
+        const firstInput = slotsContainer.querySelector('input.my-name-slot-input');
+        if (firstInput) firstInput.focus();
+    }, 100);
+}
+
+// 5개 슬롯의 값을 읽어 저장
+function saveMyNames() {
+    const inputs = document.querySelectorAll('.my-name-slot-input');
+    const names = [];
+    inputs.forEach(inp => {
+        const val = inp.value.trim();
+        if (val) names.push(val);
+    });
+    
+    // 중복 제거 (앞에서부터 우선)
+    const seen = new Set();
+    const unique = [];
+    names.forEach(n => {
+        if (!seen.has(n)) {
+            seen.add(n);
+            unique.push(n);
+        }
+    });
+    
+    setMyNames(unique);
+    closeMyNameModal();
+    updateMyNameDisplay();
+    renderAttendanceTable();
+    
+    if (unique.length > 0) {
+        alert(`${unique.length}명 등록되었습니다:\n${unique.join(', ')}`);
+    } else {
+        alert('내 이름이 모두 해제되었습니다.');
+    }
+}
+
+// 한 슬롯만 즉시 해제 (빠른 출석 박스에서 X 버튼)
+function removeMyName(name) {
+    if (!confirm(`"${name}" 님을 내 이름에서 제거하시겠습니까?`)) return;
+    const current = getMyNames();
+    const filtered = current.filter(n => n !== name);
+    setMyNames(filtered);
+    updateMyNameDisplay();
+    renderAttendanceTable();
+}
+
+// 빠른 출석 영역 + 표시 업데이트
+function updateMyNameDisplay() {
+    const display = document.getElementById('my-name-display');
+    const list = document.getElementById('my-names-quick-list');
+    if (!display || !list) return;
+    
+    const names = getMyNames();
+    if (names.length === 0) {
+        display.style.display = 'none';
+        list.innerHTML = '';
+        return;
+    }
+    
+    display.style.display = 'block';
+    
+    // 각 이름별로 한 행씩 렌더링
+    list.innerHTML = names.map(name => {
+        const user = users.find(u => u.name === name);
+        const exists = !!user;
+        const warningIcon = exists ? '' : '<span style="color: #c0392b; font-size: 0.85rem;" title="명단에 없는 이름">⚠️</span>';
+        const safeName = name.replace(/'/g, "\\'");
+        return `
+            <div style="display: flex; flex-direction: column; gap: 6px; padding: 8px; background: white; border-radius: 6px; border: 1px solid #fde9a0;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                    <span style="font-weight: bold; color: #2c3e50; font-size: 1rem;">${name} ${warningIcon}</span>
+                    <button onclick="removeMyName('${safeName}')" style="padding: 3px 10px; background: transparent; border: 1px solid #856404; color: #856404; border-radius: 4px; cursor: pointer; font-size: 0.8rem; white-space: nowrap; flex-shrink: 0;">해제</button>
+                </div>
+                <button onclick="quickAttendanceByName('${safeName}')" ${exists ? '' : 'disabled'} style="width: 100%; padding: 9px; background: ${exists ? '#16a085' : '#bdc3c7'}; color: white; border: none; border-radius: 6px; cursor: ${exists ? 'pointer' : 'not-allowed'}; font-size: 0.95rem; font-weight: bold;">⭕ 빠른 출석</button>
+            </div>
+        `;
+    }).join('');
+}
+
+// 모달 닫기
+function closeMyNameModal() {
+    document.getElementById('my-name-modal').classList.remove('active');
+}
+
+// 빠른 출석 (이름 기반) — 시간 기반 자동 판정
+function quickAttendanceByName(name) {
+    const user = users.find(u => u.name === name);
+    if (!user) {
+        alert(`사용자 "${name}"을 찾을 수 없습니다.`);
+        return;
+    }
+    if (!currentScheduleId) {
+        alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±5분 내에만 가능합니다.');
+        return;
+    }
+    // updateAttendance 안에서 시간 검증 + 자동 status 결정 수행
+    updateAttendance(user.id, 'present');
+}
+
+// 페이지 로드 시 내 이름 표시 업데이트
+window.addEventListener('load', function() {
+    updateMyNameDisplay();
+});
+
+// ========== URL 파라미터 처리 (수동 링크 클릭만 처리, 자동 출석 모드 없음) ==========
+
+let urlParamsChecked = false;
+
+function checkUrlParams() {
+    if (urlParamsChecked) return;
+    urlParamsChecked = true;
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const action = urlParams.get('action');
+    const targetName = urlParams.get('name'); // 어떤 캐릭터인지
+    
+    if (!action) return; // action 파라미터 있을 때만 동작
+    
+    // 'present' 액션만 처리 (불참/지각 링크는 사라짐)
+    if (action !== 'present') {
+        console.log(`⚠️ 지원하지 않는 action: ${action} — 무시`);
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+    }
+    
+    console.log('🔗 출석 링크 감지:', { targetName });
+    performLinkAttendance(targetName);
+}
+
+// URL 링크 클릭으로 출석 처리 (present만, 시간 따라 참석/지각 자동 결정)
+function performLinkAttendance(targetName) {
+    // users 배열이 로드될 때까지 대기
+    if (!users || users.length === 0) {
+        console.log('⏳ 사용자 목록 로드 대기 중...');
+        setTimeout(() => performLinkAttendance(targetName), 500);
+        return;
+    }
+    
+    // 처리할 이름 결정: URL에 name이 있으면 그걸로, 없으면 등록된 모든 내 이름
+    let namesToProcess = [];
+    if (targetName) {
+        namesToProcess = [targetName];
+    } else {
+        namesToProcess = getMyNames();
+        if (namesToProcess.length === 0) {
+            alert('⚠️ 먼저 "내 이름"을 설정해주세요.');
+            window.history.replaceState({}, document.title, window.location.pathname);
+            return;
+        }
+    }
+    
+    // 현재 보스 확인 (±5분 윈도우)
+    if (!currentScheduleId) {
+        const currentBoss = getCurrentBoss();
+        if (currentBoss) {
+            currentScheduleId = currentBoss.id;
+        } else {
+            showLinkNotification('현재 출석 가능한 보스가 없습니다 (±5분 윈도우 외)', false);
+            window.history.replaceState({}, document.title, window.location.pathname);
+            return;
+        }
+    }
+    
+    // 보스 시간 검증 (한 번만 체크. 한 보스에 여러 이름 처리 시 동일 결과)
+    const boss = schedules.find(s => s.id === currentScheduleId);
+    if (!boss) {
+        showLinkNotification('보스 정보를 찾을 수 없습니다', false);
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+    }
+    const timeStatus = getAttendanceTimeStatus(boss.time);
+    if (!timeStatus.allowed) {
+        showLinkNotification(timeStatus.message, false);
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+    }
+    
+    // 출석 체크 실행 (각 이름별로) — updateAttendance 내부에서 시간 기반 자동 결정
+    setTimeout(() => {
+        const processed = [];
+        const notFound = [];
+        
+        namesToProcess.forEach(name => {
+            const user = users.find(u => u.name.trim() === name.trim());
+            if (user) {
+                updateAttendance(user.id, 'present');
+                processed.push(name);
+            } else {
+                notFound.push(name);
+            }
+        });
+        
+        const statusText = timeStatus.status === 'late' ? '🕐 지각' : '⭕ 참석';
+        
+        if (processed.length > 0) {
+            showLinkNotification(`${processed.join(', ')} 님 ${statusText} 처리 완료`, true);
+        }
+        
+        if (notFound.length > 0) {
+            console.warn(`⚠️ 명단에서 찾을 수 없는 이름: ${notFound.join(', ')}`);
+        }
+        
+        // URL에서 파라미터 제거
+        window.history.replaceState({}, document.title, window.location.pathname);
+    }, 1000);
+}
+
+// 링크 처리 결과 알림
+function showLinkNotification(text, success) {
+    const notification = document.createElement('div');
+    const bg = success 
+        ? 'linear-gradient(135deg, #16a085 0%, #138d75 100%)' 
+        : 'linear-gradient(135deg, #c0392b 0%, #a93226 100%)';
+    notification.style.cssText = `
+        position: fixed; top: 20px; right: 20px;
+        background: ${bg};
+        color: white; padding: 15px 20px; border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 9999;
+        font-weight: bold; max-width: 320px;
+    `;
+    notification.innerHTML = (success ? '✅ ' : '⚠️ ') + text;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 4000);
+}
+
+// 출석 링크 생성 (특정 이름용 — 출석 링크만; action=present 고정. 시간에 따라 참석/지각 자동 결정됨)
+function generateAttendanceLinkForName(name) {
+    const baseUrl = window.location.origin + window.location.pathname;
+    return `${baseUrl}?action=present&name=${encodeURIComponent(name)}`;
+}
+
+// 링크 복사 (특정 이름용)
+function copyAttendanceLinkForName(name) {
+    const link = generateAttendanceLinkForName(name);
+    
+    navigator.clipboard.writeText(link).then(() => {
+        alert(`✅ "${name}" 님의 출석 링크가 복사되었습니다!\n\n${link}\n\n링크 클릭 시 보스 시간 기준 ±5분 내에만 출석 처리됩니다.\n(정시 이전: 참석 / 정시 이후: 지각)`);
+    }).catch(() => {
+        prompt('링크를 복사하세요:', link);
+    });
+}
+</script>
+
+</body>
+</html>
