@@ -320,7 +320,7 @@
                             <th width="25%">이름</th>
                             <th width="15%">서버</th>
                             <th width="20%">상태</th>
-                            <th>관리</th>
+                            <th id="attendance-th-manage">관리</th>
                         </tr>
                     </thead>
                     <tbody id="attendance-tbody"></tbody>
@@ -815,10 +815,14 @@ let isAdmin = localStorage.getItem('hunterIsAdmin') === 'true';
 const ADMIN_PW = 'ht2026'; // ← 비밀번호 변경 시 여기 수정
 
 function applyMode() {
-    // admin-only 요소 표시/숨김 (inline style은 CSS보다 우선)
+    // admin-only 요소 표시/숨김
     document.querySelectorAll('.admin-only').forEach(el => {
         el.style.display = isAdmin ? '' : 'none';
     });
+
+    // 관리 열 헤더 표시/숨김
+    const thManage = document.getElementById('attendance-th-manage');
+    if (thManage) thManage.style.display = isAdmin ? '' : 'none';
 
     // 사용자 모드로 전환 시 관리페이지 탭에 있으면 출석 탭으로 이동
     if (!isAdmin) {
@@ -856,7 +860,7 @@ function toggleAdminMode() {
         }
     } else {
         const pw = prompt('🔐 관리자 비밀번호를 입력하세요:');
-        if (pw === null) return; // 취소
+        if (pw === null) return;
         if (pw === ADMIN_PW) {
             isAdmin = true;
             localStorage.setItem('hunterIsAdmin', 'true');
@@ -872,7 +876,7 @@ function toggleAdminMode() {
 // 초기화
 window.onload = function() {
     loadData();
-    applyMode(); // 관리자/사용자 모드 초기 적용
+    applyMode();
 };
 
 
@@ -938,7 +942,7 @@ function populateBossSelector() {
     // 현재 옵션
     selector.innerHTML = '<option value="current">⭐ 현재 진행 중인 보스 (자동)</option>';
 
-    // 사용자 모드: 현재 보스만 표시 (과거 보스 선택 불가)
+    // 사용자 모드: 현재 보스만 표시
     if (!isAdmin) return;
     
     // 오늘부터 7일 전까지
@@ -1765,23 +1769,23 @@ function renderAttendanceTable() {
             : '';
         
         // 모드별 출석 버튼 구성
-        // 사용자 모드: 버튼 없음 (읽기 전용, 빠른 출석 배너로 본인 출석)
+        // 사용자 모드: 관리 열 자체 없음 (읽기 전용, 빠른 출석 배너로 본인 출석)
         // 관리자 자동 모드 (currentScheduleDate=null): ⭕ 출석 버튼만
         // 관리자 수동 모드 (currentScheduleDate=과거날짜): 참석/지각/불참 전체
-        let actionButtonsHtml;
+        let manageTdHtml;
         if (!isAdmin) {
-            actionButtonsHtml = '';
+            manageTdHtml = ''; // 관리 열 td 자체를 렌더링하지 않음
         } else if (currentScheduleDate) {
-            actionButtonsHtml = `
+            manageTdHtml = `<td data-label="관리">
                 <button class="attendance-btn btn-o ${status==='present'?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 참석</button>
                 <button class="attendance-btn btn-late ${status==='late'?'active':''}" onclick="updateAttendance(${u.id}, 'late')" style="background: ${status==='late' ? '#d68910' : '#f5cba7'}; color: ${status==='late' ? 'white' : '#5d4037'};">🕐 지각</button>
                 <button class="attendance-btn btn-x ${status==='absent'?'active':''}" onclick="updateAttendance(${u.id}, 'absent')">❌ 불참</button>
-            `;
+            </td>`;
         } else {
             const isMarked = status === 'present' || status === 'late';
-            actionButtonsHtml = `
+            manageTdHtml = `<td data-label="관리">
                 <button class="attendance-btn btn-o ${isMarked?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 출석</button>
-            `;
+            </td>`;
         }
         
         return `
@@ -1789,7 +1793,7 @@ function renderAttendanceTable() {
                 <td data-label="이름">${relicHtml}<strong>${u.name}</strong></td>
                 <td data-label="서버">${serverName}</td>
                 <td data-label="상태">${statusHtml}</td>
-                <td data-label="관리">${actionButtonsHtml}</td>
+                ${manageTdHtml}
             </tr>
         `;
     }).join('');
