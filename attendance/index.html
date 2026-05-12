@@ -239,9 +239,15 @@
             <h1>📅 헌터혈맹 출석관리<span class="version">v1.7</span></h1>
             <p style="color:#7f8c8d; margin-top:8px;">● hunterquest-fbdee 서버 (테스트 DB)</p>
         </div>
-        <button class="btn-back" onclick="window.location.href='index.html'">
-            ← 퀘스트로 돌아가기
-        </button>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <button id="admin-toggle-btn" onclick="toggleAdminMode()"
+                style="padding: 8px 16px; background: #7f8c8d; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold; transition: all 0.3s;">
+                🔒 사용자 모드
+            </button>
+            <button class="btn-back" onclick="window.location.href='index.html'">
+                ← 퀘스트로 돌아가기
+            </button>
+        </div>
     </div>
     
     <!-- Tab -->
@@ -249,7 +255,7 @@
         <button class="tab active" onclick="switchTab('attendance')">📋 출석 체크</button>
         <button class="tab" onclick="switchTab('schedules')">📊 주간출석현황</button>
         <button class="tab" onclick="switchTab('stats')">📈 통계</button>
-        <button class="tab" onclick="switchTab('users')">⚙️ 관리페이지</button>
+        <button class="tab admin-only" onclick="switchTab('users')">⚙️ 관리페이지</button>
     </div>
     
     <!-- Tab 1: 출석 체크 -->
@@ -374,7 +380,7 @@
             <div id="stats-count-info" style="margin-top: 10px; color: #7f8c8d; font-size: 0.9rem; text-align: right;"></div>
         </div>
         
-        <div class="card">
+        <div class="card admin-only">
             <button class="btn btn-success" onclick="exportToGoogleSheets()">📊 구글 시트로 내보내기</button>
             <button class="btn btn-primary" onclick="exportToCSV()" style="margin-left: 10px;">📥 CSV로 내보내기</button>
         </div>
@@ -393,7 +399,7 @@
     </div>
     
     <!-- Tab 4: 명단 관리 -->
-    <div id="tab-users" class="tab-content">
+    <div id="tab-users" class="tab-content admin-only">
         <div class="card">
             <h2>👥 길드원 명단 관리</h2>
             <p style="color: #7f8c8d; margin-bottom: 20px;">
@@ -803,9 +809,70 @@ let currentScheduleDate = null; // 수동 선택된 과거 보스의 날짜 (nul
 let currentAttendeesListener = null; // 현재 출석 인원 리스너
 let servers = JSON.parse(localStorage.getItem('servers') || '{"jingir":"진기르","pandora":"판도라","support":"지원"}');
 
+// ========== 관리자 / 사용자 모드 ==========
+// ⚠️ 임시 비밀번호 방식 — 추후 Firebase Authentication으로 교체 예정
+let isAdmin = localStorage.getItem('hunterIsAdmin') === 'true';
+const ADMIN_PW = 'ht2026'; // ← 비밀번호 변경 시 여기 수정
+
+function applyMode() {
+    // admin-only 요소 표시/숨김 (inline style은 CSS보다 우선)
+    document.querySelectorAll('.admin-only').forEach(el => {
+        el.style.display = isAdmin ? '' : 'none';
+    });
+
+    // 사용자 모드로 전환 시 관리페이지 탭에 있으면 출석 탭으로 이동
+    if (!isAdmin) {
+        const usersTab = document.getElementById('tab-users');
+        if (usersTab && usersTab.classList.contains('active')) {
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('tab-attendance').classList.add('active');
+            const attendanceTabBtn = document.querySelector('.tab[onclick*="attendance"]');
+            if (attendanceTabBtn) attendanceTabBtn.classList.add('active');
+        }
+    }
+
+    // 토글 버튼 UI 갱신
+    const btn = document.getElementById('admin-toggle-btn');
+    if (btn) {
+        btn.textContent = isAdmin ? '🔓 관리자 모드' : '🔒 사용자 모드';
+        btn.style.background = isAdmin ? '#c0392b' : '#7f8c8d';
+    }
+
+    // 보스 선택 드롭다운 갱신 (과거 보스 숨김/표시)
+    populateBossSelector();
+
+    // 출석 테이블 갱신 (버튼 표시 여부)
+    renderAttendanceTable();
+}
+
+function toggleAdminMode() {
+    if (isAdmin) {
+        if (confirm('관리자 모드를 종료하고 사용자 모드로 전환하시겠습니까?')) {
+            isAdmin = false;
+            localStorage.removeItem('hunterIsAdmin');
+            applyMode();
+            showLinkNotification('사용자 모드로 전환되었습니다.', true);
+        }
+    } else {
+        const pw = prompt('🔐 관리자 비밀번호를 입력하세요:');
+        if (pw === null) return; // 취소
+        if (pw === ADMIN_PW) {
+            isAdmin = true;
+            localStorage.setItem('hunterIsAdmin', 'true');
+            applyMode();
+            showLinkNotification('🔓 관리자 모드로 전환되었습니다.', true);
+        } else {
+            alert('❌ 비밀번호가 틀렸습니다.');
+        }
+    }
+}
+// ==========================================
+
 // 초기화
 window.onload = function() {
     loadData();
+    applyMode(); // 관리자/사용자 모드 초기 적용
 };
 
 
@@ -870,6 +937,9 @@ function populateBossSelector() {
     
     // 현재 옵션
     selector.innerHTML = '<option value="current">⭐ 현재 진행 중인 보스 (자동)</option>';
+
+    // 사용자 모드: 현재 보스만 표시 (과거 보스 선택 불가)
+    if (!isAdmin) return;
     
     // 오늘부터 7일 전까지
     for (let i = 0; i < 7; i++) {
@@ -1695,10 +1765,13 @@ function renderAttendanceTable() {
             : '';
         
         // 모드별 출석 버튼 구성
-        // 자동 모드 (currentScheduleDate=null): ⭕ 출석 버튼만 (시간 따라 참석/지각 자동 결정)
-        // 수동 모드 (currentScheduleDate=과거날짜): 참석/지각/불참 모두 (관리자 수정용)
+        // 사용자 모드: 버튼 없음 (읽기 전용, 빠른 출석 배너로 본인 출석)
+        // 관리자 자동 모드 (currentScheduleDate=null): ⭕ 출석 버튼만
+        // 관리자 수동 모드 (currentScheduleDate=과거날짜): 참석/지각/불참 전체
         let actionButtonsHtml;
-        if (currentScheduleDate) {
+        if (!isAdmin) {
+            actionButtonsHtml = '';
+        } else if (currentScheduleDate) {
             actionButtonsHtml = `
                 <button class="attendance-btn btn-o ${status==='present'?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 참석</button>
                 <button class="attendance-btn btn-late ${status==='late'?'active':''}" onclick="updateAttendance(${u.id}, 'late')" style="background: ${status==='late' ? '#d68910' : '#f5cba7'}; color: ${status==='late' ? 'white' : '#5d4037'};">🕐 지각</button>
@@ -4001,7 +4074,7 @@ let currentDrops = [];
 
 // 보스별 아이템 목록 로드
 function loadBossItems(bossId) {
-    if (!bossId) {
+    if (!bossId || !isAdmin) {
         document.getElementById('item-drop-section').style.display = 'none';
         return;
     }
