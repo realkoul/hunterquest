@@ -1145,19 +1145,19 @@ function getAttendanceTimeStatus(bossTimeStr) {
     const diffMs = now.getTime() - bossTime.getTime(); // 양수: 보스 시간 지남
     const diffMin = diffMs / 60000;
     
-    // 5분 전보다 이전: 출석 불가
+    // 10분 전보다 이전: 출석 불가
     if (diffMin < -10) {
         const remain = Math.ceil(-diffMin - 10);
         return { allowed: false, status: null, message: `출석 시작까지 ${remain}분 남음 (${bossTimeStr} 10분 전부터 가능)` };
     }
     
-    // 5분 이후: 출석 종료
+    // 10분 이후: 출석 종료
     if (diffMin > 10) {
         const past = Math.floor(diffMin - 10);
         return { allowed: false, status: null, message: `출석 종료됨 (${bossTimeStr} 기준 ${past}분 전 종료)` };
     }
     
-    // -5 ~ +5분 구간: 출석 가능 (참석으로 단일 처리)
+    // -10 ~ +10분 구간: 출석 가능 (참석으로 단일 처리)
     return { allowed: true, status: 'present', message: '⭕ 출석 처리됩니다' };
 };
 
@@ -1178,7 +1178,7 @@ function getCurrentBoss() {
         const scheduleTime = hours * 60 + minutes;
         const diff = scheduleTime - currentTime; // 양수: 아직 시간 안됨, 음수: 시간 지남
         
-        // 5분 전부터 5분 후까지 (-5 ~ +5분 윈도우)
+        // 10분 전부터 10분 후까지 (-10 ~ +10분 윈도우)
         if (diff >= -10 && diff <= 10 && Math.abs(diff) < minDiff) {
             minDiff = Math.abs(diff);
             closestBoss = s;
@@ -1257,13 +1257,13 @@ function autoMarkAbsent(boss) {
     // 출석 시간이 아직 종료되지 않았으면 리턴
     if (timeStatus.allowed) return;
     
-    // 출석 시간이 종료되었는지 확인 (5분 이후)
+    // 출석 시간이 종료되었는지 확인 (10분 이후)
     const now = new Date();
     const [h, m] = boss.time.split(':').map(Number);
     const bossTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
     const diffMin = (now.getTime() - bossTime.getTime()) / 60000;
     
-    // 5분 이후부터 자동 불참 처리
+    // 10분 이후부터 자동 불참 처리
     if (diffMin <= 10) return;
     
     const today = formatLocalDate(now);
