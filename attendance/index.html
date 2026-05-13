@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>헌터혈맹 출석관리 v1.7</title>
+    <title>헌터혈맹 출석관리 v1.8</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Malgun Gothic', sans-serif; background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); min-height: 100vh; padding: 20px; }
@@ -236,7 +236,7 @@
     <!-- 헤더 -->
     <div class="header">
         <div>
-            <h1>📅 헌터혈맹 출석관리<span class="version">v1.7</span></h1>
+            <h1>📅 헌터혈맹 출석관리<span class="version">v1.8</span></h1>
             <p style="color:#7f8c8d; margin-top:8px;">● hunterquest-fbdee 서버 (테스트 DB)</p>
         </div>
         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
@@ -368,9 +368,8 @@
                             <th style="position: sticky; top: 0; z-index: 1;">순위</th>
                             <th style="position: sticky; top: 0; z-index: 1;">이름</th>
                             <th style="position: sticky; top: 0; z-index: 1;">서버</th>
-                            <th style="position: sticky; top: 0; z-index: 1;">참석</th>
+                            <th style="position: sticky; top: 0; z-index: 1;">출석</th>
                             <th style="position: sticky; top: 0; z-index: 1;">불참</th>
-                            <th style="position: sticky; top: 0; z-index: 1;">지각</th>
                             <th style="position: sticky; top: 0; z-index: 1;">참여율</th>
                         </tr>
                     </thead>
@@ -743,7 +742,7 @@
         <p style="color: #7f8c8d; margin-bottom: 18px; line-height: 1.6; font-size: 0.9rem;">
             여러 캐릭터를 운영하는 경우 1~5번 슬롯에 등록하세요.<br>
             등록된 이름은 출석 체크 리스트 최상단에 표시되며, 빠른 출석 기능을 사용할 수 있습니다.<br>
-            <span style="color: #c0392b; font-size: 0.85rem;">※ 출석은 보스 시간 기준 ±5분 내에만 가능 (정시 이전: 참석 / 정시 이후: 지각)</span>
+            <span style="color: #c0392b; font-size: 0.85rem;">※ 출석은 보스 시간 기준 ±5분 내에만 가능합니다</span>
         </p>
         <div id="my-name-slots" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px;">
             <!-- 5개 슬롯이 JS로 채워짐 -->
@@ -1125,7 +1124,7 @@ function normalizeStatus(data) {
 // 보스의 출석 가능 시간 상태 판정
 // 반환: { allowed, status, message }
 //   allowed: 지금 출석 체크가 가능한지
-//   status: 'present' (정시 이전 5분 내) | 'late' (정시 이후 5분 내) | null
+//   status: 'present' (±5분 내) | null
 //   message: 사용자 안내 문구
 function getAttendanceTimeStatus(bossTimeStr) {
     if (!bossTimeStr || typeof bossTimeStr !== 'string') {
@@ -1158,14 +1157,8 @@ function getAttendanceTimeStatus(bossTimeStr) {
         return { allowed: false, status: null, message: `출석 종료됨 (${bossTimeStr} 기준 ${past}분 전 종료)` };
     }
     
-    // -5 ~ +5분 구간: 출석 가능
-    if (diffMin <= 0) {
-        // 5분 전 ~ 정시: 참석
-        return { allowed: true, status: 'present', message: '⭕ 참석 처리됩니다' };
-    } else {
-        // 정시 이후 ~ 5분 후: 지각
-        return { allowed: true, status: 'late', message: '🕐 지각 처리됩니다 (보스 시간 지남)' };
-    }
+    // -5 ~ +5분 구간: 출석 가능 (참석으로 단일 처리)
+    return { allowed: true, status: 'present', message: '⭕ 출석 처리됩니다' };
 };
 
 // 현재 시간대에 맞는 보스 찾기 (±5분 윈도우)
@@ -1214,9 +1207,7 @@ async function renderTodaySchedules() {
     
     let statusBadge;
     if (timeStatus.status === 'present') {
-        statusBadge = '<span style="display: inline-block; padding: 4px 10px; background: #d5f4e6; color: #16a085; border-radius: 4px; font-size: 0.85rem; font-weight: bold;">⭕ 참석 처리 시간대</span>';
-    } else if (timeStatus.status === 'late') {
-        statusBadge = '<span style="display: inline-block; padding: 4px 10px; background: #fdebd0; color: #d68910; border-radius: 4px; font-size: 0.85rem; font-weight: bold;">🕐 지각 처리 시간대</span>';
+        statusBadge = '<span style="display: inline-block; padding: 4px 10px; background: #d5f4e6; color: #16a085; border-radius: 4px; font-size: 0.85rem; font-weight: bold;">⭕ 출석 처리 시간대</span>';
     } else {
         statusBadge = `<span style="display: inline-block; padding: 4px 10px; background: #f8f9fa; color: #95a5a6; border-radius: 4px; font-size: 0.85rem;">${timeStatus.message}</span>`;
     }
@@ -1288,7 +1279,7 @@ function autoMarkAbsent(boss) {
         users.forEach(user => {
             const status = normalizeStatus(attendees[user.id]);
             
-            // 출석/지각이 아닌 경우 불참으로 처리
+            // 출석이 아닌 경우 불참으로 처리 (기존 'late' 데이터도 출석으로 인정)
             if (status !== 'present' && status !== 'late') {
                 attendees[user.id] = 'absent';
                 updated = true;
@@ -1350,7 +1341,6 @@ function showCurrentAttendees(boss) {
         
         // 출석 데이터 분류
         const present = [];
-        const late = [];
         const absent = [];
         
         Object.entries(attendanceData.attendees).forEach(([userId, data]) => {
@@ -1362,17 +1352,16 @@ function showCurrentAttendees(boss) {
                     server: user.server
                 };
                 
-                if (status === 'present') {
+                // 기존 'late' 데이터도 출석으로 표시
+                if (status === 'present' || status === 'late') {
                     present.push(userInfo);
-                } else if (status === 'late') {
-                    late.push(userInfo);
                 } else if (status === 'absent') {
                     absent.push(userInfo);
                 }
             }
         });
         
-        const total = present.length + late.length + absent.length;
+        const total = present.length + absent.length;
         
         if (total === 0) {
             section.style.display = 'none';
@@ -1381,17 +1370,13 @@ function showCurrentAttendees(boss) {
         
         // 서버별로 그룹화
         const serverGroups = {
-            'jingir': { present: [], late: [], absent: [] },
-            'pandora': { present: [], late: [], absent: [] },
-            'support': { present: [], late: [], absent: [] }
+            'jingir': { present: [], absent: [] },
+            'pandora': { present: [], absent: [] },
+            'support': { present: [], absent: [] }
         };
         
         present.forEach(user => {
             serverGroups[user.server].present.push(user.name);
-        });
-        
-        late.forEach(user => {
-            serverGroups[user.server].late.push(user.name);
         });
         
         absent.forEach(user => {
@@ -1409,7 +1394,7 @@ function showCurrentAttendees(boss) {
             html += `
                 <div style="margin-bottom: 20px;">
                     <div style="font-weight: bold; color: #16a085; margin-bottom: 10px; font-size: 1rem;">
-                        ⭕ 참석 (${present.length}명)
+                        ⭕ 출석 (${present.length}명)
                     </div>
                     <div style="display: flex; flex-wrap: wrap; gap: 10px;">
             `;
@@ -1424,38 +1409,6 @@ function showCurrentAttendees(boss) {
                             </div>
                             <div style="color: #138d75; font-size: 0.9rem;">
                                 ${serverGroups[server].present.join(', ')}
-                            </div>
-                        </div>
-                    `;
-                }
-            });
-            
-            html += `
-                    </div>
-                </div>
-            `;
-        }
-        
-        // 지각자
-        if (late.length > 0) {
-            html += `
-                <div style="margin-bottom: 10px;">
-                    <div style="font-weight: bold; color: #d68910; margin-bottom: 10px; font-size: 1rem;">
-                        🕐 지각 (${late.length}명)
-                    </div>
-                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
-            `;
-            
-            ['jingir', 'pandora', 'support'].forEach(server => {
-                if (serverGroups[server].late.length > 0) {
-                    const serverName = servers[server] || server;
-                    html += `
-                        <div style="flex: 1; min-width: 200px; padding: 10px; background: #fef5e7; border-radius: 6px;">
-                            <div style="color: #d68910; font-size: 0.85rem; font-weight: bold; margin-bottom: 6px;">
-                                ${serverName} (${serverGroups[server].late.length}명)
-                            </div>
-                            <div style="color: #b9770e; font-size: 0.9rem;">
-                                ${serverGroups[server].late.join(', ')}
                             </div>
                         </div>
                     `;
@@ -1564,7 +1517,7 @@ async function showRelicAlert(boss) {
             return;
         }
         
-        // 출석한 사용자 ID 추출 (출석 + 지각만 포함)
+        // 출석한 사용자 ID 추출 (기존 late 데이터도 출석으로 인정)
         const attendedUserIds = new Set();
         Object.entries(attendanceData.attendees).forEach(([userId, data]) => {
             const status = normalizeStatus(data);
@@ -1729,8 +1682,7 @@ function renderAttendanceTable() {
         const isMyName = myNamesSet.has(u.name);
         
         let statusHtml = '';
-        if (status === 'present') statusHtml = '<span class="status-badge status-present">⭕ 참석</span>';
-        else if (status === 'late') statusHtml = '<span class="status-badge status-late">🕐 지각</span>';
+        if (status === 'present' || status === 'late') statusHtml = '<span class="status-badge status-present">⭕ 출석</span>';
         else statusHtml = '<span class="status-badge status-absent">❌ 불참</span>';
         
         // 성물 표시
@@ -1759,13 +1711,12 @@ function renderAttendanceTable() {
         
         // 관리 열 버튼 구성
         // 공통(사용자 모드 포함): ⭕ 출석 버튼 표시
-        // 관리자 수동 모드(과거 날짜 선택)만: 참석/지각/불참 전체
+        // 관리자 수동 모드(과거 날짜 선택)만: 출석/불참 전체
         let actionButtonsHtml;
         if (isAdmin && currentScheduleDate) {
             // 관리자 전용 — 과거 날짜 수동 수정
             actionButtonsHtml = `
-                <button class="attendance-btn btn-o ${status==='present'?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 참석</button>
-                <button class="attendance-btn btn-late ${status==='late'?'active':''}" onclick="updateAttendance(${u.id}, 'late')" style="background: ${status==='late' ? '#d68910' : '#f5cba7'}; color: ${status==='late' ? 'white' : '#5d4037'};">🕐 지각</button>
+                <button class="attendance-btn btn-o ${(status==='present'||status==='late')?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 출석</button>
                 <button class="attendance-btn btn-x ${status==='absent'?'active':''}" onclick="updateAttendance(${u.id}, 'absent')">❌ 불참</button>
             `;
         } else {
@@ -1793,7 +1744,7 @@ function filterAttendanceTable() {
 };
 
 // 출석 업데이트
-// 자동 모드(currentScheduleDate=null): 시간 기반으로 status 자동 결정 (참석/지각). 시간 외엔 거부.
+// 자동 모드(currentScheduleDate=null): 시간 기반으로 status 자동 결정 (±5분 내 → present). 시간 외엔 거부.
 // 수동 모드(currentScheduleDate=선택된 과거 날짜): requestedStatus 그대로 저장 (관리자 수정용)
 function updateAttendance(userId, requestedStatus) {
     if (!currentScheduleId) {
@@ -1819,7 +1770,7 @@ function updateAttendance(userId, requestedStatus) {
             alert(`⚠️ ${timeStatus.message}\n\n출석은 보스 시간 기준 ±5분 내에만 가능합니다.`);
             return;
         }
-        // 시간으로 자동 결정 (인자 무시) — 정시 이전이면 참석, 이후면 지각
+        // 시간으로 자동 결정 — ±5분 내 모두 출석(present)
         finalStatus = timeStatus.status;
         dateForKey = formatLocalDate(new Date());
     }
@@ -2200,7 +2151,6 @@ function calculateStats(attendanceData) {
             server: u.server || '',
             present: 0,
             absent: 0,
-            late: 0,
             total: 0  // 이 값은 더 이상 분모로 쓰지 않음 (참고용)
         };
     });
@@ -2233,12 +2183,11 @@ function calculateStats(attendanceData) {
             const raw = attendees[uid] !== undefined ? attendees[uid] : attendees[u.id];
             const status = normalizeStatus(raw);
             
-            if (status === 'present') {
+            if (status === 'present' || status === 'late') {
+                // 기존 'late' 데이터도 출석으로 집계
                 userStats[uid].present++;
             } else if (status === 'absent') {
                 userStats[uid].absent++;
-            } else if (status === 'late') {
-                userStats[uid].late++;
             }
             
             // total은 이 사용자가 마킹된 횟수 (참고용, 분모로는 안 씀)
@@ -2251,7 +2200,7 @@ function calculateStats(attendanceData) {
     // 참여율 계산 — 분모는 '이번 주 출석 체크된 보스 수'
     Object.values(userStats).forEach(stat => {
         stat.rate = weeklyBossCount > 0 
-            ? ((stat.present + stat.late) / weeklyBossCount * 100).toFixed(1) 
+            ? (stat.present / weeklyBossCount * 100).toFixed(1) 
             : '0.0';
     });
     
@@ -2331,7 +2280,6 @@ function renderStats(stats) {
                 <td>${serverName}</td>
                 <td>${s.present}</td>
                 <td>${s.absent}</td>
-                <td>${s.late}</td>
                 <td><strong>${s.rate}%</strong></td>
             </tr>
         `;
@@ -2372,20 +2320,19 @@ function exportToCSV() {
     
     // === 섹션 1: 통계 요약 ===
     csv += '=== 통계 요약 ===\n';
-    csv += '이름,서버,참석,불참,지각,참여율\n';
+    csv += '이름,서버,출석,불참,참여율\n';
     
     // 테이블에서 직접 데이터 추출
     Array.from(statsTable.children).forEach(row => {
         const cells = row.querySelectorAll('td');
-        if (cells.length >= 7) {
+        if (cells.length >= 6) {
             const name = cells[1].textContent.trim();
             const server = cells[2].textContent.trim();
             const present = cells[3].textContent.trim();
             const absent = cells[4].textContent.trim();
-            const late = cells[5].textContent.trim();
-            const rate = cells[6].textContent.trim();
+            const rate = cells[5].textContent.trim();
             
-            csv += `${name},${server},${present},${absent},${late},${rate}\n`;
+            csv += `${name},${server},${present},${absent},${rate}\n`;
         }
     });
     
@@ -2418,8 +2365,7 @@ function exportToCSV() {
                     const userName = user ? user.name : `사용자${userId}`;
                     // 문자열/객체 형식 모두 처리
                     const normalized = normalizeStatus(data);
-                    const status = normalized === 'present' ? '참석' : 
-                                 normalized === 'late' ? '지각' : 
+                    const status = normalized === 'present' || normalized === 'late' ? '출석' : 
                                  normalized === 'absent' ? '불참' : '미기록';
                     
                     detailRecords.push({
@@ -2775,7 +2721,6 @@ function showBossAttendance(bossId, bossName) {
             
             // 출석 데이터 분류
             const present = [];
-            const late = [];
             const absent = [];
             
             Object.entries(attendees).forEach(([userId, data]) => {
@@ -2790,51 +2735,33 @@ function showBossAttendance(bossId, bossName) {
                         status: status
                     };
                     
-                    if (status === 'present') present.push(userInfo);
-                    else if (status === 'late') late.push(userInfo);
+                    // 기존 'late' 데이터도 출석으로 표시
+                    if (status === 'present' || status === 'late') present.push(userInfo);
                     else if (status === 'absent') absent.push(userInfo);
                 }
             });
             
-            const total = present.length + absent.length + late.length;
-            const rate = total > 0 ? ((present.length + late.length) / total * 100).toFixed(1) : 0;
+            const total = present.length + absent.length;
+            const rate = total > 0 ? (present.length / total * 100).toFixed(1) : 0;
             
             html += `
                 <div style="margin-bottom: 20px; border: 2px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
                     <div style="padding: 12px; background: #34495e; color: white; font-weight: bold;">
-                        📅 ${dayData.dateStr} (${dayData.dayName}) - 참여율 ${rate}% (${present.length + late.length}/${total}명)
+                        📅 ${dayData.dateStr} (${dayData.dayName}) - 참여율 ${rate}% (${present.length}/${total}명)
                     </div>
                     <div style="padding: 15px;">
             `;
             
-            // 참석자
+            // 출석자
             if (present.length > 0) {
                 html += `
                     <div style="margin-bottom: 15px;">
                         <h4 style="color: #16a085; margin-bottom: 8px; font-size: 0.95rem;">
-                            ⭕ 참석 (${present.length}명)
+                            ⭕ 출석 (${present.length}명)
                         </h4>
                         <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                             ${present.map(u => `
                                 <span style="background: #d5f4e6; color: #16a085; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem;">
-                                    ${u.name}
-                                </span>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // 지각자
-            if (late.length > 0) {
-                html += `
-                    <div style="margin-bottom: 15px;">
-                        <h4 style="color: #d68910; margin-bottom: 8px; font-size: 0.95rem;">
-                            🕐 지각 (${late.length}명)
-                        </h4>
-                        <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                            ${late.map(u => `
-                                <span style="background: #fef5e7; color: #d68910; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem;">
                                     ${u.name}
                                 </span>
                             `).join('')}
@@ -2966,17 +2893,14 @@ function showUserBossCalendar(userName) {
                         // status 값 정규화 (객체 형식과 문자열 형식 모두 처리)
                         const normalizedStatus = normalizeStatus(status);
                         
-                        // status 값에 따라 분기 (지각 'L' 추가)
+                        // status 값에 따라 분기 (late도 출석으로 처리)
                         let displayStatus;
-                        if (normalizedStatus === 'present') {
+                        if (normalizedStatus === 'present' || normalizedStatus === 'late') {
                             displayStatus = 'O';
-                            console.log(`  ✅ 참석!`);
+                            console.log(`  ✅ 출석!`);
                         } else if (normalizedStatus === 'absent') {
                             displayStatus = 'X';
                             console.log(`  ❌ 불참!`);
-                        } else if (normalizedStatus === 'late') {
-                            displayStatus = 'L';
-                            console.log(`  🕐 지각!`);
                         } else {
                             displayStatus = '-';
                             console.log(`  ⚠️ 미기록 (normalizedStatus: ${normalizedStatus})`);
@@ -2999,9 +2923,8 @@ function showUserBossCalendar(userName) {
                         const normalizedStatus = normalizeStatus(status);
                         
                         if (normalizedStatus) {
-                            const fallbackStatus = normalizedStatus === 'present' ? 'O' 
+                            const fallbackStatus = (normalizedStatus === 'present' || normalizedStatus === 'late') ? 'O' 
                                 : normalizedStatus === 'absent' ? 'X' 
-                                : normalizedStatus === 'late' ? 'L' 
                                 : '-';
                             day.bosses.push({
                                 time: '미확인',
@@ -3021,10 +2944,9 @@ function showUserBossCalendar(userName) {
         
         // 통계 계산 — 메인 통계와 동일한 분모 사용
         // 분모: 이번 주에 출석 체크가 진행된 보스 수 (= day.bosses의 합계)
-        // 분자: 이 사용자의 (참석 + 지각)
+        // 분자: 이 사용자의 출석 ('O')
         let totalPresent = 0;
         let totalAbsent = 0;
-        let totalLate = 0;
         let weeklyBossCount = 0; // 이번 주 진행된 보스 수 (분모)
         let unmarked = 0;        // 보스는 진행됐으나 마킹 안 된 횟수
         
@@ -3035,8 +2957,6 @@ function showUserBossCalendar(userName) {
                     totalPresent++;
                 } else if (boss.status === 'X') {
                     totalAbsent++;
-                } else if (boss.status === 'L') {
-                    totalLate++;
                 } else {
                     // '-' (미기록): 보스는 진행됐으나 이 사용자가 마킹되지 않음
                     unmarked++;
@@ -3044,12 +2964,12 @@ function showUserBossCalendar(userName) {
             });
         });
         
-        // 메인 통계와 정확히 동일 공식: (참석+지각) / 이번 주 진행된 보스 수
+        // 메인 통계와 정확히 동일 공식: 출석 / 이번 주 진행된 보스 수
         const participationRate = weeklyBossCount > 0 
-            ? ((totalPresent + totalLate) / weeklyBossCount * 100).toFixed(1) 
+            ? (totalPresent / weeklyBossCount * 100).toFixed(1) 
             : '0.0';
         
-        console.log(`📊 통계: 참석 ${totalPresent}, 불참 ${totalAbsent}, 지각 ${totalLate}, 미기록 ${unmarked}, 진행된 보스 ${weeklyBossCount}, 참여율 ${participationRate}%`);
+        console.log(`📊 통계: 출석 ${totalPresent}, 불참 ${totalAbsent}, 미기록 ${unmarked}, 진행된 보스 ${weeklyBossCount}, 참여율 ${participationRate}%`);
         
         // HTML 생성 - 날짜별 카드 형식
         let html = `
@@ -3120,9 +3040,6 @@ function showUserBossCalendar(userName) {
                 .boss-status.absent {
                     color: #c0392b;
                 }
-                .boss-status.late {
-                    color: #d68910;
-                }
                 .boss-status.none {
                     color: #bdc3c7;
                     font-size: 0.9rem;
@@ -3188,7 +3105,6 @@ function showUserBossCalendar(userName) {
             const dateDisplay = `${day.dateStr.substring(5)} (${day.dayName})`;
             const bossCount = day.bosses.length;
             const presentCount = day.bosses.filter(b => b.status === 'O').length;
-            const lateCount = day.bosses.filter(b => b.status === 'L').length;
             const absentCount = day.bosses.filter(b => b.status === 'X').length;
             
             html += `
@@ -3196,7 +3112,7 @@ function showUserBossCalendar(userName) {
                     <div class="day-card-header ${headerClass}">
                         <div style="font-weight: bold; font-size: 1rem;">${dateDisplay}</div>
                         <div style="font-size: 0.85rem; opacity: 0.9;">
-                            ${bossCount > 0 ? `${presentCount + lateCount}/${bossCount} 참석` : '보스 없음'}
+                            ${bossCount > 0 ? `${presentCount}/${bossCount} 출석` : '보스 없음'}
                         </div>
                     </div>
                     <div class="day-card-body">
@@ -3208,7 +3124,6 @@ function showUserBossCalendar(userName) {
                 day.bosses.forEach(boss => {
                     const statusClass = boss.status === 'O' ? 'present' 
                         : boss.status === 'X' ? 'absent' 
-                        : boss.status === 'L' ? 'late' 
                         : 'none';
                     html += `
                         <div class="boss-row">
@@ -3226,7 +3141,7 @@ function showUserBossCalendar(userName) {
             `;
         });
         
-        // 통계 요약 (5개 칸: 참석, 지각, 불참, 미기록, 참여율)
+        // 통계 요약 (4개 칸: 출석, 불참, 미기록, 참여율)
         html += `
             </div>
             
@@ -3235,14 +3150,10 @@ function showUserBossCalendar(userName) {
                 <div style="color: #7f8c8d; font-size: 0.85rem; margin-bottom: 12px;">
                     이번 주 진행된 보스: <strong style="color: #2c3e50;">${weeklyBossCount}회</strong> (참여율 분모)
                 </div>
-                <div class="stats-grid" style="grid-template-columns: repeat(5, 1fr);">
+                <div class="stats-grid" style="grid-template-columns: repeat(4, 1fr);">
                     <div class="stat-item">
                         <div class="stat-value" style="color: #16a085;">${totalPresent}</div>
-                        <div class="stat-label">참석</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value" style="color: #d68910;">${totalLate}</div>
-                        <div class="stat-label">지각</div>
+                        <div class="stat-label">출석</div>
                     </div>
                     <div class="stat-item">
                         <div class="stat-value" style="color: #c0392b;">${totalAbsent}</div>
@@ -3953,24 +3864,21 @@ function generateAttendanceCSV(attendanceData, startDate, endDate) {
 // 개인별 통계 CSV 생성
 function generatePersonalStatsCSV(attendanceData) {
     let csv = '\uFEFF';
-    csv += '순위,이름,서버,성물,참석,지각,불참,참석률,연속출석\n';
+    csv += '순위,이름,서버,성물,출석,불참,참석률\n';
     
     // 각 사용자별 통계 계산
     const userStats = users.map(user => {
         let present = 0;
-        let late = 0;
         let absent = 0;
         
         Object.values(attendanceData).forEach(record => {
             const status = normalizeStatus(record.attendees?.[user.id]);
-            if (status === 'present') present++;
-            else if (status === 'late') late++;
+            if (status === 'present' || status === 'late') present++; // 기존 late도 출석으로
             else if (status === 'absent') absent++;
         });
         
-        const total = present + late + absent;
-        // 메인 TOP 20과 동일 공식: (참석+지각)/총합
-        const rate = total > 0 ? ((present + late) / total * 100).toFixed(1) : 0;
+        const total = present + absent;
+        const rate = total > 0 ? (present / total * 100).toFixed(1) : 0;
         
         // 성물
         const missingRelics = user.missingRelics || [];
@@ -3985,7 +3893,6 @@ function generatePersonalStatsCSV(attendanceData) {
             server: user.server === 'jingir' ? '진기르' : user.server === 'pandora' ? '판도라' : '지원',
             relics: relicParts.join(' '),
             present,
-            late,
             absent,
             rate: parseFloat(rate)
         };
@@ -3995,7 +3902,7 @@ function generatePersonalStatsCSV(attendanceData) {
     userStats.sort((a, b) => b.rate - a.rate);
     
     userStats.forEach((stat, index) => {
-        csv += `${index + 1},${stat.name},${stat.server},${stat.relics},${stat.present},${stat.late},${stat.absent},${stat.rate}%,0\n`;
+        csv += `${index + 1},${stat.name},${stat.server},${stat.relics},${stat.present},${stat.absent},${stat.rate}%\n`;
     });
     
     return csv;
@@ -4004,7 +3911,7 @@ function generatePersonalStatsCSV(attendanceData) {
 // 보스별 통계 CSV 생성
 function generateBossStatsCSV(attendanceData) {
     let csv = '\uFEFF';
-    csv += '날짜,보스,시간,참석,지각,불참,참석률,불참자\n';
+    csv += '날짜,보스,시간,출석,불참,참석률,불참자\n';
     
     Object.keys(attendanceData).sort().forEach(key => {
         // bossId가 밑줄을 포함할 수 있으므로 첫 번째 _만 분리
@@ -4016,16 +3923,14 @@ function generateBossStatsCSV(attendanceData) {
         
         const attendees = attendanceData[key].attendees || {};
         let present = 0;
-        let late = 0;
         let absent = 0;
         const absentUsers = [];
         
         Object.keys(attendees).forEach(userId => {
             const status = normalizeStatus(attendees[userId]);
-            if (status === 'present') {
+            if (status === 'present' || status === 'late') {
+                // 기존 late도 출석으로 집계
                 present++;
-            } else if (status === 'late') {
-                late++;
             } else if (status === 'absent') {
                 absent++;
                 const user = users.find(u => u.id === parseInt(userId));
@@ -4033,11 +3938,10 @@ function generateBossStatsCSV(attendanceData) {
             }
         });
         
-        const total = present + late + absent;
-        // 메인 TOP 20과 동일: (참석+지각)/총합
-        const rate = total > 0 ? ((present + late) / total * 100).toFixed(1) : 0;
+        const total = present + absent;
+        const rate = total > 0 ? (present / total * 100).toFixed(1) : 0;
         
-        csv += `${dateStr},${boss.name},${boss.time},${present},${late},${absent},${rate}%,"${absentUsers.slice(0, 5).join(', ')}"\n`;
+        csv += `${dateStr},${boss.name},${boss.time},${present},${absent},${rate}%,"${absentUsers.slice(0, 5).join(', ')}"\n`;
     });
     
     return csv;
@@ -4473,7 +4377,7 @@ function checkUrlParams() {
     
     if (!action) return; // action 파라미터 있을 때만 동작
     
-    // 'present' 액션만 처리 (불참/지각 링크는 사라짐)
+    // 'present' 액션만 처리
     if (action !== 'present') {
         console.log(`⚠️ 지원하지 않는 action: ${action} — 무시`);
         window.history.replaceState({}, document.title, window.location.pathname);
@@ -4484,7 +4388,7 @@ function checkUrlParams() {
     performLinkAttendance(targetName);
 }
 
-// URL 링크 클릭으로 출석 처리 (present만, 시간 따라 참석/지각 자동 결정)
+// URL 링크 클릭으로 출석 처리 (present만, ±5분 내 → 출석 처리)
 function performLinkAttendance(targetName) {
     // users 배열이 로드될 때까지 대기
     if (!users || users.length === 0) {
@@ -4547,7 +4451,7 @@ function performLinkAttendance(targetName) {
             }
         });
         
-        const statusText = timeStatus.status === 'late' ? '🕐 지각' : '⭕ 참석';
+        const statusText = '⭕ 출석';
         
         if (processed.length > 0) {
             showLinkNotification(`${processed.join(', ')} 님 ${statusText} 처리 완료`, true);
@@ -4580,7 +4484,7 @@ function showLinkNotification(text, success) {
     setTimeout(() => notification.remove(), 4000);
 }
 
-// 출석 링크 생성 (특정 이름용 — 출석 링크만; action=present 고정. 시간에 따라 참석/지각 자동 결정됨)
+// 출석 링크 생성 (특정 이름용 — action=present 고정, ±5분 내 → 출석 처리)
 function generateAttendanceLinkForName(name) {
     const baseUrl = window.location.origin + window.location.pathname;
     return `${baseUrl}?action=present&name=${encodeURIComponent(name)}`;
@@ -4591,7 +4495,7 @@ function copyAttendanceLinkForName(name) {
     const link = generateAttendanceLinkForName(name);
     
     navigator.clipboard.writeText(link).then(() => {
-        alert(`✅ "${name}" 님의 출석 링크가 복사되었습니다!\n\n${link}\n\n링크 클릭 시 보스 시간 기준 ±5분 내에만 출석 처리됩니다.\n(정시 이전: 참석 / 정시 이후: 지각)`);
+        alert(`✅ "${name}" 님의 출석 링크가 복사되었습니다!\n\n${link}\n\n링크 클릭 시 보스 시간 기준 ±5분 내에만 출석 처리됩니다.`);
     }).catch(() => {
         prompt('링크를 복사하세요:', link);
     });
