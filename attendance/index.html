@@ -742,7 +742,7 @@
         <p style="color: #7f8c8d; margin-bottom: 18px; line-height: 1.6; font-size: 0.9rem;">
             여러 캐릭터를 운영하는 경우 1~5번 슬롯에 등록하세요.<br>
             등록된 이름은 출석 체크 리스트 최상단에 표시되며, 빠른 출석 기능을 사용할 수 있습니다.<br>
-            <span style="color: #c0392b; font-size: 0.85rem;">※ 출석은 보스 시간 기준 ±5분 내에만 가능합니다</span>
+            <span style="color: #c0392b; font-size: 0.85rem;">※ 출석은 보스 시간 기준 ±10분 내에만 가능합니다</span>
         </p>
         <div id="my-name-slots" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px;">
             <!-- 5개 슬롯이 JS로 채워짐 -->
@@ -1124,7 +1124,7 @@ function normalizeStatus(data) {
 // 보스의 출석 가능 시간 상태 판정
 // 반환: { allowed, status, message }
 //   allowed: 지금 출석 체크가 가능한지
-//   status: 'present' (±5분 내) | null
+//   status: 'present' (±10분 내) | null
 //   message: 사용자 안내 문구
 function getAttendanceTimeStatus(bossTimeStr) {
     if (!bossTimeStr || typeof bossTimeStr !== 'string') {
@@ -1146,14 +1146,14 @@ function getAttendanceTimeStatus(bossTimeStr) {
     const diffMin = diffMs / 60000;
     
     // 5분 전보다 이전: 출석 불가
-    if (diffMin < -5) {
-        const remain = Math.ceil(-diffMin - 5);
-        return { allowed: false, status: null, message: `출석 시작까지 ${remain}분 남음 (${bossTimeStr} 5분 전부터 가능)` };
+    if (diffMin < -10) {
+        const remain = Math.ceil(-diffMin - 10);
+        return { allowed: false, status: null, message: `출석 시작까지 ${remain}분 남음 (${bossTimeStr} 10분 전부터 가능)` };
     }
     
     // 5분 이후: 출석 종료
-    if (diffMin > 5) {
-        const past = Math.floor(diffMin - 5);
+    if (diffMin > 10) {
+        const past = Math.floor(diffMin - 10);
         return { allowed: false, status: null, message: `출석 종료됨 (${bossTimeStr} 기준 ${past}분 전 종료)` };
     }
     
@@ -1161,7 +1161,7 @@ function getAttendanceTimeStatus(bossTimeStr) {
     return { allowed: true, status: 'present', message: '⭕ 출석 처리됩니다' };
 };
 
-// 현재 시간대에 맞는 보스 찾기 (±5분 윈도우)
+// 현재 시간대에 맞는 보스 찾기 (±10분 윈도우)
 function getCurrentBoss() {
     // 실제 시간 기반 보스 선택
     const now = new Date();
@@ -1179,7 +1179,7 @@ function getCurrentBoss() {
         const diff = scheduleTime - currentTime; // 양수: 아직 시간 안됨, 음수: 시간 지남
         
         // 5분 전부터 5분 후까지 (-5 ~ +5분 윈도우)
-        if (diff >= -5 && diff <= 5 && Math.abs(diff) < minDiff) {
+        if (diff >= -10 && diff <= 10 && Math.abs(diff) < minDiff) {
             minDiff = Math.abs(diff);
             closestBoss = s;
         }
@@ -1197,7 +1197,7 @@ async function renderTodaySchedules() {
         container.innerHTML = `
             <div style="padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #95a5a6;">
                 <p style="color:#7f8c8d; margin: 0;">⏰ 현재 출석 가능한 보스가 없습니다.</p>
-                <p style="color:#95a5a6; margin: 6px 0 0 0; font-size: 0.85rem;">출석은 보스 시간 5분전 부터 가능하며 보스 젠 후에 5분뒤 종료 됩니다.</p>
+                <p style="color:#95a5a6; margin: 6px 0 0 0; font-size: 0.85rem;">출석은 보스 시간 10분전 부터 가능하며 보스 젠 후에 10분뒤 종료 됩니다.</p>
             </div>
         `;
         return;
@@ -1264,7 +1264,7 @@ function autoMarkAbsent(boss) {
     const diffMin = (now.getTime() - bossTime.getTime()) / 60000;
     
     // 5분 이후부터 자동 불참 처리
-    if (diffMin <= 5) return;
+    if (diffMin <= 10) return;
     
     const today = formatLocalDate(now);
     const attendanceKey = `${today}_${boss.id}`;
@@ -1744,11 +1744,11 @@ function filterAttendanceTable() {
 };
 
 // 출석 업데이트
-// 자동 모드(currentScheduleDate=null): 시간 기반으로 status 자동 결정 (±5분 내 → present). 시간 외엔 거부.
+// 자동 모드(currentScheduleDate=null): 시간 기반으로 status 자동 결정 (±10분 내 → present). 시간 외엔 거부.
 // 수동 모드(currentScheduleDate=선택된 과거 날짜): requestedStatus 그대로 저장 (관리자 수정용)
 function updateAttendance(userId, requestedStatus) {
     if (!currentScheduleId) {
-        alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±5분 내에만 가능합니다.');
+        alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±10분 내에만 가능합니다.');
         return;
     }
     
@@ -1759,7 +1759,7 @@ function updateAttendance(userId, requestedStatus) {
         // 수동 선택 모드 — 과거 데이터 수정. requestedStatus 그대로 사용.
         dateForKey = currentScheduleDate;
     } else {
-        // 자동 모드 — 보스 시간 기준 ±5분 검증 + 자동 status 결정
+        // 자동 모드 — 보스 시간 기준 ±10분 검증 + 자동 status 결정
         const boss = schedules.find(s => s.id === currentScheduleId);
         if (!boss) {
             alert('보스 정보를 찾을 수 없습니다. 페이지를 새로고침해주세요.');
@@ -1767,10 +1767,10 @@ function updateAttendance(userId, requestedStatus) {
         }
         const timeStatus = getAttendanceTimeStatus(boss.time);
         if (!timeStatus.allowed) {
-            alert(`⚠️ ${timeStatus.message}\n\n출석은 보스 시간 기준 ±5분 내에만 가능합니다.`);
+            alert(`⚠️ ${timeStatus.message}\n\n출석은 보스 시간 기준 ±10분 내에만 가능합니다.`);
             return;
         }
-        // 시간으로 자동 결정 — ±5분 내 모두 출석(present)
+        // 시간으로 자동 결정 — ±10분 내 모두 출석(present)
         finalStatus = timeStatus.status;
         dateForKey = formatLocalDate(new Date());
     }
@@ -4351,7 +4351,7 @@ function quickAttendanceByName(name) {
         return;
     }
     if (!currentScheduleId) {
-        alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±5분 내에만 가능합니다.');
+        alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±10분 내에만 가능합니다.');
         return;
     }
     // updateAttendance 안에서 시간 검증 + 자동 status 결정 수행
@@ -4388,7 +4388,7 @@ function checkUrlParams() {
     performLinkAttendance(targetName);
 }
 
-// URL 링크 클릭으로 출석 처리 (present만, ±5분 내 → 출석 처리)
+// URL 링크 클릭으로 출석 처리 (present만, ±10분 내 → 출석 처리)
 function performLinkAttendance(targetName) {
     // users 배열이 로드될 때까지 대기
     if (!users || users.length === 0) {
@@ -4410,13 +4410,13 @@ function performLinkAttendance(targetName) {
         }
     }
     
-    // 현재 보스 확인 (±5분 윈도우)
+    // 현재 보스 확인 (±10분 윈도우)
     if (!currentScheduleId) {
         const currentBoss = getCurrentBoss();
         if (currentBoss) {
             currentScheduleId = currentBoss.id;
         } else {
-            showLinkNotification('현재 출석 가능한 보스가 없습니다 (±5분 윈도우 외)', false);
+            showLinkNotification('현재 출석 가능한 보스가 없습니다 (±10분 윈도우 외)', false);
             window.history.replaceState({}, document.title, window.location.pathname);
             return;
         }
@@ -4484,7 +4484,7 @@ function showLinkNotification(text, success) {
     setTimeout(() => notification.remove(), 4000);
 }
 
-// 출석 링크 생성 (특정 이름용 — action=present 고정, ±5분 내 → 출석 처리)
+// 출석 링크 생성 (특정 이름용 — action=present 고정, ±10분 내 → 출석 처리)
 function generateAttendanceLinkForName(name) {
     const baseUrl = window.location.origin + window.location.pathname;
     return `${baseUrl}?action=present&name=${encodeURIComponent(name)}`;
@@ -4495,7 +4495,7 @@ function copyAttendanceLinkForName(name) {
     const link = generateAttendanceLinkForName(name);
     
     navigator.clipboard.writeText(link).then(() => {
-        alert(`✅ "${name}" 님의 출석 링크가 복사되었습니다!\n\n${link}\n\n링크 클릭 시 보스 시간 기준 ±5분 내에만 출석 처리됩니다.`);
+        alert(`✅ "${name}" 님의 출석 링크가 복사되었습니다!\n\n${link}\n\n링크 클릭 시 보스 시간 기준 ±10분 내에만 출석 처리됩니다.`);
     }).catch(() => {
         prompt('링크를 복사하세요:', link);
     });
