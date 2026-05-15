@@ -867,7 +867,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-database-compat.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 
 <script>
 // Firebase 초기화
@@ -2509,100 +2509,198 @@ function filterStats() {
 }
 
 // CSV Export
-// 엑셀 내보내기 (구글시트 내보내기와 동일한 형식)
+// 엑셀 내보내기 (구글시트 동일 형식 + 스타일)
 async function exportToCSV() {
     if (typeof XLSX === 'undefined') {
         alert('⚠️ 엑셀 라이브러리 로딩 중입니다. 잠시 후 다시 시도해주세요.');
         return;
     }
 
-    // 로딩 표시
     const loadingDiv = document.createElement('div');
     loadingDiv.style.cssText = `
-        position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
-        background:white; padding:30px; border-radius:12px;
-        box-shadow:0 10px 40px rgba(0,0,0,0.3); z-index:10000;
-        text-align:center; min-width:260px;
-    `;
+        position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+        background:white;padding:30px;border-radius:12px;
+        box-shadow:0 10px 40px rgba(0,0,0,0.3);z-index:10000;
+        text-align:center;min-width:260px;`;
     loadingDiv.innerHTML = `<div style="font-size:2rem;margin-bottom:12px;">⏳</div>
         <div style="font-weight:bold;color:#2c3e50;">엑셀 파일 생성 중...</div>`;
     document.body.appendChild(loadingDiv);
 
     try {
-        // 이번 주 출석 데이터 로드
+        // ── 이번 주 데이터 로드 ──
         const now = new Date();
         const dow = now.getDay();
         const monday = new Date(now);
         monday.setDate(monday.getDate() + (dow === 0 ? -6 : -(dow - 1)));
         monday.setHours(0, 0, 0, 0);
         const endDate = new Date(); endDate.setHours(23, 59, 59, 999);
-
         const attendanceData = await fetchAttendanceData(monday, endDate);
 
-        // 구글시트 내보내기와 완전히 동일한 행 생성
-        const rows = generateScreenshotFormatRows(attendanceData);
-
-        if (!rows || rows.length < 2) {
-            throw new Error('생성된 데이터가 없습니다.');
+        // ── generateScreenshotFormatRows 동일 로직으로 weekData 구성 ──
+        const weekData = [];
+        for (let i = 0; i < 7; i++) {
+            const date = new Date(monday);
+            date.setDate(date.getDate() + i);
+            const dateStr  = formatLocalDate(date);
+            const dayIdx   = date.getDay();
+            const monthDay = `${date.getMonth()+1}-${date.getDate()}`;
+            const daySchedules = schedules
+                .filter(s => s.dayOfWeek === dayIdx)
+                .sort((a, b) => a.time.localeCompare(b.time));
+            daySchedules.forEach(boss => {
+                const key      = `${dateStr}_${boss.id}`;
+                const attendees = (attendanceData[key]?.attendees) || {};
+                weekData.push({ monthDay, bossName: boss.name, attendees });
+            });
         }
+
+        if (weekData.length === 0) throw new Error('이번 주 보스 데이터가 없습니다.');
+
+        // ── 스타일 상수 ──
+        const BORDER = {
+            top:    { style:'thin', color:{ rgb:'BDBDBD' } },
+            bottom: { style:'thin', color:{ rgb:'BDBDBD' } },
+            left:   { style:'thin', color:{ rgb:'BDBDBD' } },
+            right:  { style:'thin', color:{ rgb:'BDBDBD' } },
+        };
+        // 1~2행 굵은 테두리
+        const BORDER_THICK = {
+            top:    { style:'medium', color:{ rgb:'5D6D7E' } },
+            bottom: { style:'medium', color:{ rgb:'5D6D7E' } },
+            left:   { style:'medium', color:{ rgb:'5D6D7E' } },
+            right:  { style:'medium', color:{ rgb:'5D6D7E' } },
+        };
+        const CENTER = { horizontal:'center', vertical:'center' };
+        const LEFT   = { horizontal:'left',   vertical:'center' };
+
+        // 헤더 스타일 (연한 노란 배경 + 굵은 테두리)
+        const S_HDR  = { fill:{ fgColor:{ rgb:'FFF9C4' } }, font:{ bold:true, sz:8 }, alignment:CENTER, border:BORDER_THICK };
+        // 이름/참석/참석률 헤더 (세로병합용, 약간 더 진한 노랑 + 굵은 테두리)
+        const S_HDR2 = { fill:{ fgColor:{ rgb:'FFF176' } }, font:{ bold:true, sz:8 }, alignment:CENTER, border:BORDER_THICK };
+        // 데이터 기본
+        const S_DATA = { font:{ sz:10 }, alignment:CENTER, border:BORDER };
+        // 이름 열 (옅은 회색 배경)
+        const S_NAME = { fill:{ fgColor:{ rgb:'F2F3F4' } }, font:{ bold:true, sz:10 }, alignment:CENTER, border:BORDER };
+        // O 표시 (초록)
+        const S_O    = { font:{ bold:true, sz:10, color:{ rgb:'16A085' } }, alignment:CENTER, border:BORDER };
+        // 참석률 셀 — 높은/낮은 값에 따라 색상 분기는 직접 계산
+        const rateStyle = (rateStr) => {
+            const r = parseInt(rateStr);
+            let color = '2C3E50';
+            if (r >= 80)      color = '16A085';
+            else if (r >= 50) color = 'D68910';
+            else if (r > 0)   color = 'C0392B';
+            return { font:{ bold:true, sz:10, color:{ rgb:color } }, alignment:CENTER, border:BORDER };
+        };
+
+        // ── 워크시트 데이터 구성 ──
+        const wsData = []; // { v, s } 셀 배열
+
+        // 헤더 1행: 이름/참석횟수/참석률 제목 + 날짜 그룹
+        const row1 = [
+            { v:'이름',     s: S_HDR2 },  // A1 — 세로 병합
+            { v:'참석횟수', s: S_HDR2 },  // B1 — 세로 병합
+            { v:'참석률',   s: S_HDR2 },  // C1 — 세로 병합
+        ];
+        let prevDate = null;
+        weekData.forEach(d => {
+            row1.push(d.monthDay !== prevDate
+                ? { v: d.monthDay, s: S_HDR }
+                : { v: '',         s: S_HDR });
+            prevDate = d.monthDay;
+        });
+        wsData.push(row1);
+
+        // 헤더 2행: A/B/C는 병합으로 비움 + 보스명
+        const row2 = [
+            { v:'', s: S_HDR2 },
+            { v:'', s: S_HDR2 },
+            { v:'', s: S_HDR2 },
+        ];
+        weekData.forEach(d => row2.push({ v: d.bossName, s: S_HDR }));
+        wsData.push(row2);
+
+        // 데이터 행
+        users.forEach(user => {
+            let attendCount = 0, totalCount = 0;
+            const cells = [null, null, null]; // 이름/참석/참석률은 나중에 채움
+            weekData.forEach(d => {
+                const raw    = d.attendees[String(user.id)] !== undefined
+                                ? d.attendees[String(user.id)] : d.attendees[user.id];
+                const status = normalizeStatus(raw);
+                const isO    = status === 'present' || status === 'late';
+                if (isO) attendCount++;
+                if (isO || status === 'absent') totalCount++;
+                cells.push(isO ? { v:'O', s: S_O } : { v:'', s: S_DATA });
+            });
+            const rate = totalCount > 0 ? Math.round(attendCount/totalCount*100) : 0;
+            const rateStr = rate + '%';
+            cells[0] = { v: user.name,     s: S_NAME };
+            cells[1] = { v: attendCount,   s: S_DATA };
+            cells[2] = { v: rateStr,       s: rateStyle(rateStr) };
+            wsData.push(cells);
+        });
 
         // ── 워크시트 생성 ──
-        const ws = XLSX.utils.aoa_to_sheet(rows);
+        const ws = XLSX.utils.aoa_to_sheet(
+            wsData.map(row => row.map(c => c ? c.v : ''))
+        );
 
-        // ── 열 너비 설정 ──
-        const colWidths = rows[0].map((_, ci) => {
-            if (ci === 0) return { wch: 14 }; // 이름
-            if (ci === 1) return { wch: 6 };  // 참석
-            if (ci === 2) return { wch: 8 };  // 참석률
-            return { wch: 12 };               // 보스별
+        // 스타일 적용
+        wsData.forEach((row, R) => {
+            row.forEach((cell, C) => {
+                if (!cell) return;
+                const addr = XLSX.utils.encode_cell({ r:R, c:C });
+                if (!ws[addr]) ws[addr] = { t:'s', v:'' };
+                ws[addr].s = cell.s;
+            });
         });
-        ws['!cols'] = colWidths;
 
-        // ── 날짜 행(1행) 병합 ──
+        // ── 병합 설정 ──
         const merges = [];
-        let mergeStart = 3; // 4번째 열(0-index:3)부터
-        let prevDate = rows[0][3];
-        for (let c = 4; c <= rows[0].length; c++) {
-            const cur = rows[0][c] || '';
-            if (cur !== '' || c === rows[0].length) {
-                if (c - mergeStart > 1) {
-                    merges.push({ s: { r:0, c: mergeStart }, e: { r:0, c: c - 1 } });
-                }
-                mergeStart = c;
-                prevDate = cur;
+        const totalRows = wsData.length;
+
+        // 이름/참석/참석률 — 1~2행 세로 병합
+        [0, 1, 2].forEach(c => {
+            merges.push({ s:{ r:0, c }, e:{ r:1, c } });
+        });
+
+        // 날짜 — 1행 가로 병합 (같은 날짜끼리)
+        let mStart = 3;
+        let mDate  = weekData[0]?.monthDay;
+        weekData.forEach((d, i) => {
+            const col = i + 3;
+            const isLast = i === weekData.length - 1;
+            if ((d.monthDay !== mDate || isLast)) {
+                const end = isLast && d.monthDay === mDate ? col : col - 1;
+                if (end > mStart) merges.push({ s:{ r:0, c:mStart }, e:{ r:0, c:end } });
+                mStart = col;
+                mDate  = d.monthDay;
             }
-        }
-        if (merges.length > 0) ws['!merges'] = merges;
+        });
 
-        // ── 스타일 (배경색) ──
-        const range = XLSX.utils.decode_range(ws['!ref']);
-        for (let R = range.s.r; R <= range.e.r; R++) {
-            for (let C = range.s.c; C <= range.e.c; C++) {
-                const addr = XLSX.utils.encode_cell({ r: R, c: C });
-                if (!ws[addr]) ws[addr] = { v: '', t: 's' };
-                ws[addr].s = ws[addr].s || {};
+        ws['!merges'] = merges;
 
-                if (R === 0) { // 날짜 헤더
-                    ws[addr].s = { fill:{ fgColor:{ rgb:'34495E' } }, font:{ color:{ rgb:'FFFFFF' }, bold:true }, alignment:{ horizontal:'center' } };
-                } else if (R === 1) { // 보스명 헤더
-                    ws[addr].s = { fill:{ fgColor:{ rgb:'5D6D7E' } }, font:{ color:{ rgb:'FFFFFF' }, bold:true }, alignment:{ horizontal:'center' } };
-                } else if (C < 3) { // 왼쪽 3열
-                    ws[addr].s = { fill:{ fgColor:{ rgb:'ECF0F1' } }, font:{ bold:true } };
-                } else if (ws[addr].v === 'O') { // 출석 O
-                    ws[addr].s = { font:{ color:{ rgb:'16A085' }, bold:true }, alignment:{ horizontal:'center' } };
-                } else {
-                    ws[addr].s = { alignment:{ horizontal:'center' } };
-                }
-            }
-        }
+        // ── 열 너비 ──
+        ws['!cols'] = [
+            { wch:10 }, // 이름
+            { wch:6  }, // 참석
+            { wch:8  }, // 참석률
+            ...weekData.map(() => ({ wch:9 })),
+        ];
 
-        // ── 워크북 생성 & 다운로드 ──
+        // ── 행 높이 ──
+        ws['!rows'] = [
+            { hpt:22 }, // 1행 날짜
+            { hpt:22 }, // 2행 보스명
+            ...users.map(() => ({ hpt:18 })),
+        ];
+
+        // ── 다운로드 ──
         const wb = XLSX.utils.book_new();
-        const tabName = formatLocalDate(monday) + ' ~ ' + formatLocalDate(endDate);
+        const tabName = `${formatLocalDate(monday)} ~ ${formatLocalDate(endDate)}`;
         XLSX.utils.book_append_sheet(wb, ws, tabName.substring(0, 31));
-
-        const dateStr = formatLocalDate(new Date());
-        XLSX.writeFile(wb, `헌터혈맹_출석_${dateStr}.xlsx`);
+        XLSX.writeFile(wb, `헌터혈맹_출석_${formatLocalDate(new Date())}.xlsx`);
 
         console.log('✅ 엑셀 다운로드 완료');
     } catch(e) {
@@ -2814,8 +2912,8 @@ function generateScreenshotFormatRows(attendanceData) {
     
     const rows = [];
     
-    // 헤더 행 1: 날짜 (병합용 - 같은 날짜는 첫 컬럼에만 표시)
-    const header1 = ['', '참석', '참석률'];
+    // 헤더 행 1: 이름/참석횟수/참석률 + 날짜 (병합용 - 같은 날짜는 첫 컬럼에만 표시)
+    const header1 = ['이름', '참석횟수', '참석률'];
     let prevDate = null;
     weekData.forEach(data => {
         if (data.monthDay !== prevDate) {
@@ -2826,9 +2924,9 @@ function generateScreenshotFormatRows(attendanceData) {
         }
     });
     rows.push(header1);
-    
-    // 헤더 행 2: 이름 + 보스명
-    const header2 = ['이름', '횟수', ''];
+
+    // 헤더 행 2: A/B/C 비움(세로병합) + 보스명
+    const header2 = ['', '', ''];
     weekData.forEach(data => {
         header2.push(data.bossName);
     });
@@ -2926,76 +3024,89 @@ function showBossAttendance(bossId, bossName) {
         
         thisWeekData.forEach(dayData => {
             const attendees = dayData.data.attendees || {};
-            
-            // 출석 데이터 분류
-            const present = [];
-            const absent = [];
-            
+
+            // 출석 데이터 분류 + 서버별 그룹화
+            const serverList = ['jingir', 'pandora', 'support'];
+            const serverNames = { jingir: '진기르', pandora: '판도라', support: '지원' };
+            const serverColors = {
+                jingir:  { bg: '#eaf4fb', label: '#21618c' },
+                pandora: { bg: '#f4ecf7', label: '#6c3483' },
+                support: { bg: '#eafaf1', label: '#1e8449' },
+            };
+
+            const presentByServer = { jingir: [], pandora: [], support: [] };
+            const absentByServer  = { jingir: [], pandora: [], support: [] };
+            let presentTotal = 0, absentTotal = 0;
+
             Object.entries(attendees).forEach(([userId, data]) => {
                 const user = users.find(u => u.id === parseInt(userId));
-                if (user) {
-                    // 객체 형식과 문자열 형식 모두 처리
-                    const status = typeof data === 'string' ? data : (data?.status || data);
-                    
-                    const userInfo = {
-                        name: user.name,
-                        server: servers[user.server] || '미지정',
-                        status: status
-                    };
-                    
-                    // 기존 'late' 데이터도 출석으로 표시
-                    if (status === 'present' || status === 'late') present.push(userInfo);
-                    else if (status === 'absent') absent.push(userInfo);
+                if (!user) return;
+                const status = typeof data === 'string' ? data : (data?.status || data);
+                const srv = user.server || 'support';
+                if (status === 'present' || status === 'late') {
+                    if (presentByServer[srv]) { presentByServer[srv].push(user.name); presentTotal++; }
+                } else if (status === 'absent') {
+                    if (absentByServer[srv])  { absentByServer[srv].push(user.name);  absentTotal++; }
                 }
             });
-            
-            const total = present.length + absent.length;
-            const rate = total > 0 ? (present.length / total * 100).toFixed(1) : 0;
-            
+
+            const total = presentTotal + absentTotal;
+            const rate  = total > 0 ? (presentTotal / total * 100).toFixed(1) : 0;
+
+            // 서버별 배지 렌더 헬퍼
+            const renderServerBadges = (byServer, nameBg, nameColor) =>
+                serverList
+                    .filter(srv => byServer[srv].length > 0)
+                    .map(srv => `
+                        <div style="flex:1; min-width:130px; padding:8px 10px;
+                                    background:${serverColors[srv].bg}; border-radius:6px;">
+                            <div style="font-size:0.8rem; font-weight:bold;
+                                        color:${serverColors[srv].label}; margin-bottom:5px;">
+                                ${serverNames[srv]} (${byServer[srv].length}명)
+                            </div>
+                            <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                                ${byServer[srv].map(name => `
+                                    <span style="background:${nameBg}; color:${nameColor};
+                                                 padding:2px 7px; border-radius:4px; font-size:0.8rem;">
+                                        ${name}
+                                    </span>`).join('')}
+                            </div>
+                        </div>`).join('');
+
             html += `
-                <div style="margin-bottom: 20px; border: 2px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-                    <div style="padding: 12px; background: #34495e; color: white; font-weight: bold;">
-                        📅 ${dayData.dateStr} (${dayData.dayName}) - 참여율 ${rate}% (${present.length}/${total}명)
+                <div style="margin-bottom:20px; border:2px solid #e0e0e0; border-radius:8px; overflow:hidden;">
+                    <div style="padding:12px; background:#34495e; color:white; font-weight:bold;">
+                        📅 ${dayData.dateStr} (${dayData.dayName}) - 참여율 ${rate}% (${presentTotal}/${total}명)
                     </div>
-                    <div style="padding: 15px;">
+                    <div style="padding:15px;">
             `;
-            
-            // 출석자
-            if (present.length > 0) {
+
+            // 출석 — 서버별
+            if (presentTotal > 0) {
                 html += `
-                    <div style="margin-bottom: 15px;">
-                        <h4 style="color: #16a085; margin-bottom: 8px; font-size: 0.95rem;">
-                            ⭕ 출석 (${present.length}명)
+                    <div style="margin-bottom:14px;">
+                        <h4 style="color:#16a085; margin-bottom:8px; font-size:0.95rem;">
+                            ⭕ 출석 (${presentTotal}명)
                         </h4>
-                        <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                            ${present.map(u => `
-                                <span style="background: #d5f4e6; color: #16a085; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem;">
-                                    ${u.name}
-                                </span>
-                            `).join('')}
+                        <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                            ${renderServerBadges(presentByServer, '#d5f4e6', '#16a085')}
                         </div>
-                    </div>
-                `;
+                    </div>`;
             }
-            
-            // 불참자
-            if (absent.length > 0) {
+
+            // 불참 — 서버별
+            if (absentTotal > 0) {
                 html += `
-                    <div style="margin-bottom: 15px;">
-                        <h4 style="color: #c0392b; margin-bottom: 8px; font-size: 0.95rem;">
-                            ❌ 불참 (${absent.length}명)
+                    <div style="margin-bottom:8px;">
+                        <h4 style="color:#c0392b; margin-bottom:8px; font-size:0.95rem;">
+                            ❌ 불참 (${absentTotal}명)
                         </h4>
-                        <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                            ${absent.map(u => `
-                                <span style="background: #fadbd8; color: #c0392b; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem;">
-                                    ${u.name}
-                                </span>
-                            `).join('')}
+                        <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                            ${renderServerBadges(absentByServer, '#fadbd8', '#c0392b')}
                         </div>
-                    </div>
-                `;
+                    </div>`;
             }
-            
+
             html += `
                     </div>
                 </div>
