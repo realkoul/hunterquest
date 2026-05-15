@@ -546,6 +546,17 @@
             </div>
         </div>
 
+        <!-- 🔔 알림 소리 테스트 -->
+        <div class="card" style="border: 2px solid #3498db;">
+            <h2>🔔 알림 소리 테스트</h2>
+            <p style="color: #7f8c8d; margin-bottom: 15px;">
+                출석 시간이 시작되면 자동으로 소리가 납니다. 아래 버튼으로 미리 들어볼 수 있어요.
+            </p>
+            <button class="btn btn-primary" onclick="_initAudio(); playBossStartSound();" style="padding: 12px 24px; font-size: 1rem;">
+                🔊 보스 시작 알림음 테스트
+            </button>
+        </div>
+
         <!-- 데이터 관리 -->
         <div class="card">
             <h2>🗑️ 데이터 관리</h2>
@@ -912,6 +923,7 @@ function checkSitePassword() {
     if (getHash(input) === validHash) {
         document.getElementById('lock-screen').style.display = 'none';
         errEl.style.display = 'none';
+        _initAudio(); // 사용자 인터랙션 시점에 AudioContext 활성화
     } else {
         errEl.style.display = 'block';
         document.getElementById('lock-password').value = '';
@@ -961,7 +973,47 @@ function changeSitePassword() {
 }
 // ==========================================
 
-// ========== 관리자 / 사용자 모드 ==========
+// ========== 🔔 알림 소리 ==========
+let _audioCtx = null;
+
+// AudioContext 초기화 (사용자 인터랙션 후 한 번만 호출)
+function _initAudio() {
+    if (_audioCtx) return;
+    try {
+        _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        console.log('🔊 AudioContext 초기화 완료');
+    } catch(e) {
+        console.warn('🔇 오디오 초기화 실패:', e);
+    }
+}
+
+// 소리 재생 — 주파수(Hz), 길이(초), 볼륨(0~1)
+function _playTone(freq, duration, volume) {
+    if (!_audioCtx) return;
+    try {
+        const osc  = _audioCtx.createOscillator();
+        const gain = _audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(_audioCtx.destination);
+        osc.frequency.value = freq;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(volume, _audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + duration);
+        osc.start(_audioCtx.currentTime);
+        osc.stop(_audioCtx.currentTime + duration);
+    } catch(e) {
+        console.warn('🔇 재생 실패:', e);
+    }
+}
+
+// 보스 시작 알림음 (밝은 3연타)
+function playBossStartSound() {
+    if (!_audioCtx) return;
+    _playTone(880, 0.15, 0.4);
+    setTimeout(() => _playTone(1100, 0.15, 0.4), 180);
+    setTimeout(() => _playTone(1320, 0.3,  0.5), 360);
+}
+// ===================================
 let isAdmin = localStorage.getItem('hunterIsAdmin') === 'true';
 const ADMIN_PW = 'ht2026'; // ← 비밀번호 변경 시 여기 수정
 
@@ -1053,6 +1105,7 @@ function refreshTimeBasedUI() {
     if (newCurrent && newCurrent.id !== oldId) {
         // 새 보스로 전환
         currentScheduleId = newCurrent.id;
+        playBossStartSound(); // 🔔 출석 시간 시작 알림음
         renderTodaySchedules();
         loadTodayAttendance();
         loadBossItems(newCurrent.id);
@@ -1381,7 +1434,15 @@ async function renderTodaySchedules() {
         if (validNames.length > 0) {
             const btnHtml = validNames.map(name => {
                 const safeName = name.replace(/'/g, "\\'");
-                return `<button class="quick-attend-btn" onclick="quickAttendanceByName('${safeName}')">⭕ ${name} 출석</button>`;
+                const u = users.find(u => u.name === name);
+                const attended = u && (
+                    normalizeStatus(todayAttendance?.attendees?.[u.id]) === 'present' ||
+                    normalizeStatus(todayAttendance?.attendees?.[u.id]) === 'late'
+                );
+                if (attended) {
+                    return `<button class="quick-attend-btn" disabled style="background:#27ae60;cursor:not-allowed;opacity:0.9;">✅ ${name} 출석 완료</button>`;
+                }
+                return `<button class="quick-attend-btn" data-quick-name="${safeName}" onclick="quickAttendanceByName('${safeName}')">⭕ ${name} 출석</button>`;
             }).join('');
             container.innerHTML += `
                 <div class="quick-attend-banner">
@@ -1936,7 +1997,7 @@ function updateAttendance(userId, requestedStatus) {
     const updates = {};
     updates[`boss_attendance/${attendanceKey}/attendees/${userId}`] = finalStatus;
     
-    db.ref().update(updates).then(() => {
+    return db.ref().update(updates).then(() => {
         console.log('✅ 출석 업데이트 완료:', attendanceKey);
         // 수동 선택 상태에서는 todayAttendance 캐시도 즉시 갱신 (UI 반영)
         if (currentScheduleDate) {
@@ -4480,13 +4541,27 @@ function updateMyNameDisplay() {
         const exists = !!user;
         const warningIcon = exists ? '' : '<span style="color: #c0392b; font-size: 0.85rem;" title="명단에 없는 이름">⚠️</span>';
         const safeName = name.replace(/'/g, "\\'");
+
+        // 이미 출석 완료 여부 확인
+        const attendStatus = user ? normalizeStatus(todayAttendance?.attendees?.[user.id]) : null;
+        const isAttended = attendStatus === 'present' || attendStatus === 'late';
+
+        let quickBtnHtml;
+        if (!exists) {
+            quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#bdc3c7;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">⭕ 빠른 출석</button>`;
+        } else if (isAttended) {
+            quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#27ae60;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">✅ 출석 완료</button>`;
+        } else {
+            quickBtnHtml = `<button data-quick-name="${safeName}" onclick="quickAttendanceByName('${safeName}')" style="width:100%;padding:9px;background:#16a085;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.95rem;font-weight:bold;">⭕ 빠른 출석</button>`;
+        }
+
         return `
             <div style="display: flex; flex-direction: column; gap: 6px; padding: 8px; background: white; border-radius: 6px; border: 1px solid #fde9a0;">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
                     <span style="font-weight: bold; color: #2c3e50; font-size: 1rem;">${name} ${warningIcon}</span>
                     <button onclick="removeMyName('${safeName}')" style="padding: 3px 10px; background: transparent; border: 1px solid #856404; color: #856404; border-radius: 4px; cursor: pointer; font-size: 0.8rem; white-space: nowrap; flex-shrink: 0;">해제</button>
                 </div>
-                <button onclick="quickAttendanceByName('${safeName}')" ${exists ? '' : 'disabled'} style="width: 100%; padding: 9px; background: ${exists ? '#16a085' : '#bdc3c7'}; color: white; border: none; border-radius: 6px; cursor: ${exists ? 'pointer' : 'not-allowed'}; font-size: 0.95rem; font-weight: bold;">⭕ 빠른 출석</button>
+                ${quickBtnHtml}
             </div>
         `;
     }).join('');
@@ -4498,6 +4573,29 @@ function closeMyNameModal() {
 }
 
 // 빠른 출석 (이름 기반) — 시간 기반 자동 판정
+// 빠른 출석 버튼 상태 변경 (loading / success / idle)
+function setQuickBtnState(name, state) {
+    document.querySelectorAll('[data-quick-name]').forEach(btn => {
+        if (btn.dataset.quickName !== name) return;
+        if (state === 'loading') {
+            btn.disabled = true;
+            btn.textContent = '⏳ 처리 중...';
+            btn.style.background = '#95a5a6';
+            btn.style.cursor = 'not-allowed';
+        } else if (state === 'success') {
+            btn.disabled = true;
+            btn.textContent = '✅ 출석 완료';
+            btn.style.background = '#27ae60';
+            btn.style.cursor = 'not-allowed';
+        } else { // idle — 실패 시 원상 복구
+            btn.disabled = false;
+            btn.textContent = '⭕ 빠른 출석';
+            btn.style.background = '#16a085';
+            btn.style.cursor = 'pointer';
+        }
+    });
+}
+
 function quickAttendanceByName(name) {
     const user = users.find(u => u.name === name);
     if (!user) {
@@ -4508,8 +4606,19 @@ function quickAttendanceByName(name) {
         alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±10분 내에만 가능합니다.');
         return;
     }
-    // updateAttendance 안에서 시간 검증 + 자동 status 결정 수행
-    updateAttendance(user.id, 'present');
+
+    // 즉시 로딩 상태로 전환
+    setQuickBtnState(name, 'loading');
+
+    const promise = updateAttendance(user.id, 'present');
+    if (!promise) {
+        // updateAttendance 내부에서 얼리 리턴(alert)된 경우
+        setQuickBtnState(name, 'idle');
+        return;
+    }
+    promise
+        .then(() => setQuickBtnState(name, 'success'))
+        .catch(() => setQuickBtnState(name, 'idle'));
 }
 
 // 페이지 로드 시 내 이름 표시 업데이트
