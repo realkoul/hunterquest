@@ -425,7 +425,7 @@
         
         <div class="card admin-only">
             <button class="btn btn-success" onclick="exportToGoogleSheets()">📊 구글 시트로 내보내기</button>
-            <button class="btn btn-primary" onclick="exportToCSV()" style="margin-left: 10px;">📥 CSV로 내보내기</button>
+            <button class="btn btn-primary" onclick="exportToCSV()" style="margin-left: 10px;">📥 엑셀로 내보내기</button>
         </div>
     </div>
     
@@ -867,6 +867,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <script>
 // Firebase 초기화
@@ -2508,101 +2509,108 @@ function filterStats() {
 }
 
 // CSV Export
-function exportToCSV() {
-    // 현재 표시된 통계 데이터 사용
-    const statsTable = document.getElementById('stats-tbody');
-    if (!statsTable || statsTable.children.length === 0) {
-        alert('내보낼 통계 데이터가 없습니다.');
+// 엑셀 내보내기 (구글시트 내보내기와 동일한 형식)
+async function exportToCSV() {
+    if (typeof XLSX === 'undefined') {
+        alert('⚠️ 엑셀 라이브러리 로딩 중입니다. 잠시 후 다시 시도해주세요.');
         return;
     }
-    
-    let csv = '\uFEFF'; // BOM 추가 (Excel 한글 깨짐 방지)
-    
-    // === 섹션 1: 통계 요약 ===
-    csv += '=== 통계 요약 ===\n';
-    csv += '이름,서버,출석,불참,참여율\n';
-    
-    // 테이블에서 직접 데이터 추출
-    Array.from(statsTable.children).forEach(row => {
-        const cells = row.querySelectorAll('td');
-        if (cells.length >= 6) {
-            const name = cells[1].textContent.trim();
-            const server = cells[2].textContent.trim();
-            const present = cells[3].textContent.trim();
-            const absent = cells[4].textContent.trim();
-            const rate = cells[5].textContent.trim();
-            
-            csv += `${name},${server},${present},${absent},${rate}\n`;
+
+    // 로딩 표시
+    const loadingDiv = document.createElement('div');
+    loadingDiv.style.cssText = `
+        position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+        background:white; padding:30px; border-radius:12px;
+        box-shadow:0 10px 40px rgba(0,0,0,0.3); z-index:10000;
+        text-align:center; min-width:260px;
+    `;
+    loadingDiv.innerHTML = `<div style="font-size:2rem;margin-bottom:12px;">⏳</div>
+        <div style="font-weight:bold;color:#2c3e50;">엑셀 파일 생성 중...</div>`;
+    document.body.appendChild(loadingDiv);
+
+    try {
+        // 이번 주 출석 데이터 로드
+        const now = new Date();
+        const dow = now.getDay();
+        const monday = new Date(now);
+        monday.setDate(monday.getDate() + (dow === 0 ? -6 : -(dow - 1)));
+        monday.setHours(0, 0, 0, 0);
+        const endDate = new Date(); endDate.setHours(23, 59, 59, 999);
+
+        const attendanceData = await fetchAttendanceData(monday, endDate);
+
+        // 구글시트 내보내기와 완전히 동일한 행 생성
+        const rows = generateScreenshotFormatRows(attendanceData);
+
+        if (!rows || rows.length < 2) {
+            throw new Error('생성된 데이터가 없습니다.');
         }
-    });
-    
-    csv += '\n'; // 빈 줄
-    
-    // === 섹션 2: 상세 출석 내역 ===
-    csv += '=== 상세 출석 내역 ===\n';
-    csv += '이름,날짜,보스,상태\n';
-    
-    // Firebase에서 출석 데이터 가져오기
-    db.ref('boss_attendance').once('value', (snapshot) => {
-        const attendanceData = snapshot.val() || {};
-        const detailRecords = [];
-        
-        // 출석 데이터 파싱
-        Object.entries(attendanceData).forEach(([key, attendance]) => {
-            // key 형식: "2026-05-07_fri_1225_oman1"
-            const parts = key.split('_');
-            const date = parts[0]; // 날짜
-            const bossId = parts.slice(1).join('_'); // 보스 ID
-            
-            // 해당 보스 정보 찾기
-            const boss = schedules.find(s => s.id === bossId);
-            const bossName = boss ? boss.name : bossId;
-            
-            // 출석자 데이터
-            if (attendance.attendees) {
-                Object.entries(attendance.attendees).forEach(([userId, data]) => {
-                    const user = users.find(u => u.id === parseInt(userId));
-                    const userName = user ? user.name : `사용자${userId}`;
-                    // 문자열/객체 형식 모두 처리
-                    const normalized = normalizeStatus(data);
-                    const status = normalized === 'present' || normalized === 'late' ? '출석' : 
-                                 normalized === 'absent' ? '불참' : '미기록';
-                    
-                    detailRecords.push({
-                        name: userName,
-                        date: date,
-                        boss: bossName,
-                        status: status
-                    });
-                });
+
+        // ── 워크시트 생성 ──
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+
+        // ── 열 너비 설정 ──
+        const colWidths = rows[0].map((_, ci) => {
+            if (ci === 0) return { wch: 14 }; // 이름
+            if (ci === 1) return { wch: 6 };  // 참석
+            if (ci === 2) return { wch: 8 };  // 참석률
+            return { wch: 12 };               // 보스별
+        });
+        ws['!cols'] = colWidths;
+
+        // ── 날짜 행(1행) 병합 ──
+        const merges = [];
+        let mergeStart = 3; // 4번째 열(0-index:3)부터
+        let prevDate = rows[0][3];
+        for (let c = 4; c <= rows[0].length; c++) {
+            const cur = rows[0][c] || '';
+            if (cur !== '' || c === rows[0].length) {
+                if (c - mergeStart > 1) {
+                    merges.push({ s: { r:0, c: mergeStart }, e: { r:0, c: c - 1 } });
+                }
+                mergeStart = c;
+                prevDate = cur;
             }
-        });
-        
-        // 이름순, 날짜순 정렬
-        detailRecords.sort((a, b) => {
-            if (a.name !== b.name) return a.name.localeCompare(b.name, 'ko');
-            return a.date.localeCompare(b.date);
-        });
-        
-        // CSV에 추가
-        detailRecords.forEach(record => {
-            csv += `${record.name},${record.date},${record.boss},${record.status}\n`;
-        });
-        
-        // 상세 내역이 없으면 안내 메시지
-        if (detailRecords.length === 0) {
-            csv += '(출석 기록이 없습니다. 테스트 모드이거나 실제 출석 체크를 하지 않았습니다.)\n';
         }
-        
-        // 다운로드
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `헌터혈맹_보스출석통계_상세_${formatLocalDate(new Date())}.csv`;
-        link.click();
-        
-        console.log('✅ CSV 다운로드 완료 (상세 내역 포함)');
-    });
+        if (merges.length > 0) ws['!merges'] = merges;
+
+        // ── 스타일 (배경색) ──
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        for (let R = range.s.r; R <= range.e.r; R++) {
+            for (let C = range.s.c; C <= range.e.c; C++) {
+                const addr = XLSX.utils.encode_cell({ r: R, c: C });
+                if (!ws[addr]) ws[addr] = { v: '', t: 's' };
+                ws[addr].s = ws[addr].s || {};
+
+                if (R === 0) { // 날짜 헤더
+                    ws[addr].s = { fill:{ fgColor:{ rgb:'34495E' } }, font:{ color:{ rgb:'FFFFFF' }, bold:true }, alignment:{ horizontal:'center' } };
+                } else if (R === 1) { // 보스명 헤더
+                    ws[addr].s = { fill:{ fgColor:{ rgb:'5D6D7E' } }, font:{ color:{ rgb:'FFFFFF' }, bold:true }, alignment:{ horizontal:'center' } };
+                } else if (C < 3) { // 왼쪽 3열
+                    ws[addr].s = { fill:{ fgColor:{ rgb:'ECF0F1' } }, font:{ bold:true } };
+                } else if (ws[addr].v === 'O') { // 출석 O
+                    ws[addr].s = { font:{ color:{ rgb:'16A085' }, bold:true }, alignment:{ horizontal:'center' } };
+                } else {
+                    ws[addr].s = { alignment:{ horizontal:'center' } };
+                }
+            }
+        }
+
+        // ── 워크북 생성 & 다운로드 ──
+        const wb = XLSX.utils.book_new();
+        const tabName = formatLocalDate(monday) + ' ~ ' + formatLocalDate(endDate);
+        XLSX.utils.book_append_sheet(wb, ws, tabName.substring(0, 31));
+
+        const dateStr = formatLocalDate(new Date());
+        XLSX.writeFile(wb, `헌터혈맹_출석_${dateStr}.xlsx`);
+
+        console.log('✅ 엑셀 다운로드 완료');
+    } catch(e) {
+        console.error('❌ 엑셀 생성 실패:', e);
+        alert('⚠️ 엑셀 생성 실패: ' + e.message);
+    } finally {
+        loadingDiv.remove();
+    }
 };
 
 // Apps Script URL 재설정 (콘솔 또는 버튼에서 호출 가능)
