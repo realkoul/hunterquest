@@ -1129,9 +1129,10 @@ function refreshTimeBasedUI() {
     const oldId = currentScheduleId;
     
     if (newCurrent && newCurrent.id !== oldId) {
-        // 새 보스로 전환
+        // 새 보스로 전환 — 이전 출석 데이터 초기화 후 렌더링
         currentScheduleId = newCurrent.id;
-        playBossStartSound(); // 🔔 출석 시간 시작 알림음
+        todayAttendance = null;          // ← 이전 보스 데이터 클리어
+        playBossStartSound();
         renderTodaySchedules();
         loadTodayAttendance();
         loadBossItems(newCurrent.id);
@@ -1323,6 +1324,8 @@ function loadTodayAttendance() {
             todayAttendance = snapshot.val();
             currentScheduleId = currentBoss.id;
             renderAttendanceTable();
+            renderTodaySchedules();   // ← 빠른 출석 버튼 상태 갱신
+            updateMyNameDisplay();    // ← 내 이름 영역 갱신
         });
     } else {
         todayAttendance = null;
