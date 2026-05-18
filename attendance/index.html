@@ -258,6 +258,31 @@
         }
         .btn-unlock:hover { background: #3498db; }
         .lock-error { color: #e74c3c; font-size: 0.9rem; margin-top: 12px; display: none; }
+
+        /* ===== 아코디언 (관리 페이지) ===== */
+        .accordion-card {
+            background: white; border-radius: 8px; margin-bottom: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.08); overflow: hidden;
+        }
+        .accordion-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 16px 20px; cursor: pointer; user-select: none;
+            transition: background 0.2s;
+        }
+        .accordion-header:hover { background: #f8f9fa; }
+        .accordion-header h2 {
+            margin: 0; color: #2c3e50; font-size: 1.1rem;
+        }
+        .accordion-arrow {
+            font-size: 0.9rem; color: #7f8c8d;
+            transition: transform 0.25s; flex-shrink: 0;
+        }
+        .accordion-card.open .accordion-arrow { transform: rotate(180deg); }
+        .accordion-body {
+            display: none; padding: 0 20px 20px 20px;
+            border-top: 1px solid #ecf0f1;
+        }
+        .accordion-card.open .accordion-body { display: block; }
     </style>
 </head>
 <body>
@@ -422,11 +447,6 @@
             </div>
             <div id="stats-count-info" style="margin-top: 10px; color: #7f8c8d; font-size: 0.9rem; text-align: right;"></div>
         </div>
-        
-        <div class="card admin-only">
-            <button class="btn btn-success" onclick="exportToGoogleSheets()">📊 구글 시트로 내보내기</button>
-            <button class="btn btn-primary" onclick="exportToCSV()" style="margin-left: 10px;">📥 엑셀로 내보내기</button>
-        </div>
     </div>
     
     <!-- Tab 3: 보스 관리 -->
@@ -443,152 +463,167 @@
     
     <!-- Tab 4: 명단 관리 -->
     <div id="tab-users" class="tab-content admin-only">
-        <div class="card">
-            <h2>👥 길드원 명단 관리</h2>
-            <p style="color: #7f8c8d; margin-bottom: 20px;">
-                길드원을 추가하거나 서버 정보를 수정할 수 있습니다.
-            </p>
-            
-            <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
-                <input type="text" id="user-search" placeholder="🔍 이름 검색..." onkeyup="filterUserList()" style="flex: 1; min-width: 200px; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
-                <select id="user-server-filter" onchange="filterUserList()" style="flex: 0 0 150px; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
-                    <option value="all">전체 서버</option>
-                    <option value="jingir">진기르</option>
-                    <option value="pandora">판도라</option>
-                    <option value="support">지원</option>
-                </select>
-                <button class="btn btn-success" onclick="showAddUserModal()" style="flex: 0 0 auto; padding: 10px; font-size: 1rem; white-space: nowrap;">
-                    ➕ 사용자 추가
-                </button>
+
+        <!-- 👥 길드원 명단 관리 -->
+        <div class="accordion-card open" id="acc-users">
+            <div class="accordion-header" onclick="toggleAccordion('acc-users')">
+                <h2>👥 길드원 명단 관리</h2>
+                <span class="accordion-arrow">▼</span>
             </div>
-            
-            <p style="color: #7f8c8d; font-size: 0.9rem; margin-bottom: 10px;">
-                표시: <strong id="filtered-user-count">0</strong>명 / 전체: <strong id="total-user-count">0</strong>명
-            </p>
-            
-            <div style="overflow-x: auto;">
-                <table>
-                    <thead>
-                        <tr>
-                            <th width="8%">ID</th>
-                            <th width="20%">이름</th>
-                            <th width="15%">서버</th>
-                            <th width="20%">성물</th>
-                            <th width="12%">상태</th>
-                            <th>관리</th>
-                        </tr>
-                    </thead>
-                    <tbody id="user-list-tbody"></tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- 보스 아이템 설정 -->
-        <div class="card">
-            <h2>📦 보스 아이템 설정</h2>
-            <p style="color: #7f8c8d; margin-bottom: 20px;">
-                각 보스별로 드랍되는 아이템을 관리합니다. 출석 체크 시 선택할 수 있습니다.
-            </p>
-            
-            <div style="margin-bottom: 15px;">
-                <label style="color: #2c3e50; font-weight: bold; margin-bottom: 8px; display: block;">보스 선택:</label>
-                <select id="admin-boss-selector" onchange="loadAdminBossItems()" style="width: 100%; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
-                    <option value="">보스를 선택하세요</option>
-                </select>
-            </div>
-            
-            <div id="admin-boss-items-container" style="display: none;">
-                <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
-                    <input type="text" id="admin-new-item-name" placeholder="아이템 이름 입력..." style="flex: 1; min-width: 200px; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px;">
-                    <button class="btn btn-success" onclick="addAdminBossItem()" style="padding: 10px 20px; font-size: 1rem;">➕ 아이템 추가</button>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">길드원을 추가하거나 서버 정보를 수정할 수 있습니다.</p>
+                <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
+                    <input type="text" id="user-search" placeholder="🔍 이름 검색..." onkeyup="filterUserList()" style="flex:1; min-width:200px; padding:10px; font-size:1rem; border:2px solid #e0e0e0; border-radius:6px;">
+                    <select id="user-server-filter" onchange="filterUserList()" style="flex:0 0 150px; padding:10px; font-size:1rem; border:2px solid #e0e0e0; border-radius:6px;">
+                        <option value="all">전체 서버</option>
+                        <option value="jingir">진기르</option>
+                        <option value="pandora">판도라</option>
+                        <option value="support">지원</option>
+                    </select>
+                    <button class="btn btn-success" onclick="showAddUserModal()" style="flex:0 0 auto; padding:10px; font-size:1rem; white-space:nowrap;">➕ 사용자 추가</button>
                 </div>
-                <div id="admin-boss-items-list" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; padding: 15px; background: #f8f9fa; border-radius: 6px;"></div>
+                <p style="color:#7f8c8d; font-size:0.9rem; margin-bottom:10px;">
+                    표시: <strong id="filtered-user-count">0</strong>명 / 전체: <strong id="total-user-count">0</strong>명
+                </p>
+                <div style="overflow-x:auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th width="8%">ID</th>
+                                <th width="20%">이름</th>
+                                <th width="15%">서버</th>
+                                <th width="20%">성물</th>
+                                <th width="12%">상태</th>
+                                <th>관리</th>
+                            </tr>
+                        </thead>
+                        <tbody id="user-list-tbody"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
-        
-        <!-- 보스 스케줄 관리 -->
-        <div class="card">
-            <h2>⚙️ 보스 스케줄 관리</h2>
-            <p style="color: #7f8c8d; margin-bottom: 20px;">
-                보스의 요일과 시간을 설정합니다.
-            </p>
-            <button class="btn btn-primary" onclick="showAddScheduleModal()" style="padding: 10px 20px; font-size: 1rem;">+ 새 스케줄 추가</button>
-            <div id="schedules-list" style="margin-top:20px;"></div>
+
+        <!-- 📦 보스 아이템 설정 -->
+        <div class="accordion-card" id="acc-items">
+            <div class="accordion-header" onclick="toggleAccordion('acc-items')">
+                <h2>📦 보스 아이템 설정</h2>
+                <span class="accordion-arrow">▼</span>
+            </div>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">각 보스별로 드랍되는 아이템을 관리합니다. 출석 체크 시 선택할 수 있습니다.</p>
+                <div style="margin-bottom:15px;">
+                    <label style="color:#2c3e50; font-weight:bold; margin-bottom:8px; display:block;">보스 선택:</label>
+                    <select id="admin-boss-selector" onchange="loadAdminBossItems()" style="width:100%; padding:10px; font-size:1rem; border:2px solid #5D6D7E; border-radius:6px;">
+                        <option value="">보스를 선택하세요</option>
+                    </select>
+                </div>
+                <div id="admin-boss-items-container" style="display:none;">
+                    <div style="display:flex; gap:10px; margin-bottom:15px; flex-wrap:wrap;">
+                        <input type="text" id="admin-new-item-name" placeholder="아이템 이름 입력..." style="flex:1; min-width:200px; padding:10px; font-size:1rem; border:2px solid #e0e0e0; border-radius:6px;">
+                        <button class="btn btn-success" onclick="addAdminBossItem()" style="padding:10px 20px; font-size:1rem;">➕ 아이템 추가</button>
+                    </div>
+                    <div id="admin-boss-items-list" style="display:flex; flex-wrap:wrap; gap:8px; min-height:40px; padding:15px; background:#f8f9fa; border-radius:6px;"></div>
+                </div>
+            </div>
         </div>
-        
+
+        <!-- ⚙️ 보스 스케줄 관리 -->
+        <div class="accordion-card" id="acc-schedules">
+            <div class="accordion-header" onclick="toggleAccordion('acc-schedules')">
+                <h2>⚙️ 보스 스케줄 관리</h2>
+                <span class="accordion-arrow">▼</span>
+            </div>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">보스의 요일과 시간을 설정합니다.</p>
+                <button class="btn btn-primary" onclick="showAddScheduleModal()" style="padding:10px 20px; font-size:1rem;">+ 새 스케줄 추가</button>
+                <div id="schedules-list" style="margin-top:20px;"></div>
+            </div>
+        </div>
+
+        <!-- 📊 통계 내보내기 -->
+        <div class="accordion-card" id="acc-export">
+            <div class="accordion-header" onclick="toggleAccordion('acc-export')">
+                <h2>📊 통계 내보내기</h2>
+                <span class="accordion-arrow">▼</span>
+            </div>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">주차를 선택해 구글 시트 또는 엑셀 파일로 출석 통계를 내보냅니다.</p>
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+                    <label style="font-weight:bold; color:#2c3e50; white-space:nowrap;">📅 주차 선택:</label>
+                    <select id="export-week-select" style="flex:1; min-width:220px; padding:9px 12px; font-size:0.95rem; border:2px solid #5D6D7E; border-radius:6px; background:white;"></select>
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                    <button class="btn btn-success" onclick="exportToGoogleSheets()">📊 구글 시트로 내보내기</button>
+                    <button class="btn btn-primary" onclick="exportToCSV()">📥 엑셀로 내보내기</button>
+                </div>
+            </div>
+        </div>
+
         <!-- 🔑 사이트 비밀번호 변경 -->
-        <div class="card" style="border: 2px solid #e67e22;">
-            <h2>🔑 사이트 입장 비밀번호 변경</h2>
-            <p style="color: #7f8c8d; margin-bottom: 20px;">
-                변경 즉시 모든 기기에 적용됩니다. 기본 비밀번호: <strong>eka2026</strong>
-            </p>
-            <div style="display: flex; flex-direction: column; gap: 14px; max-width: 420px;">
-                <div>
-                    <label style="display: block; font-weight: bold; color: #2c3e50; margin-bottom: 6px;">관리자 비밀번호 확인</label>
-                    <input type="password" id="site-pw-admin" placeholder="현재 관리자 비밀번호"
-                           style="width: 100%; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px; box-sizing: border-box;">
+        <div class="accordion-card" id="acc-password" style="border:2px solid #e67e22;">
+            <div class="accordion-header" onclick="toggleAccordion('acc-password')">
+                <h2>🔑 사이트 입장 비밀번호 변경</h2>
+                <span class="accordion-arrow">▼</span>
+            </div>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">변경 즉시 모든 기기에 적용됩니다. 기본 비밀번호: <strong>eka2026</strong></p>
+                <div style="display:flex; flex-direction:column; gap:14px; max-width:420px;">
+                    <div>
+                        <label style="display:block; font-weight:bold; color:#2c3e50; margin-bottom:6px;">관리자 비밀번호 확인</label>
+                        <input type="password" id="site-pw-admin" placeholder="현재 관리자 비밀번호" style="width:100%; padding:10px; font-size:1rem; border:2px solid #e0e0e0; border-radius:6px; box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-weight:bold; color:#2c3e50; margin-bottom:6px;">새 사이트 비밀번호</label>
+                        <input type="password" id="site-pw-new" placeholder="새 비밀번호 (4자 이상)" style="width:100%; padding:10px; font-size:1rem; border:2px solid #e0e0e0; border-radius:6px; box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-weight:bold; color:#2c3e50; margin-bottom:6px;">새 비밀번호 확인</label>
+                        <input type="password" id="site-pw-confirm" placeholder="새 비밀번호 재입력" style="width:100%; padding:10px; font-size:1rem; border:2px solid #e0e0e0; border-radius:6px; box-sizing:border-box;">
+                    </div>
+                    <button class="btn" onclick="changeSitePassword()" style="padding:12px; font-size:1rem; background:#e67e22; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🔒 비밀번호 변경</button>
+                    <p id="site-pw-msg" style="display:none; font-weight:bold; margin:0;"></p>
                 </div>
-                <div>
-                    <label style="display: block; font-weight: bold; color: #2c3e50; margin-bottom: 6px;">새 사이트 비밀번호</label>
-                    <input type="password" id="site-pw-new" placeholder="새 비밀번호 (4자 이상)"
-                           style="width: 100%; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px; box-sizing: border-box;">
-                </div>
-                <div>
-                    <label style="display: block; font-weight: bold; color: #2c3e50; margin-bottom: 6px;">새 비밀번호 확인</label>
-                    <input type="password" id="site-pw-confirm" placeholder="새 비밀번호 재입력"
-                           style="width: 100%; padding: 10px; font-size: 1rem; border: 2px solid #e0e0e0; border-radius: 6px; box-sizing: border-box;">
-                </div>
-                <button class="btn" onclick="changeSitePassword()"
-                        style="padding: 12px; font-size: 1rem; background: #e67e22; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">
-                    🔒 비밀번호 변경
-                </button>
-                <p id="site-pw-msg" style="display: none; font-weight: bold; margin: 0;"></p>
             </div>
         </div>
 
         <!-- 🔔 알림 소리 테스트 -->
-        <div class="card" style="border: 2px solid #3498db;">
-            <h2>🔔 알림 소리 테스트</h2>
-            <p style="color: #7f8c8d; margin-bottom: 15px;">
-                출석 시간이 시작되면 자동으로 소리가 납니다. 아래 버튼으로 미리 들어볼 수 있어요.
-            </p>
-            <button class="btn btn-primary" onclick="_initAudio(); playBossStartSound();" style="padding: 12px 24px; font-size: 1rem;">
-                🔊 보스 시작 알림음 테스트
-            </button>
+        <div class="accordion-card" id="acc-sound" style="border:2px solid #3498db;">
+            <div class="accordion-header" onclick="toggleAccordion('acc-sound')">
+                <h2>🔔 알림 소리 테스트</h2>
+                <span class="accordion-arrow">▼</span>
+            </div>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">출석 시간이 시작되면 자동으로 소리가 납니다. 아래 버튼으로 미리 들어볼 수 있어요.</p>
+                <button class="btn btn-primary" onclick="_initAudio(); playBossStartSound();" style="padding:12px 24px; font-size:1rem;">🔊 보스 시작 알림음 테스트</button>
+            </div>
         </div>
 
-        <!-- 데이터 관리 -->
-        <div class="card">
-            <h2>🗑️ 데이터 관리</h2>
-            <p style="color: #7f8c8d; margin-bottom: 20px;">
-                오래된 출석 데이터를 삭제하거나 관리합니다.
-            </p>
-            
-            <div style="display: flex; flex-direction: column; gap: 15px;">
-                <div style="padding: 15px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
-                    <div style="font-weight: bold; color: #856404; margin-bottom: 8px;">⚠️ 7일 이전 데이터 삭제</div>
-                    <div style="color: #856404; font-size: 0.9rem; margin-bottom: 10px;">
-                        7일보다 오래된 출석 데이터를 삭제합니다. 이 작업은 되돌릴 수 없습니다.
+        <!-- 🗑️ 데이터 관리 -->
+        <div class="accordion-card" id="acc-data">
+            <div class="accordion-header" onclick="toggleAccordion('acc-data')">
+                <h2>🗑️ 데이터 관리</h2>
+                <span class="accordion-arrow">▼</span>
+            </div>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">오래된 출석 데이터를 삭제하거나 관리합니다.</p>
+                <div style="display:flex; flex-direction:column; gap:15px;">
+                    <div style="padding:15px; background:#fff3cd; border-left:4px solid #ffc107; border-radius:4px;">
+                        <div style="font-weight:bold; color:#856404; margin-bottom:8px;">⚠️ 7일 이전 데이터 삭제</div>
+                        <div style="color:#856404; font-size:0.9rem; margin-bottom:10px;">7일보다 오래된 출석 데이터를 삭제합니다. 이 작업은 되돌릴 수 없습니다.</div>
+                        <button class="btn btn-danger" onclick="deleteOldData(7)" style="padding:8px 16px; font-size:0.9rem;">🗑️ 7일 이전 데이터 삭제</button>
                     </div>
-                    <button class="btn btn-danger" onclick="deleteOldData(7)" style="padding: 8px 16px; font-size: 0.9rem;">
-                        🗑️ 7일 이전 데이터 삭제
-                    </button>
-                </div>
-                
-                <div style="padding: 15px; background: #fadbd8; border-left: 4px solid #e74c3c; border-radius: 4px;">
-                    <div style="font-weight: bold; color: #c0392b; margin-bottom: 8px;">⚠️ 특정 날짜 데이터 삭제</div>
-                    <div style="color: #c0392b; font-size: 0.9rem; margin-bottom: 10px;">
-                        테스트 데이터나 특정 날짜의 출석 데이터를 삭제합니다.
-                    </div>
-                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                        <input type="date" id="delete-date-input" style="flex: 1; min-width: 200px; padding: 8px; font-size: 0.9rem; border: 2px solid #e0e0e0; border-radius: 4px;">
-                        <button class="btn btn-danger" onclick="deleteDataByDate()" style="padding: 8px 16px; font-size: 0.9rem;">
-                            🗑️ 선택한 날짜 삭제
-                        </button>
+                    <div style="padding:15px; background:#fadbd8; border-left:4px solid #e74c3c; border-radius:4px;">
+                        <div style="font-weight:bold; color:#c0392b; margin-bottom:8px;">⚠️ 특정 날짜 데이터 삭제</div>
+                        <div style="color:#c0392b; font-size:0.9rem; margin-bottom:10px;">테스트 데이터나 특정 날짜의 출석 데이터를 삭제합니다.</div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                            <input type="date" id="delete-date-input" style="flex:1; min-width:200px; padding:8px; font-size:0.9rem; border:2px solid #e0e0e0; border-radius:4px;">
+                            <button class="btn btn-danger" onclick="deleteDataByDate()" style="padding:8px 16px; font-size:0.9rem;">🗑️ 선택한 날짜 삭제</button>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
+
     </div>
 </div>
 
@@ -894,7 +929,11 @@ let currentScheduleDate = null; // 수동 선택된 과거 보스의 날짜 (nul
 let currentAttendeesListener = null; // 현재 출석 인원 리스너
 let servers = JSON.parse(localStorage.getItem('servers') || '{"jingir":"진기르","pandora":"판도라","support":"지원"}');
 
-// ========== 사이트 잠금 / 비밀번호 ==========
+// 아코디언 토글
+function toggleAccordion(id) {
+    const card = document.getElementById(id);
+    if (card) card.classList.toggle('open');
+}
 // 단방향 해시 (소스 노출 방지)
 function getHash(str) {
     let hash = 0;
@@ -1055,9 +1094,10 @@ function toggleAdminMode() {
 
 // 초기화
 window.onload = function() {
-    loadSitePassword(); // Firebase에서 사이트 비밀번호 해시 로드
+    loadSitePassword();
     loadData();
     applyMode();
+    populateExportWeekSelect();
 };
 
 
@@ -2527,16 +2567,11 @@ async function exportToCSV() {
     document.body.appendChild(loadingDiv);
 
     try {
-        // ── 이번 주 데이터 로드 ──
-        const now = new Date();
-        const dow = now.getDay();
-        const monday = new Date(now);
-        monday.setDate(monday.getDate() + (dow === 0 ? -6 : -(dow - 1)));
-        monday.setHours(0, 0, 0, 0);
-        const endDate = new Date(); endDate.setHours(23, 59, 59, 999);
+        // 선택된 주 범위
+        const { monday, sunday: endDate } = getExportWeekRange();
+
         const attendanceData = await fetchAttendanceData(monday, endDate);
 
-        // ── generateScreenshotFormatRows 동일 로직으로 weekData 구성 ──
         const weekData = [];
         for (let i = 0; i < 7; i++) {
             const date = new Date(monday);
@@ -2711,7 +2746,58 @@ async function exportToCSV() {
     }
 };
 
-// Apps Script URL 재설정 (콘솔 또는 버튼에서 호출 가능)
+// 주차 선택 드롭다운 채우기 (최근 8주)
+function populateExportWeekSelect() {
+    const sel = document.getElementById('export-week-select');
+    if (!sel) return;
+
+    const now = new Date();
+    const dow = now.getDay();
+    // 이번 주 월요일
+    const thisMonday = new Date(now);
+    thisMonday.setDate(now.getDate() + (dow === 0 ? -6 : -(dow - 1)));
+    thisMonday.setHours(0, 0, 0, 0);
+
+    sel.innerHTML = '';
+    for (let i = 0; i < 8; i++) {
+        const monday = new Date(thisMonday);
+        monday.setDate(thisMonday.getDate() - i * 7);
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+
+        const mondayStr = formatLocalDate(monday);
+        const sundayStr = formatLocalDate(sunday);
+        const label = i === 0
+            ? `이번 주 (${mondayStr} ~ ${sundayStr})`
+            : i === 1
+            ? `지난 주 (${mondayStr} ~ ${sundayStr})`
+            : `${i}주 전 (${mondayStr} ~ ${sundayStr})`;
+
+        const opt = document.createElement('option');
+        opt.value = mondayStr; // YYYY-MM-DD (해당 주 월요일)
+        opt.textContent = label;
+        sel.appendChild(opt);
+    }
+}
+
+// 선택된 주의 monday/sunday Date 객체 반환
+function getExportWeekRange() {
+    const sel = document.getElementById('export-week-select');
+    const mondayStr = sel ? sel.value : formatLocalDate((() => {
+        const now = new Date();
+        const dow = now.getDay();
+        const m = new Date(now);
+        m.setDate(now.getDate() + (dow === 0 ? -6 : -(dow - 1)));
+        m.setHours(0,0,0,0);
+        return m;
+    })());
+
+    const monday = new Date(mondayStr + 'T00:00:00');
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 999);
+    return { monday, sunday };
+}
 function resetAppsScriptUrl() {
     const current = localStorage.getItem('appsScriptUrl') || '';
     const url = prompt(
@@ -2787,27 +2873,19 @@ async function exportToGoogleSheets() {
     };
     
     try {
-        // 이번 주 데이터 (월~일)
-        const now = new Date();
-        const dayOfWeek = now.getDay();
-        const monday = new Date(now);
-        const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
-        monday.setDate(monday.getDate() + daysToMonday);
-        monday.setHours(0, 0, 0, 0);
-        
+        // 선택된 주 범위
+        const { monday, sunday: endDate } = getExportWeekRange();
         const startDate = monday;
-        const endDate = new Date();
-        endDate.setHours(23, 59, 59, 999);
-        
+
         console.log('📅 기간:', formatLocalDate(startDate), '~', formatLocalDate(endDate));
-        
+
         updateStatus('출석 데이터 로드 중...');
         const attendanceData = await fetchAttendanceData(startDate, endDate);
-        
+
         console.log('📦 출석 데이터:', Object.keys(attendanceData).length, '개');
-        
+
         updateStatus('스크린샷 형식 생성 중...');
-        const rows = generateScreenshotFormatRows(attendanceData);
+        const rows = generateScreenshotFormatRows(attendanceData, monday);
         
         console.log('📋 생성된 행:', rows.length, '행 x', rows[0]?.length || 0, '열');
         console.log('📋 데이터 미리보기:', rows.slice(0, 3));
@@ -2817,8 +2895,9 @@ async function exportToGoogleSheets() {
         }
         
         updateStatus('구글 시트 전송 중...');
-        
-        const payload = JSON.stringify({ summary: rows, details: [] });
+
+        const tabName = `${formatLocalDate(monday)} ~ ${formatLocalDate(endDate)}`;
+        const payload = JSON.stringify({ summary: rows, tabName: tabName, details: [] });
         console.log('📤 전송 데이터 크기:', payload.length, 'bytes');
         
         const response = await fetch(appsScriptUrl, {
@@ -2868,14 +2947,15 @@ async function exportToGoogleSheets() {
 
 // 스크린샷 형식 행 생성
 // 형식: 사용자별로 각 날짜/보스에 출석했는지 표시
-function generateScreenshotFormatRows(attendanceData) {
-    // 이번 주 월~일 날짜 계산
-    const now = new Date();
-    const dayOfWeek = now.getDay();
-    const monday = new Date(now);
-    const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
-    monday.setDate(monday.getDate() + daysToMonday);
-    monday.setHours(0, 0, 0, 0);
+function generateScreenshotFormatRows(attendanceData, monday) {
+    // monday 인자 없으면 이번 주 월요일로 폴백
+    if (!monday) {
+        const now = new Date();
+        const dow = now.getDay();
+        monday = new Date(now);
+        monday.setDate(monday.getDate() + (dow === 0 ? -6 : -(dow - 1)));
+        monday.setHours(0, 0, 0, 0);
+    }
     
     // 날짜별 보스 목록 생성 (월~일)
     const weekData = [];
@@ -4070,22 +4150,20 @@ async function fetchAttendanceData(startDate, endDate) {
     return new Promise((resolve, reject) => {
         db.ref('boss_attendance').once('value', (snapshot) => {
             const data = snapshot.val();
-            if (!data) {
-                resolve({});
-                return;
-            }
-            
-            // 날짜 범위 필터링
+            if (!data) { resolve({}); return; }
+
+            // 문자열 비교로 날짜 필터링 (타임존 오류 방지)
+            const startStr = formatLocalDate(startDate);
+            const endStr   = formatLocalDate(endDate);
+
             const filtered = {};
             Object.keys(data).forEach(key => {
                 const dateStr = key.split('_')[0]; // YYYY-MM-DD
-                const recordDate = new Date(dateStr);
-                
-                if (recordDate >= startDate && recordDate <= endDate) {
+                if (dateStr >= startStr && dateStr <= endStr) {
                     filtered[key] = data[key];
                 }
             });
-            
+
             resolve(filtered);
         }, reject);
     });
