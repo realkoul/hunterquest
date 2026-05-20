@@ -402,7 +402,7 @@
     <!-- Tab 2: 통계 -->
     <div id="tab-stats" class="tab-content">
         <div class="card">
-            <h2>📊 전체 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 월~일)</span></h2>
+            <h2>📊 전체 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 수~화)</span></h2>
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:15px; margin-top:20px;">
                 <div class="stat-box">
                     <h3 id="stat-total-schedules">0</h3>
@@ -420,7 +420,7 @@
         </div>
         
         <div class="card">
-            <h2>👥 개인별 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 월~일, 출석 체크된 보스 기준)</span></h2>
+            <h2>👥 개인별 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 수~화, 출석 체크된 보스 기준)</span></h2>
             <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
                 <input type="text" id="stats-search-user" placeholder="🔍 이름 검색..." onkeyup="filterStats()" style="flex: 1 1 200px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
                 <select id="stats-server-filter" onchange="filterStats()" style="flex: 0 0 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px; background: white;">
@@ -555,6 +555,26 @@
                 <div style="display:flex; gap:10px; flex-wrap:wrap;">
                     <button class="btn btn-success" onclick="exportToGoogleSheets()">📊 구글 시트로 내보내기</button>
                     <button class="btn btn-primary" onclick="exportToCSV()">📥 엑셀로 내보내기</button>
+                </div>
+
+                <!-- ⚙️ Apps Script URL 설정 -->
+                <hr style="margin: 22px 0 16px; border: none; border-top: 1px dashed #bdc3c7;">
+                <div style="background: #f8f9fa; border-radius: 8px; padding: 15px; border-left: 4px solid #5D6D7E;">
+                    <h3 style="margin-bottom: 8px; color: #2c3e50; font-size: 1rem;">⚙️ Apps Script URL 설정</h3>
+                    <p style="color: #7f8c8d; font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5;">
+                        구글 시트 내보내기에 사용되는 Apps Script 웹앱 URL입니다.<br>
+                        Apps Script 재배포 후 URL이 변경되면 여기서 갱신하세요. (<code style="background:#ecf0f1; padding:1px 5px; border-radius:3px; font-size:0.85em;">script.google.com/macros/s/.../exec</code> 형식)
+                    </p>
+                    <div style="margin-bottom: 10px;">
+                        <input type="text" id="apps-script-url-input"
+                               placeholder="https://script.google.com/macros/s/.../exec"
+                               style="width:100%; padding:9px 11px; font-size:0.82rem; border:2px solid #e0e0e0; border-radius:6px; box-sizing:border-box; font-family:monospace;">
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button class="btn btn-success" onclick="saveAppsScriptUrl()">💾 저장</button>
+                        <button class="btn" style="background:#e74c3c; color:white;" onclick="clearAppsScriptUrl()">🗑️ 삭제</button>
+                    </div>
+                    <div id="apps-script-url-status" style="margin-top: 10px; font-size: 0.85rem; min-height: 1.2em;"></div>
                 </div>
             </div>
         </div>
@@ -1098,6 +1118,7 @@ window.onload = function() {
     loadData();
     applyMode();
     populateExportWeekSelect();
+    loadAppsScriptUrlToInput();
 };
 
 
@@ -1347,6 +1368,18 @@ function formatLocalDate(date) {
     const m = String(date.getMonth() + 1).padStart(2, '0');
     const d = String(date.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
+};
+
+// 주의 시작일 계산 — 집계 기준일: 수요일 00:00
+// baseDate가 주어지면 그 날짜가 속한 주의 수요일, 없으면 오늘이 속한 주의 수요일
+function getWeekStart(baseDate) {
+    const base = baseDate ? new Date(baseDate) : new Date();
+    const dow = base.getDay();           // 0(일) ~ 6(토)
+    const daysBack = (dow - 3 + 7) % 7;  // 수요일(3)부터 며칠 전인지
+    const start = new Date(base);
+    start.setDate(base.getDate() - daysBack);
+    start.setHours(0, 0, 0, 0);
+    return start;
 };
 
 // 출석 상태 정규화 (문자열/객체 형식 모두 처리)
@@ -2174,7 +2207,7 @@ function renderSchedules() {
         </div>
         
         <div class="calendar-grid">
-            ${[1, 2, 3, 4, 5, 6, 0].map(dayIndex => {
+            ${[3, 4, 5, 6, 0, 1, 2].map(dayIndex => {
                 const dayClass = dayIndex === 0 ? 'sunday' : dayIndex === 6 ? 'saturday' : '';
                 const daySchedules = schedulesByDay[dayIndex];
                 
@@ -2226,9 +2259,12 @@ function renderSchedulesList() {
         return;
     }
     
-    // 요일별, 시간순 정렬
+    // 요일별, 시간순 정렬 (집계 기준: 수~화 순서)
+    // dayRank: 수(3)=0, 목(4)=1, 금(5)=2, 토(6)=3, 일(0)=4, 월(1)=5, 화(2)=6
+    const dayRank = d => (d - 3 + 7) % 7;
     const sortedSchedules = [...schedules].sort((a, b) => {
-        if (a.dayOfWeek !== b.dayOfWeek) return a.dayOfWeek - b.dayOfWeek;
+        const rankDiff = dayRank(a.dayOfWeek) - dayRank(b.dayOfWeek);
+        if (rankDiff !== 0) return rankDiff;
         return a.time.localeCompare(b.time);
     });
     
@@ -2349,27 +2385,21 @@ function loadStats() {
     });
 };
 
-// 통계 계산 (이번 주 월~일 기준)
+// 통계 계산 (이번 주 수~화 기준)
 function calculateStats(attendanceData) {
     const userStats = {};
     
-    // 이번 주 월요일 계산
-    const now = new Date();
-    const dayOfWeek = now.getDay(); // 0(일) ~ 6(토)
-    const monday = new Date(now);
-    // 월요일까지 거슬러 올라가기 (일요일이면 -6, 월요일이면 0)
-    const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
-    monday.setDate(monday.getDate() + daysToMonday);
-    monday.setHours(0, 0, 0, 0);
-    const mondayStr = formatLocalDate(monday);
+    // 이번 주 시작일(수요일) 계산
+    const weekStart = getWeekStart();
+    const weekStartStr = formatLocalDate(weekStart);
     
-    console.log('📅 이번 주 월요일:', mondayStr);
+    console.log('📅 이번 주 시작일(수):', weekStartStr);
     
     // 이번 주에 스케줄된 총 보스 수 계산 (UI 표시용 — '이번 주 총 스케줄')
     let totalSchedules = 0;
     const thisWeek = [];
     for (let i = 0; i < 7; i++) {
-        const date = new Date(monday);
+        const date = new Date(weekStart);
         date.setDate(date.getDate() + i);
         const dateStr = formatLocalDate(date);
         const dayOfWeekNum = date.getDay();
@@ -2406,8 +2436,8 @@ function calculateStats(attendanceData) {
         // 날짜 추출 (YYYY-MM-DD_bossId 형식)
         const dateStr = key.split('_')[0];
         
-        // 이번 주 월요일 이후 데이터만 처리
-        if (dateStr < mondayStr) {
+        // 이번 주 시작일 이후 데이터만 처리
+        if (dateStr < weekStartStr) {
             return;
         }
         
@@ -2571,13 +2601,13 @@ async function exportToCSV() {
 
     try {
         // 선택된 주 범위
-        const { monday, sunday: endDate } = getExportWeekRange();
+        const { weekStart, weekEnd: endDate } = getExportWeekRange();
 
-        const attendanceData = await fetchAttendanceData(monday, endDate);
+        const attendanceData = await fetchAttendanceData(weekStart, endDate);
 
         const weekData = [];
         for (let i = 0; i < 7; i++) {
-            const date = new Date(monday);
+            const date = new Date(weekStart);
             date.setDate(date.getDate() + i);
             const dateStr  = formatLocalDate(date);
             const dayIdx   = date.getDay();
@@ -2736,7 +2766,7 @@ async function exportToCSV() {
 
         // ── 다운로드 ──
         const wb = XLSX.utils.book_new();
-        const tabName = `${formatLocalDate(monday)} ~ ${formatLocalDate(endDate)}`;
+        const tabName = `${formatLocalDate(weekStart)} ~ ${formatLocalDate(endDate)}`;
         XLSX.utils.book_append_sheet(wb, ws, tabName.substring(0, 31));
         XLSX.writeFile(wb, `헌터혈맹_출석_${formatLocalDate(new Date())}.xlsx`);
 
@@ -2754,52 +2784,41 @@ function populateExportWeekSelect() {
     const sel = document.getElementById('export-week-select');
     if (!sel) return;
 
-    const now = new Date();
-    const dow = now.getDay();
-    // 이번 주 월요일
-    const thisMonday = new Date(now);
-    thisMonday.setDate(now.getDate() + (dow === 0 ? -6 : -(dow - 1)));
-    thisMonday.setHours(0, 0, 0, 0);
+    // 이번 주 시작일(수요일)
+    const thisWeekStart = getWeekStart();
 
     sel.innerHTML = '';
     for (let i = 0; i < 8; i++) {
-        const monday = new Date(thisMonday);
-        monday.setDate(thisMonday.getDate() - i * 7);
-        const sunday = new Date(monday);
-        sunday.setDate(monday.getDate() + 6);
+        const weekStart = new Date(thisWeekStart);
+        weekStart.setDate(thisWeekStart.getDate() - i * 7);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
 
-        const mondayStr = formatLocalDate(monday);
-        const sundayStr = formatLocalDate(sunday);
+        const startStr = formatLocalDate(weekStart);
+        const endStr = formatLocalDate(weekEnd);
         const label = i === 0
-            ? `이번 주 (${mondayStr} ~ ${sundayStr})`
+            ? `이번 주 (${startStr} ~ ${endStr})`
             : i === 1
-            ? `지난 주 (${mondayStr} ~ ${sundayStr})`
-            : `${i}주 전 (${mondayStr} ~ ${sundayStr})`;
+            ? `지난 주 (${startStr} ~ ${endStr})`
+            : `${i}주 전 (${startStr} ~ ${endStr})`;
 
         const opt = document.createElement('option');
-        opt.value = mondayStr; // YYYY-MM-DD (해당 주 월요일)
+        opt.value = startStr; // YYYY-MM-DD (해당 주 시작일 = 수요일)
         opt.textContent = label;
         sel.appendChild(opt);
     }
 }
 
-// 선택된 주의 monday/sunday Date 객체 반환
+// 선택된 주의 시작일/종료일 Date 객체 반환 (수요일 ~ 다음 주 화요일)
 function getExportWeekRange() {
     const sel = document.getElementById('export-week-select');
-    const mondayStr = sel ? sel.value : formatLocalDate((() => {
-        const now = new Date();
-        const dow = now.getDay();
-        const m = new Date(now);
-        m.setDate(now.getDate() + (dow === 0 ? -6 : -(dow - 1)));
-        m.setHours(0,0,0,0);
-        return m;
-    })());
+    const startStr = sel ? sel.value : formatLocalDate(getWeekStart());
 
-    const monday = new Date(mondayStr + 'T00:00:00');
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    sunday.setHours(23, 59, 59, 999);
-    return { monday, sunday };
+    const weekStart = new Date(startStr + 'T00:00:00');
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+    return { weekStart, weekEnd };
 }
 function resetAppsScriptUrl() {
     const current = localStorage.getItem('appsScriptUrl') || '';
@@ -2808,6 +2827,7 @@ function resetAppsScriptUrl() {
         '1. script.google.com → 배포 → 배포 관리\n' +
         '2. 웹 앱 URL 복사\n' +
         '3. 여기에 붙여넣기\n\n' +
+        '💡 또는 관리페이지 → 통계 내보내기에서 변경 가능\n\n' +
         '현재 설정된 URL:',
         current
     );
@@ -2817,7 +2837,71 @@ function resetAppsScriptUrl() {
         return;
     }
     localStorage.setItem('appsScriptUrl', url);
+    // 관리페이지 UI도 동기화
+    const input = document.getElementById('apps-script-url-input');
+    if (input) input.value = url;
     alert('✅ Apps Script URL이 저장되었습니다.');
+}
+
+// ============================================
+// Apps Script URL 관리 (관리페이지 UI)
+// ============================================
+
+// 페이지 로드 시 현재 URL을 input에 채워넣기
+function loadAppsScriptUrlToInput() {
+    const input = document.getElementById('apps-script-url-input');
+    if (!input) return;
+    input.value = localStorage.getItem('appsScriptUrl') || '';
+}
+
+// 관리페이지에서 URL 저장
+function saveAppsScriptUrl() {
+    const input = document.getElementById('apps-script-url-input');
+    const statusEl = document.getElementById('apps-script-url-status');
+    if (!input) return;
+
+    const url = input.value.trim();
+
+    const showStatus = (msg, color) => {
+        if (statusEl) {
+            statusEl.textContent = msg;
+            statusEl.style.color = color;
+            statusEl.style.fontWeight = 'bold';
+        }
+    };
+
+    if (!url) {
+        showStatus('⚠️ URL을 입력해주세요.', '#e74c3c');
+        return;
+    }
+    if (!url.includes('script.google.com')) {
+        showStatus('❌ Apps Script URL이 아닙니다. (script.google.com 포함 필요)', '#e74c3c');
+        return;
+    }
+    if (!url.endsWith('/exec')) {
+        showStatus('❌ URL은 /exec로 끝나야 합니다.', '#e74c3c');
+        return;
+    }
+
+    localStorage.setItem('appsScriptUrl', url);
+    showStatus('✅ URL이 저장되었습니다.', '#16a085');
+    console.log('🔗 Apps Script URL 저장:', url);
+}
+
+// 관리페이지에서 URL 삭제
+function clearAppsScriptUrl() {
+    if (!confirm('정말 Apps Script URL을 삭제하시겠습니까?\n\n삭제하면 구글 시트로 내보내기를 사용할 수 없습니다.')) {
+        return;
+    }
+    localStorage.removeItem('appsScriptUrl');
+    const input = document.getElementById('apps-script-url-input');
+    if (input) input.value = '';
+    const statusEl = document.getElementById('apps-script-url-status');
+    if (statusEl) {
+        statusEl.textContent = '🗑️ URL이 삭제되었습니다.';
+        statusEl.style.color = '#7f8c8d';
+        statusEl.style.fontWeight = 'normal';
+    }
 }
 
 // Google Sheets Export
@@ -2877,8 +2961,8 @@ async function exportToGoogleSheets() {
     
     try {
         // 선택된 주 범위
-        const { monday, sunday: endDate } = getExportWeekRange();
-        const startDate = monday;
+        const { weekStart, weekEnd: endDate } = getExportWeekRange();
+        const startDate = weekStart;
 
         console.log('📅 기간:', formatLocalDate(startDate), '~', formatLocalDate(endDate));
 
@@ -2888,7 +2972,7 @@ async function exportToGoogleSheets() {
         console.log('📦 출석 데이터:', Object.keys(attendanceData).length, '개');
 
         updateStatus('스크린샷 형식 생성 중...');
-        const rows = generateScreenshotFormatRows(attendanceData, monday);
+        const rows = generateScreenshotFormatRows(attendanceData, weekStart);
         
         console.log('📋 생성된 행:', rows.length, '행 x', rows[0]?.length || 0, '열');
         console.log('📋 데이터 미리보기:', rows.slice(0, 3));
@@ -2899,7 +2983,7 @@ async function exportToGoogleSheets() {
         
         updateStatus('구글 시트 전송 중...');
 
-        const tabName = `${formatLocalDate(monday)} ~ ${formatLocalDate(endDate)}`;
+        const tabName = `${formatLocalDate(weekStart)} ~ ${formatLocalDate(endDate)}`;
         const payload = JSON.stringify({ summary: rows, tabName: tabName, details: [] });
         console.log('📤 전송 데이터 크기:', payload.length, 'bytes');
         
@@ -2950,20 +3034,16 @@ async function exportToGoogleSheets() {
 
 // 스크린샷 형식 행 생성
 // 형식: 사용자별로 각 날짜/보스에 출석했는지 표시
-function generateScreenshotFormatRows(attendanceData, monday) {
-    // monday 인자 없으면 이번 주 월요일로 폴백
-    if (!monday) {
-        const now = new Date();
-        const dow = now.getDay();
-        monday = new Date(now);
-        monday.setDate(monday.getDate() + (dow === 0 ? -6 : -(dow - 1)));
-        monday.setHours(0, 0, 0, 0);
+function generateScreenshotFormatRows(attendanceData, weekStart) {
+    // weekStart 인자 없으면 이번 주 시작일(수요일)로 폴백
+    if (!weekStart) {
+        weekStart = getWeekStart();
     }
     
-    // 날짜별 보스 목록 생성 (월~일)
+    // 날짜별 보스 목록 생성 (수~화)
     const weekData = [];
     for (let i = 0; i < 7; i++) {
-        const date = new Date(monday);
+        const date = new Date(weekStart);
         date.setDate(date.getDate() + i);
         const dateStr = formatLocalDate(date);
         const dayOfWeek = date.getDay();
@@ -3064,13 +3144,8 @@ function showBossAttendance(bossId, bossName) {
     content.innerHTML = '<div style="text-align: center; padding: 20px; color: #95a5a6;">불러오는 중...</div>';
     modal.classList.add('active');
     
-    // 이번 주 월요일부터 일요일까지 출석 데이터 가져오기
-    const now = new Date();
-    const dayOfWeek = now.getDay();
-    const monday = new Date(now);
-    const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
-    monday.setDate(monday.getDate() + daysToMonday);
-    monday.setHours(0, 0, 0, 0);
+    // 이번 주 시작일(수요일)부터 다음 주 화요일까지 출석 데이터 가져오기
+    const weekStart = getWeekStart();
     
     db.ref('boss_attendance').once('value', (snapshot) => {
         const allAttendanceData = snapshot.val() || {};
@@ -3078,7 +3153,7 @@ function showBossAttendance(bossId, bossName) {
         // 이번 주의 해당 보스 출석 데이터만 필터링
         const thisWeekData = [];
         for (let i = 0; i < 7; i++) {
-            const date = new Date(monday);
+            const date = new Date(weekStart);
             date.setDate(date.getDate() + i);
             const dateStr = formatLocalDate(date);
             const attendanceKey = `${dateStr}_${bossId}`;
@@ -3225,7 +3300,7 @@ function showUserBossCalendar(userName) {
     console.log('📊 개인별 출석 현황 로드:', userName, 'userId:', user.id);
     console.log('📅 현재 스케줄 수:', schedules.length);
     
-    // Firebase에서 이번 주 월~일 출석 데이터 가져오기
+    // Firebase에서 이번 주 수~화 출석 데이터 가져오기
     db.ref('boss_attendance').once('value', (snapshot) => {
         const attendanceData = snapshot.val() || {};
         const attendanceKeys = Object.keys(attendanceData);
@@ -3233,17 +3308,12 @@ function showUserBossCalendar(userName) {
         console.log('🔥 Firebase 출석 데이터:', attendanceKeys.length, '개');
         console.log('🔥 출석 키 목록:', attendanceKeys);
         
-        // 이번 주 월요일부터 일요일까지 날짜 배열 생성
-        const now = new Date();
-        const dayOfWeek = now.getDay(); // 0(일) ~ 6(토)
-        const monday = new Date(now);
-        const daysToMonday = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1);
-        monday.setDate(monday.getDate() + daysToMonday);
-        monday.setHours(0, 0, 0, 0);
+        // 이번 주 시작일(수요일)부터 다음 주 화요일까지 날짜 배열 생성
+        const weekStart = getWeekStart();
         
         const thisWeek = [];
         for (let i = 0; i < 7; i++) {
-            const date = new Date(monday);
+            const date = new Date(weekStart);
             date.setDate(date.getDate() + i);
             thisWeek.push({
                 date: date,
@@ -3254,7 +3324,7 @@ function showUserBossCalendar(userName) {
             });
         }
         
-        console.log('📅 이번 주 날짜 (월~일):', thisWeek.map(d => `${d.dateStr}(${d.dayName})`));
+        console.log('📅 이번 주 날짜 (수~화):', thisWeek.map(d => `${d.dateStr}(${d.dayName})`));
         
         // 각 날짜별로 출석 데이터 매핑
         thisWeek.forEach(day => {
