@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" href="data:,">
-    <title>에카 작위 퀘스트 v4.4.1 (보안 패치)</title>
+    <title>에카 작위 퀘스트 v4.5.1 (NaN 버그 수정)</title>
     <style>
         /* [기본 스타일] */
         body { font-family: 'Segoe UI', AppleSDGothicNeo, sans-serif; background-color: #f0f2f5; margin: 0; padding: 15px; color: #333; }
@@ -193,7 +193,7 @@
         <div>
             <h1 style="margin:0;">
                 🛡️ 에카 작위 퀘스트
-                <span class="version-badge">v4.5.0</span>
+                <span class="version-badge">v4.5.1</span>
             </h1>
             <span style="color:#27ae60; font-weight:bold; font-size:0.85rem;">● hunterquest-fbdee 서버 연동됨 (멀티서버 버전)</span>
         </div>
@@ -367,7 +367,7 @@
 
     // 🚨 비밀번호가 해시값으로 변경되어 소스코드 노출 방지
     const CONSTANTS = {
-        VERSION: "4.5.0",
+        VERSION: "4.5.1",
         MAX_ACTIVE_SLOTS: 3,
         LOG_DISPLAY_COUNT: 100,
         SITE_PASSWORD_HASH: "170fc0",   
@@ -680,6 +680,13 @@
             return runTransaction(dbRef, (currentData) => {
                 let data = currentData ? getValidUsers(currentData) : [];
                 if (updateFunction) data = updateFunction(data);
+                // ✅ NaN 방어: Firebase 저장 전 completedCount 항상 검증
+                data = data.map(user => ({
+                    ...user,
+                    completedCount: (isNaN(user.completedCount) || user.completedCount == null)
+                        ? 0
+                        : parseInt(user.completedCount, 10)
+                }));
                 return data; 
             }).catch((err) => {
                 alert('저장 오류: ' + err.message);
@@ -1164,7 +1171,7 @@
                 const targetRole = serverData.role;
                 
                 // 완료 횟수는 전역 (모든 서버 공유)
-                user.completedCount += 1;
+                user.completedCount = (isNaN(user.completedCount) || user.completedCount == null) ? 1 : parseInt(user.completedCount, 10) + 1;
                 
                 window.logChange(user.id, user.name, 'action', '', `[${currentServer}서버] ${serverData.role} 완료 (${user.completedCount}회)`, '완료');
                 
