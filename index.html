@@ -115,7 +115,15 @@
         .server-btn { transition: all 0.3s ease; }
         .server-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
         .server-btn.active { background: white !important; color: #667eea !important; box-shadow: 0 5px 20px rgba(0,0,0,0.4); transform: scale(1.05); }
-    </style>
+    
+        /* 내 이름 강조 */
+        .my-name-row { background: #fff9e6 !important; border-left: 4px solid #ffc107; }
+        .my-name-row td { font-weight: bold; }
+        /* 내 이름 모달 */
+        #my-name-modal-quest { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:2000; justify-content:center; align-items:center; }
+        #my-name-modal-quest.active { display:flex; }
+        .my-name-modal-box { background:white; padding:30px; border-radius:12px; width:90%; max-width:360px; box-shadow:0 5px 20px rgba(0,0,0,0.2); }
+        </style>
 </head>
 <body>
 
@@ -199,6 +207,7 @@
         </div>
         <div style="display:flex; gap:8px;">
             <button class="btn-reset" id="btn-reset-count" style="background-color:#f39c12;">완료횟수초기화</button>
+            <button class="btn-reset" onclick="window.showMyNameModalQuest()" style="background-color:#ffc107; color:#333;">⭐ 내 이름 설정</button>
             <button class="btn-reset" id="btn-reset-all">전체 초기화</button>
         </div>
     </div>
@@ -304,6 +313,22 @@
                 <input type="text" id="new-name" class="input-text" placeholder="이름을 입력하세요" >
             </div>
             <button class="btn-add" id="btn-add-user" style="flex: 1;">등록</button>
+        </div>
+    </div>
+</div>
+
+
+<!-- 내 이름 설정 모달 -->
+<div id="my-name-modal-quest">
+    <div class="my-name-modal-box">
+        <h3 style="margin-top:0; color:#2c3e50;">⭐ 내 이름 설정 (최대 5명)</h3>
+        <p style="color:#7f8c8d; font-size:0.9rem; margin-bottom:15px;">
+            설정한 이름이 참여자 목록 맨 위에 강조 표시됩니다.
+        </p>
+        <div id="my-name-slots-quest" style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px;"></div>
+        <div style="display:flex; gap:8px;">
+            <button onclick="window.saveMyNamesQuest()" style="flex:1; padding:10px; background:#27ae60; color:white; border:none; border-radius:6px; font-weight:bold; cursor:pointer;">저장</button>
+            <button onclick="window.closeMyNameModalQuest()" style="flex:1; padding:10px; background:#95a5a6; color:white; border:none; border-radius:6px; cursor:pointer;">취소</button>
         </div>
     </div>
 </div>
@@ -902,8 +927,20 @@
     function renderParticipantTable(users) {
         const tbody = document.getElementById('participant-table');
         tbody.innerHTML = '';
-        
+
+        // ⭐ 내 이름 목록 가져오기
+        const myNames = getMyNamesQuest();
+        const myNamesSet = new Set(myNames);
+
+        // 내 이름 → 맨 위, 그 다음 완료횟수 있는 사람, 나머지 순
         const allUsers = [...users].sort((a, b) => {
+            const aIsMine = myNamesSet.has(a.name);
+            const bIsMine = myNamesSet.has(b.name);
+            if (aIsMine && !bIsMine) return -1;
+            if (!aIsMine && bIsMine) return 1;
+            // 둘 다 내 이름이면 등록 순서 유지
+            if (aIsMine && bIsMine) return myNames.indexOf(a.name) - myNames.indexOf(b.name);
+            // 나머지: 완료횟수 있는 사람 우선, 그 다음 id 순
             const aHasCompleted = a.completedCount > 0 ? 0 : 1;
             const bHasCompleted = b.completedCount > 0 ? 0 : 1;
             if (aHasCompleted !== bHasCompleted) return aHasCompleted - bHasCompleted;
@@ -912,6 +949,9 @@
 
         allUsers.forEach(u => {
             const tr = document.createElement('tr');
+            const isMyName = myNamesSet.has(u.name);
+            if (isMyName) tr.classList.add('my-name-row');
+
             let statusHtml = '', actionBtn = '';
 
             if (u.status === 'idle') {
@@ -924,12 +964,13 @@
                 statusHtml = `${getRoleBadge(u.role)} <span class="st-badge st-active">진행 중</span>`;
                 actionBtn = '-';
             }
-            
-            const rowOpacity = (u.completedCount === 0) ? 'opacity: 0.6;' : '';
+
+            const rowOpacity = (!isMyName && u.completedCount === 0) ? 'opacity: 0.6;' : '';
+            const myBadge = isMyName ? ' <span style="background:#ffc107;color:#333;padding:1px 6px;border-radius:4px;font-size:0.75rem;font-weight:bold;">⭐ 나</span>' : '';
 
             tr.innerHTML = `
                 <td style="${rowOpacity}">${u.id}</td>
-                <td style="${rowOpacity}"><input type="text" class="edit-name" value="${escapeHtml(u.name)}" onchange="window.updateName(${u.id}, this.value)"></td>
+                <td style="${rowOpacity}"><input type="text" class="edit-name" value="${escapeHtml(u.name)}" onchange="window.updateName(${u.id}, this.value)">${myBadge}</td>
                 <td style="${rowOpacity}">
                     <input type="number" class="edit-count" value="${u.completedCount}" onchange="window.updateCompletedCount(${u.id}, this.value, this)">
                 </td>
@@ -1355,6 +1396,72 @@
     document.getElementById('btn-reset-count').onclick = window.resetCompletedCounts;
     document.getElementById('btn-reset-all').onclick = window.clearAllData;
     document.getElementById('new-name').addEventListener('keypress', (e) => { if(e.key==='Enter') window.addNewUser(); });
+
+    // ======================================================
+    // ⭐ 내 이름 기능 (참여자 목록 상단 고정 + 강조)
+    // ======================================================
+    const MAX_MY_NAMES_QUEST = 5;
+    const MY_NAMES_QUEST_KEY = 'myQuestNames';
+
+    window.getMyNamesQuest = function getMyNamesQuest() {
+        try {
+            const raw = localStorage.getItem(MY_NAMES_QUEST_KEY);
+            if (raw) {
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr)) return arr.filter(n => typeof n === 'string' && n.trim()).slice(0, MAX_MY_NAMES_QUEST);
+            }
+        } catch (e) {}
+        return [];
+    }
+
+    window.setMyNamesQuest = function setMyNamesQuest(names) {
+        const filtered = (names || []).filter(n => typeof n === 'string' && n.trim()).slice(0, MAX_MY_NAMES_QUEST);
+        localStorage.setItem(MY_NAMES_QUEST_KEY, JSON.stringify(filtered));
+    }
+
+    window.showMyNameModalQuest = function showMyNameModalQuest() {
+        const modal = document.getElementById('my-name-modal-quest');
+        const container = document.getElementById('my-name-slots-quest');
+        const current = getMyNamesQuest();
+        let html = '';
+        for (let i = 0; i < MAX_MY_NAMES_QUEST; i++) {
+            const value = (current[i] || '').replace(/"/g, '&quot;');
+            html += `
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <label style="flex:0 0 45px; font-weight:bold; color:#2c3e50;">${i + 1}번</label>
+                    <input type="text" class="my-name-slot-quest" data-slot="${i}"
+                        value="${value}"
+                        placeholder="${i === 0 ? '예: 헌터야해' : '비워두면 미사용'}"
+                        style="flex:1; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:1rem;">
+                </div>`;
+        }
+        container.innerHTML = html;
+        modal.classList.add('active');
+        setTimeout(() => {
+            const first = container.querySelector('input.my-name-slot-quest');
+            if (first) first.focus();
+        }, 100);
+    }
+
+    window.saveMyNamesQuest = function saveMyNamesQuest() {
+        const inputs = document.querySelectorAll('.my-name-slot-quest');
+        const names = [];
+        inputs.forEach(inp => { const v = inp.value.trim(); if (v) names.push(v); });
+        const seen = new Set();
+        const unique = [];
+        names.forEach(n => { if (!seen.has(n)) { seen.add(n); unique.push(n); } });
+        setMyNamesQuest(unique);
+        closeMyNameModalQuest();
+        render();  // 테이블 즉시 갱신
+        if (unique.length > 0) alert(`⭐ ${unique.length}명 등록:
+${unique.join(', ')}`);
+        else alert('내 이름이 해제되었습니다.');
+    }
+
+    window.closeMyNameModalQuest = function closeMyNameModalQuest() {
+        document.getElementById('my-name-modal-quest').classList.remove('active');
+    }
+
 </script>
 </body>
 </html>
