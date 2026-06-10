@@ -4679,11 +4679,26 @@ const LEGACY_MY_NAME_KEY = 'myBossAttendanceName';
 
 // localStorage에서 내 이름들 가져오기 (legacy 단일 이름 키와 호환)
 function getMyNames() {
+    // 반환값: 문자열 배열 (하위호환 유지)
+    return getMyNameSlots().map(s => s.name);
+}
+
+// 이름+서버 슬롯 객체 배열 반환
+function getMyNameSlots() {
     try {
         const raw = localStorage.getItem(MY_NAMES_KEY);
         if (raw) {
             const arr = JSON.parse(raw);
-            if (Array.isArray(arr)) return arr.filter(n => typeof n === 'string' && n.trim()).slice(0, MAX_MY_NAMES);
+            if (Array.isArray(arr)) {
+                return arr
+                    .map(item => {
+                        if (typeof item === 'string' && item.trim()) return { name: item.trim(), server: '' };
+                        if (item && typeof item === 'object' && item.name) return { name: item.name, server: item.server || '' };
+                        return null;
+                    })
+                    .filter(Boolean)
+                    .slice(0, MAX_MY_NAMES);
+            }
         }
     } catch (e) {
         console.warn('내 이름 파싱 실패:', e);
@@ -4699,11 +4714,19 @@ function getMyNames() {
 }
 
 function setMyNames(names) {
-    const filtered = (names || []).filter(n => typeof n === 'string' && n.trim()).slice(0, MAX_MY_NAMES);
+    // names: 문자열 배열 또는 {name, server} 객체 배열 모두 허용
+    const filtered = (names || [])
+        .map(item => {
+            if (typeof item === 'string' && item.trim()) return { name: item.trim(), server: '' };
+            if (item && typeof item === 'object' && item.name && item.name.trim()) return { name: item.name.trim(), server: item.server || '' };
+            return null;
+        })
+        .filter(Boolean)
+        .slice(0, MAX_MY_NAMES);
     localStorage.setItem(MY_NAMES_KEY, JSON.stringify(filtered));
-    // legacy 키도 첫 번째 이름과 동기화 (다른 페이지/탭 호환용)
+    // legacy 키도 첫 번째 이름과 동기화
     if (filtered.length > 0) {
-        localStorage.setItem(LEGACY_MY_NAME_KEY, filtered[0]);
+        localStorage.setItem(LEGACY_MY_NAME_KEY, filtered[0].name);
     } else {
         localStorage.removeItem(LEGACY_MY_NAME_KEY);
     }
@@ -4715,13 +4738,44 @@ function showMyNameModal() {
     const slotsContainer = document.getElementById('my-name-slots');
     const current = getMyNames();
     
+    const slots = getMyNameSlots();
     let html = '';
     for (let i = 0; i < MAX_MY_NAMES; i++) {
-        const value = current[i] || '';
+        const slot = slots[i] || { name: '', server: '' };
+        const nameVal = slot.name.replace(/"/g, '&quot;');
+        const srv = slot.server || '';
+        const serverList = [
+            { key: 'jingir',  label: '진기르', color: '#3498db' },
+            { key: 'pandora', label: '판도라', color: '#9b59b6' },
+            { key: 'support', label: '지원',   color: '#27ae60' },
+        ];
+        const serverBtns = serverList.map(s => {
+            const isActive = srv === s.key;
+            return `<button type="button"
+                class="my-server-btn${isActive ? ' active-server' : ''}" 
+                data-slot="${i}" data-server="${s.key}"
+                onclick="selectMyServer(${i}, '${s.key}')"
+                style="padding:6px 12px; border-radius:6px; border:2px solid ${s.color};
+                       background:${isActive ? s.color : 'white'};
+                       color:${isActive ? 'white' : s.color};
+                       font-weight:bold; font-size:0.85rem; cursor:pointer; transition:all 0.15s;">
+                ${s.label}
+            </button>`;
+        }).join('');
         html += `
-            <div style="display: flex; gap: 8px; align-items: center;">
-                <label style="flex: 0 0 50px; font-weight: bold; color: #2c3e50;">${i + 1}번</label>
-                <input type="text" class="my-name-slot-input" data-slot="${i}" value="${value.replace(/"/g, '&quot;')}" placeholder="${i === 0 ? '예: 헌터겜블러' : '비워두면 미사용'}" style="flex: 1; padding: 10px; font-size: 1rem; margin: 0;">
+            <div style="display:flex; flex-direction:column; gap:6px; padding:10px; background:#f8f9fa; border-radius:8px; border:1px solid #dee2e6;">
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <label style="flex:0 0 35px; font-weight:bold; color:#2c3e50; font-size:0.9rem;">${i + 1}번</label>
+                    <input type="text" class="my-name-slot-input" data-slot="${i}"
+                        value="${nameVal}"
+                        placeholder="${i === 0 ? '예: 헌터겜블러' : '비워두면 미사용'}"
+                        style="flex:1; padding:8px 10px; font-size:0.95rem; margin:0; border:1px solid #ced4da; border-radius:6px;">
+                </div>
+                <div style="display:flex; gap:6px; padding-left:43px; align-items:center;">
+                    <span style="font-size:0.8rem; color:#6c757d; margin-right:4px;">서버:</span>
+                    ${serverBtns}
+                    ${srv ? '' : '<span style="font-size:0.8rem; color:#adb5bd; font-style:italic;">선택 안 함</span>'}
+                </div>
             </div>
         `;
     }
@@ -4737,22 +4791,24 @@ function showMyNameModal() {
 // 5개 슬롯의 값을 읽어 저장
 function saveMyNames() {
     const inputs = document.querySelectorAll('.my-name-slot-input');
-    const names = [];
+    const slots = [];
     inputs.forEach(inp => {
-        const val = inp.value.trim();
-        if (val) names.push(val);
+        const slotIdx = inp.getAttribute('data-slot');
+        const name = inp.value.trim();
+        if (!name) return;
+        // 선택된 서버 버튼 확인
+        const activeBtn = document.querySelector(`.my-server-btn[data-slot="${slotIdx}"].active-server`);
+        const server = activeBtn ? activeBtn.getAttribute('data-server') : '';
+        slots.push({ name, server });
     });
-    
-    // 중복 제거 (앞에서부터 우선)
+
+    // 중복 이름 제거
     const seen = new Set();
-    const unique = [];
-    names.forEach(n => {
-        if (!seen.has(n)) {
-            seen.add(n);
-            unique.push(n);
-        }
+    const unique = slots.filter(s => {
+        if (seen.has(s.name)) return false;
+        seen.add(s.name); return true;
     });
-    
+
     setMyNames(unique);
     closeMyNameModal();
     updateMyNameDisplay();
@@ -4790,16 +4846,58 @@ function updateMyNameDisplay() {
     
     display.style.display = 'block';
     
+    const slots = getMyNameSlots();
     // 각 이름별로 한 행씩 렌더링
-    list.innerHTML = names.map(name => {
+    list.innerHTML = slots.map(slot => {
+        const name = slot.name;
+        const slotServer = slot.server || '';
         const user = users.find(u => u.name === name);
         const exists = !!user;
         const warningIcon = exists ? '' : '<span style="color: #c0392b; font-size: 0.85rem;" title="명단에 없는 이름">⚠️</span>';
         const safeName = name.replace(/'/g, "\\'");
 
+        // 서버 배지 HTML
+        const serverNames = { jingir: '진기르', pandora: '판도라', support: '지원' };
+        const serverColors = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+        const serverBadge = slotServer
+            ? `<span style="display:inline-block; padding:2px 8px; border-radius:4px; font-size:0.78rem; font-weight:bold; background:${serverColors[slotServer] || '#95a5a6'}; color:white; margin-left:5px;">${serverNames[slotServer] || slotServer}</span>`
+            : '';
+
         // 이미 출석 완료 여부 확인
         const attendStatus = user ? normalizeStatus(todayAttendance?.attendees?.[user.id]) : null;
         const isAttended = attendStatus === 'present' || attendStatus === 'late';
+
+        // 서버 선택 버튼 (빠른 출석용) - 현재 선택된 서버 표시
+        const svList = [
+            { key: 'jingir',  label: '진기르', color: '#3498db' },
+            { key: 'pandora', label: '판도라', color: '#9b59b6' },
+            { key: 'support', label: '지원',   color: '#27ae60' },
+        ];
+
+        // 현재 이 슬롯에 선택된 서버 (설정값 우선, 없으면 첫 번째)
+        const activeServer = slotServer || svList[0].key;
+        const slotId = 'quick-slot-' + safeName.replace(/[^a-zA-Z0-9]/g, '_');
+
+        const serverToggleBtns = svList.map(s => {
+            const isAct = activeServer === s.key;
+            // 선택: 색상 꽉 참 + 크고 굵게 / 미선택: 흐린 회색 + 작고 옅게
+            const style = isAct
+                ? `flex:${isAct ? 2 : 1}; padding:8px 6px; border-radius:7px; border:2px solid ${s.color};
+                   background:${s.color}; color:white;
+                   font-weight:bold; font-size:0.9rem; cursor:pointer;
+                   transition:all 0.2s; box-shadow:0 2px 6px ${s.color}55;`
+                : `flex:1; padding:6px 4px; border-radius:7px; border:1px solid #d0d0d0;
+                   background:#f0f0f0; color:#aaaaaa;
+                   font-weight:normal; font-size:0.78rem; cursor:pointer;
+                   transition:all 0.2s;`;
+            return `<button type="button"
+                id="${slotId}-${s.key}"
+                class="${isAct ? 'quick-server-active' : ''}"
+                onclick="selectQuickServer('${safeName}', '${s.key}', '${slotId}')"
+                style="${style}">
+                ${s.label}
+            </button>`;
+        }).join('');
 
         let quickBtnHtml;
         if (!exists) {
@@ -4807,7 +4905,7 @@ function updateMyNameDisplay() {
         } else if (isAttended) {
             quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#27ae60;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">✅ 출석 완료</button>`;
         } else {
-            quickBtnHtml = `<button data-quick-name="${safeName}" onclick="quickAttendanceByName('${safeName}')" style="width:100%;padding:9px;background:#16a085;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.95rem;font-weight:bold;">⭕ 빠른 출석</button>`;
+            quickBtnHtml = `<button data-quick-name="${safeName}" data-slot-id="${slotId}" onclick="quickAttendanceByName('${safeName}', '${slotId}')" style="width:100%;padding:9px;background:#16a085;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.95rem;font-weight:bold;">⭕ 빠른 출석</button>`;
         }
 
         return `
@@ -4815,6 +4913,9 @@ function updateMyNameDisplay() {
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
                     <span style="font-weight: bold; color: #2c3e50; font-size: 1rem;">${name} ${warningIcon}</span>
                     <button onclick="removeMyName('${safeName}')" style="padding: 3px 10px; background: transparent; border: 1px solid #856404; color: #856404; border-radius: 4px; cursor: pointer; font-size: 0.8rem; white-space: nowrap; flex-shrink: 0;">해제</button>
+                </div>
+                <div style="display:flex; gap:5px;">
+                    ${serverToggleBtns}
                 </div>
                 ${quickBtnHtml}
             </div>
@@ -4851,7 +4952,7 @@ function setQuickBtnState(name, state) {
     });
 }
 
-function quickAttendanceByName(name) {
+function quickAttendanceByName(name, slotId) {
     const user = users.find(u => u.name === name);
     if (!user) {
         alert(`사용자 "${name}"을 찾을 수 없습니다.`);
@@ -4862,12 +4963,30 @@ function quickAttendanceByName(name) {
         return;
     }
 
+    // 선택된 서버 확인
+    let selectedServer = '';
+    if (slotId) {
+        const activeBtn = document.querySelector(`[id^="${slotId}-"].quick-server-active`);
+        if (activeBtn) {
+            selectedServer = activeBtn.id.replace(slotId + '-', '');
+        } else {
+            // active 클래스 없으면 style로 판단 (background 색상 있는 것)
+            const allBtns = document.querySelectorAll(`[id^="${slotId}-"]`);
+            allBtns.forEach(btn => {
+                if (btn.style.background && btn.style.background !== 'white' && btn.style.background !== '') {
+                    selectedServer = btn.id.replace(slotId + '-', '');
+                }
+            });
+        }
+    }
+
+    console.log(`🚀 빠른 출석: ${name}, 서버: ${selectedServer || '미선택'}`);
+
     // 즉시 로딩 상태로 전환
     setQuickBtnState(name, 'loading');
 
     const promise = updateAttendance(user.id, 'present');
     if (!promise) {
-        // updateAttendance 내부에서 얼리 리턴(alert)된 경우
         setQuickBtnState(name, 'idle');
         return;
     }
@@ -5018,6 +5137,66 @@ function copyAttendanceLinkForName(name) {
         prompt('링크를 복사하세요:', link);
     });
 }
+
+// 내 이름 슬롯 서버 선택 (토글)
+function selectMyServer(slotIdx, serverKey) {
+    const colorMap = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+    const btns = document.querySelectorAll('.my-server-btn[data-slot="' + slotIdx + '"]');
+    btns.forEach(btn => {
+        const btnServer = btn.getAttribute('data-server');
+        const c = colorMap[btnServer] || '#666';
+        if (btnServer === serverKey && !btn.classList.contains('active-server')) {
+            btn.classList.add('active-server');
+            btn.style.background = c;
+            btn.style.color = 'white';
+        } else if (btnServer === serverKey && btn.classList.contains('active-server')) {
+            btn.classList.remove('active-server');
+            btn.style.background = 'white';
+            btn.style.color = c;
+        } else {
+            btn.classList.remove('active-server');
+            btn.style.background = 'white';
+            btn.style.color = c;
+        }
+    });
+}
+
+// 빠른 출석 박스 서버 선택 (토글, 설정 저장도 함께)
+function selectQuickServer(name, serverKey, slotId) {
+    const colorMap = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+    const allBtns = document.querySelectorAll('[id^="' + slotId + '-"]');
+    const clickedWasActive = document.getElementById(slotId + '-' + serverKey)?.classList.contains('quick-server-active');
+
+    allBtns.forEach(btn => {
+        const btnKey = btn.id.replace(slotId + '-', '');
+        const c = colorMap[btnKey] || '#666';
+        const isThis = btnKey === serverKey;
+        const becomeActive = isThis && !clickedWasActive; // 같은 버튼 재클릭 시 해제
+
+        if (becomeActive) {
+            // 선택 상태: 색상 꽉 참 + 크게
+            btn.classList.add('quick-server-active');
+            btn.style.cssText = `flex:2; padding:8px 6px; border-radius:7px; border:2px solid ${c};
+                background:${c}; color:white; font-weight:bold; font-size:0.9rem;
+                cursor:pointer; transition:all 0.2s; box-shadow:0 2px 6px ${c}55;`;
+        } else {
+            // 미선택 상태: 흐린 회색
+            btn.classList.remove('quick-server-active');
+            btn.style.cssText = `flex:1; padding:6px 4px; border-radius:7px; border:1px solid #d0d0d0;
+                background:#f0f0f0; color:#aaaaaa; font-weight:normal; font-size:0.78rem;
+                cursor:pointer; transition:all 0.2s;`;
+        }
+    });
+
+    // 선택한 서버를 슬롯 설정에도 저장
+    const slots = getMyNameSlots();
+    const slotIdx = slots.findIndex(s => s.name === name);
+    if (slotIdx >= 0) {
+        slots[slotIdx].server = clickedWasActive ? '' : serverKey;
+        setMyNames(slots);
+    }
+}
+
 </script>
 
 </body>
