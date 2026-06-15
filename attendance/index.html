@@ -102,26 +102,7 @@
             }
         }
         
-        /* 빠른 출석 배너 */
-        .quick-attend-banner {
-            background: linear-gradient(135deg, #16a085 0%, #138d75 100%);
-            border-radius: 8px; padding: 14px 16px; margin-top: 12px;
-        }
-        .quick-attend-banner .banner-label {
-            color: rgba(255,255,255,0.85); font-size: 0.8rem; margin-bottom: 8px;
-        }
-        .quick-attend-banner .banner-btns {
-            display: flex; flex-wrap: wrap; gap: 8px;
-        }
-        .quick-attend-btn {
-            flex: 1; min-width: 100px; padding: 10px 14px;
-            background: white; color: #16a085;
-            border: none; border-radius: 6px;
-            cursor: pointer; font-size: 0.95rem; font-weight: bold;
-            transition: all 0.2s; white-space: nowrap;
-        }
-        .quick-attend-btn:hover { background: #e8f8f5; transform: translateY(-1px); }
-        .quick-attend-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 
         /* 반응형 */
         @media (max-width: 768px) {
@@ -1506,12 +1487,6 @@ async function renderTodaySchedules() {
                 }
                 return `<button class="quick-attend-btn" data-quick-name="${safeName}" onclick="quickAttendanceByName('${safeName}')">⭕ ${name} 출석</button>`;
             }).join('');
-            container.innerHTML += `
-                <div class="quick-attend-banner">
-                    <div class="banner-label">📌 나의 빠른 출석</div>
-                    <div class="banner-btns">${btnHtml}</div>
-                </div>
-            `;
         }
     }
     
