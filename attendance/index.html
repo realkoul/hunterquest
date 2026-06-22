@@ -516,6 +516,69 @@
             </div>
             <div class="accordion-body">
                 <p style="color:#7f8c8d; margin:15px 0 15px;">보스의 요일과 시간을 설정합니다.</p>
+
+                <!-- 📅 서버별 스케줄 배정 UI -->
+                <div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:10px; padding:18px; margin-bottom:20px;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+                        <span style="font-size:1.2rem;">📅</span>
+                        <strong style="color:#2c3e50; font-size:1rem;">서버별 주간 스케줄 배정</strong>
+                        <span style="background:#e74c3c; color:white; font-size:0.75rem; padding:2px 7px; border-radius:4px; font-weight:bold;">관리자</span>
+                    </div>
+
+                    <!-- 주차 선택 -->
+                    <div style="margin-bottom:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                        <span style="font-size:0.9rem; font-weight:bold; color:#555;">주차 선택:</span>
+                        <select id="assign-week-select" onchange="onAssignWeekChange()"
+                            style="padding:8px 12px; border:2px solid #5D6D7E; border-radius:8px; font-size:0.9rem; background:white; font-weight:bold; color:#2c3e50;">
+                        </select>
+                    </div>
+
+                    <!-- 서버 선택 -->
+                    <div style="margin-bottom:12px;">
+                        <span style="font-size:0.9rem; font-weight:bold; color:#555; margin-right:10px;">서버 선택:</span>
+                        <div style="display:inline-flex; gap:8px; flex-wrap:wrap;">
+                            <button onclick="selectAssignServer('jingir')" id="assign-btn-jingir"
+                                style="padding:8px 18px; border-radius:8px; border:2px solid #3498db; background:white; color:#3498db; font-weight:bold; cursor:pointer; transition:all 0.2s;">
+                                진기르
+                            </button>
+                            <button onclick="selectAssignServer('pandora')" id="assign-btn-pandora"
+                                style="padding:8px 18px; border-radius:8px; border:2px solid #9b59b6; background:white; color:#9b59b6; font-weight:bold; cursor:pointer; transition:all 0.2s;">
+                                판도라
+                            </button>
+                            <button onclick="selectAssignServer('support')" id="assign-btn-support"
+                                style="padding:8px 18px; border-radius:8px; border:2px solid #27ae60; background:white; color:#27ae60; font-weight:bold; cursor:pointer; transition:all 0.2s;">
+                                지원
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 달력 영역 -->
+                    <div id="assign-calendar" style="display:none;">
+                        <p style="font-size:0.85rem; color:#7f8c8d; margin:0 0 10px 0;">
+                            담당 보스를 클릭해서 선택/해제하세요. 선택된 보스만 이 서버 담당으로 배정됩니다.
+                        </p>
+                        <div id="assign-calendar-body" style="overflow-x:auto;"></div>
+                        <div style="margin-top:14px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                            <button onclick="applyServerAssignment()" 
+                                style="padding:10px 24px; background:#27ae60; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer; font-size:0.95rem;">
+                                ✅ 저장
+                            </button>
+                            <button onclick="selectAllAssign(true)"
+                                style="padding:8px 14px; background:#3498db; color:white; border:none; border-radius:6px; cursor:pointer; font-size:0.85rem;">
+                                전체 선택
+                            </button>
+                            <button onclick="selectAllAssign(false)"
+                                style="padding:8px 14px; background:#95a5a6; color:white; border:none; border-radius:6px; cursor:pointer; font-size:0.85rem;">
+                                전체 해제
+                            </button>
+                            <span id="assign-count" style="color:#2c3e50; font-weight:bold; font-size:0.9rem;"></span>
+                        </div>
+                    </div>
+                    <div id="assign-placeholder" style="color:#aaa; font-size:0.9rem; padding:10px 0;">
+                        ← 서버를 먼저 선택하세요
+                    </div>
+                </div>
+
                 <button class="btn btn-primary" onclick="showAddScheduleModal()" style="padding:10px 20px; font-size:1rem;">+ 새 스케줄 추가</button>
                 <div id="schedules-list" style="margin-top:20px;"></div>
             </div>
@@ -1100,6 +1163,13 @@ window.onload = function() {
     applyMode();
     populateExportWeekSelect();
     loadAppsScriptUrlToInput();
+    loadApiKey();
+    // 오늘 스케줄 보기 서버 초기화 (내 서버 기준)
+    window._viewServer = getMyServer() || 'jingir';
+    // 배정 주차 드롭다운 초기화
+    populateAssignWeekSelect();
+    // 이번 주 배정 데이터 로드
+    loadWeekAssignment();
 };
 
 
@@ -1281,6 +1351,11 @@ function switchTab(tab) {
         renderUserList();
         populateAdminBossSelector();
     }
+    // 출석 체크 탭으로 돌아올 때 서버 탭 상태 초기화 (내 서버로 리셋)
+    if (tab === 'attendance') {
+        window._viewServer = getMyServer() || 'jingir';
+        renderTodaySchedules();
+    }
 };
 
 // 사용자 로드
@@ -1442,60 +1517,148 @@ function getCurrentBoss() {
 async function renderTodaySchedules() {
     const container = document.getElementById('today-schedules');
     const currentBoss = getCurrentBoss();
-    
+    const myServer = getMyServer();
+    const serverNames = { jingir: '진기르', pandora: '판도라', support: '지원' };
+    const serverColors = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+
+    // ── 오늘 전체 스케줄 표 ──
+    const now = new Date();
+    const todayDow = now.getDay();
+    const todaySchedules = schedules
+        .filter(s => s.dayOfWeek === todayDow)
+        .sort((a, b) => a.time.localeCompare(b.time));
+
+    // 보기 서버 상태 (기본: 내 서버, 다른 서버 탭 클릭으로 변경)
+    const viewServer = window._viewServer || myServer || '';
+
+    // 주차 배정 캐시 로드 여부 확인
+    const weekCacheLoaded = Object.keys(weekAssignCache).length > 0;
+
+    // 선택된 서버 기준 필터
+    // - 캐시 로드됨 + 서버 선택됨: 해당 서버에 배정된 스케줄만 표시 (미배정 숨김)
+    // - 캐시 미로드: 전체 표시 (로딩 전 깜빡임 방지)
+    const viewSchedules = (weekCacheLoaded && viewServer)
+        ? todaySchedules.filter(s => {
+            const entry = weekAssignCache[s.id];
+            if (!entry) return false; // 이번 주 배정 없는 스케줄 숨김
+            const assigned = entry.assignedServers || [];
+            return assigned.includes(viewServer);
+          })
+        : todaySchedules;
+
+    let scheduleTableHtml = '';
+    if (viewSchedules.length > 0 || weekCacheLoaded) {
+        // 서버 탭 버튼
+        const tabBtns = Object.entries(serverNames).map(([key, label]) => {
+            const c = serverColors[key];
+            const isActive = viewServer === key;
+            return `<button onclick="window._viewServer='${key}'; renderTodaySchedules();"
+                style="padding:4px 12px; border-radius:5px; border:2px solid ${c};
+                       background:${isActive ? c : 'white'}; color:${isActive ? 'white' : c};
+                       font-weight:bold; font-size:0.82rem; cursor:pointer; transition:all 0.15s;">
+                ${label}${myServer === key ? ' ⭐' : ''}
+            </button>`;
+        }).join('');
+
+        const rows = viewSchedules.map(s => {
+            const [h, m] = s.time.split(':').map(Number);
+            const bossMin = h * 60 + m;
+            const nowMin = now.getHours() * 60 + now.getMinutes();
+            const diff = nowMin - bossMin;
+
+            let statusIcon, rowBg = '';
+            if (diff < -10) {
+                statusIcon = `<span style="color:#95a5a6; font-size:0.85rem;">⏸ 대기</span>`;
+            } else if (diff >= -10 && diff <= 10) {
+                statusIcon = `<span style="color:#16a085; font-weight:bold; font-size:0.85rem;">⭕ 진행 중</span>`;
+                rowBg = 'background:#f0fff8;';
+            } else {
+                statusIcon = `<span style="color:#aaa; font-size:0.85rem;">✔ 완료</span>`;
+                rowBg = 'background:#fafafa; opacity:0.6;';
+            }
+            const isCur = currentBoss && currentBoss.id === s.id;
+            const myFloor = ((getScheduleAssignment(s).serverFloors) || {})[viewServer] || '';
+            const floorBadge = myFloor
+                ? `<span style="display:inline-block; margin-left:5px; padding:1px 6px; border-radius:4px; background:${serverColors[viewServer]||'#95a5a6'}; color:white; font-size:0.75rem; font-weight:bold;">${myFloor}</span>`
+                : '';
+            return `<tr style="${rowBg}${isCur ? 'font-weight:bold;' : ''}">
+                <td style="padding:7px 10px; color:#2c3e50; font-weight:bold;">${s.time}</td>
+                <td style="padding:7px 10px;">${s.name}${floorBadge}</td>
+                <td style="padding:7px 10px;">${statusIcon}</td>
+            </tr>`;
+        }).join('');
+
+        const emptyMsg = viewSchedules.length === 0
+            ? `<tr><td colspan="3" style="padding:20px; text-align:center; color:#aaa;">이 서버의 오늘 담당 보스가 없습니다</td></tr>`
+            : rows;
+
+        scheduleTableHtml = `
+            <div style="margin-bottom:12px; background:white; border-radius:8px; border:1px solid #e0e0e0; overflow:hidden;">
+                <div style="padding:10px 14px; background:#f8f9fa; border-bottom:1px solid #e0e0e0; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <span style="font-weight:bold; color:#2c3e50; font-size:0.95rem;">📅 오늘 스케줄</span>
+                    <div style="display:flex; gap:5px; flex-wrap:wrap;">${tabBtns}</div>
+                </div>
+                <table style="width:100%; border-collapse:collapse;">
+                    <thead><tr style="background:#f8f9fa; font-size:0.82rem; color:#7f8c8d;">
+                        <th style="padding:6px 10px; text-align:left; width:70px;">시간</th>
+                        <th style="padding:6px 10px; text-align:left;">보스</th>
+                        <th style="padding:6px 10px; text-align:left; width:80px;">상태</th>
+                    </tr></thead>
+                    <tbody>${emptyMsg}</tbody>
+                </table>
+            </div>`;
+    }
+
+    // ── 현재 보스 없음 ──
     if (!currentBoss) {
-        container.innerHTML = `
-            <div style="padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #95a5a6;">
-                <p style="color:#7f8c8d; margin: 0;">⏰ 현재 출석 가능한 보스가 없습니다.</p>
-                <p style="color:#95a5a6; margin: 6px 0 0 0; font-size: 0.85rem;">출석은 보스 시간 10분전 부터 가능하며 보스 젠 후에 10분뒤 종료 됩니다.</p>
-            </div>
-        `;
+        container.innerHTML = scheduleTableHtml + `
+            <div style="padding:15px; background:#f8f9fa; border-radius:8px; border-left:4px solid #95a5a6;">
+                <p style="color:#7f8c8d; margin:0;">⏰ 현재 출석 가능한 보스가 없습니다.</p>
+                <p style="color:#95a5a6; margin:6px 0 0 0; font-size:0.85rem;">출석은 보스 시간 10분전 부터 가능하며 보스 젠 후에 10분뒤 종료 됩니다.</p>
+            </div>`;
         return;
     }
-    
+
     const timeStatus = getAttendanceTimeStatus(currentBoss.time);
-    
+    const isMyBoss = isMyServerSchedule(currentBoss);
+
+    // 담당 서버 배지
+    const assignedServers = currentBoss.assignedServers || [];
+    const serverBadgesHtml = assignedServers.length > 0
+        ? assignedServers.map(sv =>
+            `<span style="display:inline-block; padding:2px 8px; border-radius:4px; background:${serverColors[sv]||'#95a5a6'}; color:white; font-size:0.78rem; font-weight:bold; margin-right:4px;">${serverNames[sv]||sv}</span>`
+          ).join('')
+        : '<span style="color:#aaa; font-size:0.82rem;">서버 미지정</span>';
+
     let statusBadge;
-    if (timeStatus.status === 'present') {
-        statusBadge = '<span style="display: inline-block; padding: 4px 10px; background: #d5f4e6; color: #16a085; border-radius: 4px; font-size: 0.85rem; font-weight: bold;">⭕ 출석 처리 시간대</span>';
+    if (!isMyBoss) {
+        statusBadge = `<span style="display:inline-block; padding:4px 10px; background:#fef9e7; color:#aaa; border-radius:4px; font-size:0.85rem;">🔕 내 서버 담당 아님</span>`;
+    } else if (timeStatus.status === 'present') {
+        statusBadge = '<span style="display:inline-block; padding:4px 10px; background:#d5f4e6; color:#16a085; border-radius:4px; font-size:0.85rem; font-weight:bold;">⭕ 출석 처리 시간대</span>';
     } else {
-        statusBadge = `<span style="display: inline-block; padding: 4px 10px; background: #f8f9fa; color: #95a5a6; border-radius: 4px; font-size: 0.85rem;">${timeStatus.message}</span>`;
+        statusBadge = `<span style="display:inline-block; padding:4px 10px; background:#f8f9fa; color:#95a5a6; border-radius:4px; font-size:0.85rem;">${timeStatus.message}</span>`;
     }
-    
-    container.innerHTML = `
-        <div class="schedule-card" style="border-left-color: #27ae60;">
-            <h3>🕐 ${currentBoss.time} ${currentBoss.name}</h3>
-            <p style="margin: 8px 0 0 0;">${statusBadge}</p>
-            <p class="schedule-info" style="margin-top: 8px;">${currentBoss.description || ''}</p>
-        </div>
-    `;
-    
-    // 내 이름 등록된 경우 → 출석 가능 시 빠른 출석 버튼 표시
-    if (timeStatus.allowed) {
-        const myNames = getMyNames();
-        const validNames = myNames.filter(name => users.find(u => u.name === name));
-        if (validNames.length > 0) {
-            const btnHtml = validNames.map(name => {
-                const safeName = name.replace(/'/g, "\\'");
-                const u = users.find(u => u.name === name);
-                const attended = u && (
-                    normalizeStatus(todayAttendance?.attendees?.[u.id]) === 'present' ||
-                    normalizeStatus(todayAttendance?.attendees?.[u.id]) === 'late'
-                );
-                if (attended) {
-                    return `<button class="quick-attend-btn" disabled style="background:#27ae60;cursor:not-allowed;opacity:0.9;">✅ ${name} 출석 완료</button>`;
-                }
-                return `<button class="quick-attend-btn" data-quick-name="${safeName}" onclick="quickAttendanceByName('${safeName}')">⭕ ${name} 출석</button>`;
-            }).join('');
-        }
-    }
-    
+
+    // 현재 보스 내 층 정보
+    const myBossFloor = getMyFloor(currentBoss);
+    const myBossFloorBadge = myBossFloor
+        ? `<span style="display:inline-block; margin-left:8px; padding:2px 10px; border-radius:4px; background:${serverColors[myServer]||'#95a5a6'}; color:white; font-size:0.85rem; font-weight:bold; vertical-align:middle;">${myBossFloor}</span>`
+        : '';
+
+    container.innerHTML = scheduleTableHtml + `
+        <div class="schedule-card" style="border-left-color:${isMyBoss ? '#27ae60' : '#bdc3c7'}; ${!isMyBoss ? 'opacity:0.8;' : ''}">
+            <h3>🕐 ${currentBoss.time} ${currentBoss.name}${myBossFloorBadge}</h3>
+            <div style="margin:6px 0;">${serverBadgesHtml}</div>
+            <p style="margin:8px 0 0 0;">${statusBadge}</p>
+            <p class="schedule-info" style="margin-top:8px;">${currentBoss.description || ''}</p>
+        </div>`;
+
     // 성물 필요 인원 표시
     await showRelicAlert(currentBoss);
-    
+
     // 현재 보스 출석 인원 표시
     showCurrentAttendees(currentBoss);
-    
+
     // 출석 종료 시 자동 불참 처리
     autoMarkAbsent(currentBoss);
 };
@@ -2003,10 +2166,19 @@ function updateAttendance(userId, requestedStatus) {
         alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±10분 내에만 가능합니다.');
         return;
     }
-    
+
+    // 내 서버 담당 아닌 보스는 자동 모드에서 출석 차단
+    if (!currentScheduleDate) {
+        const boss = schedules.find(s => s.id === currentScheduleId);
+        if (boss && !isMyServerSchedule(boss)) {
+            alert('⚠️ 이 보스는 내 서버 담당이 아닙니다.\n\n서버 배정을 확인하거나 빠른 출석의 서버를 변경해주세요.');
+            return;
+        }
+    }
+
     let finalStatus = requestedStatus;
     let dateForKey;
-    
+
     if (currentScheduleDate) {
         // 수동 선택 모드 — 과거 데이터 수정. requestedStatus 그대로 사용.
         dateForKey = currentScheduleDate;
@@ -2248,8 +2420,13 @@ function renderSchedulesList() {
             ${sortedSchedules.map(s => `
                 <div style="background: white; border: 2px solid #e0e0e0; border-radius: 8px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                     <div style="flex: 1; min-width: 200px;">
-                        <div style="font-weight: bold; color: #2c3e50; font-size: 1.1rem; margin-bottom: 5px;">
+                        <div style="font-weight: bold; color: #2c3e50; font-size: 1.1rem; margin-bottom: 5px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                             ${s.name}
+                            ${(s.assignedServers||[]).map(sv => {
+                                const c = {jingir:'#3498db',pandora:'#9b59b6',support:'#27ae60'}[sv]||'#95a5a6';
+                                const n = {jingir:'진기르',pandora:'판도라',support:'지원'}[sv]||sv;
+                                return `<span style="padding:1px 7px; border-radius:4px; background:${c}; color:white; font-size:0.75rem; font-weight:bold;">${n}</span>`;
+                            }).join('')}
                         </div>
                         <div style="color: #7f8c8d; font-size: 0.9rem;">
                             <span style="display: inline-block; margin-right: 15px;">
@@ -2371,6 +2548,11 @@ function calculateStats(attendanceData) {
     console.log('📅 이번 주 시작일(수):', weekStartStr);
     
     // 이번 주에 스케줄된 총 보스 수 계산 (UI 표시용 — '이번 주 총 스케줄')
+    // 주차 배정 캐시가 있는 경우: 내 서버에 배정된 스케줄만 집계
+    // 캐시 없는 경우: 전체 스케줄 수로 폴백
+    const statsMyServer = getMyServer();
+    const statsCacheLoaded = Object.keys(weekAssignCache).length > 0;
+
     let totalSchedules = 0;
     const thisWeek = [];
     for (let i = 0; i < 7; i++) {
@@ -2378,11 +2560,18 @@ function calculateStats(attendanceData) {
         date.setDate(date.getDate() + i);
         const dateStr = formatLocalDate(date);
         const dayOfWeekNum = date.getDay();
-        
-        // 해당 요일의 스케줄 수
-        const daySchedules = schedules.filter(s => s.dayOfWeek === dayOfWeekNum);
+
+        // 해당 요일 스케줄 중 내 서버에 배정된 것만 필터
+        const daySchedules = schedules.filter(s => {
+            if (s.dayOfWeek !== dayOfWeekNum) return false;
+            if (!statsCacheLoaded || !statsMyServer) return true; // 캐시 없으면 전체 포함
+            const entry = weekAssignCache[s.id];
+            if (!entry) return false; // 배정 데이터 없는 스케줄 제외
+            const assigned = entry.assignedServers || [];
+            return assigned.includes(statsMyServer);
+        });
         totalSchedules += daySchedules.length;
-        
+
         thisWeek.push({
             dateStr: dateStr,
             dayOfWeek: dayOfWeekNum,
@@ -2759,7 +2948,7 @@ function populateExportWeekSelect() {
     const sel = document.getElementById('export-week-select');
     if (!sel) return;
 
-    // 이번 주 시작일(수요일)
+    // 이번 주 시작일(일요일)
     const thisWeekStart = getWeekStart();
 
     sel.innerHTML = '';
@@ -4658,6 +4847,76 @@ function getMyNames() {
     return getMyNameSlots().map(s => s.name);
 }
 
+
+
+// 현재 주차 배정 데이터 캐시 (Firebase에서 로드)
+let weekAssignCache = {};  // { scheduleId: { assignedServers, serverFloors } }
+let weekAssignCacheKey = '';  // 캐시된 주차
+
+// 이번 주 배정 데이터 로드 (오늘 스케줄 표시용)
+function loadWeekAssignment() {
+    const today = new Date();
+    const weekStart = formatDate2(getWeekStartSun(today));
+    if (weekAssignCacheKey === weekStart) return Promise.resolve(); // 이미 로드됨
+
+    return db.ref(getAssignPath(weekStart)).once('value').then(snap => {
+        weekAssignCache = snap.val() || {};
+        weekAssignCacheKey = weekStart;
+        // 캐시 로드 후 오늘 스케줄 표 갱신
+        renderTodaySchedules();
+    });
+}
+
+// 스케줄의 이번 주 배정 데이터 가져오기
+function getScheduleAssignment(schedule) {
+    return weekAssignCache[schedule.id] || {};
+}
+
+// 내 서버 기준으로 스케줄 층/세부 정보 반환
+function getMyFloor(schedule) {
+    const myServer = getMyServer();
+    if (!myServer) return '';
+    const entry = getScheduleAssignment(schedule);
+    return (entry.serverFloors || {})[myServer] || '';
+}
+
+// 내 서버 스케줄인지 확인 (주차별 데이터 기준)
+function isMyServerScheduleWeekly(schedule, serverKey) {
+    const sv = serverKey || getMyServer();
+    if (!sv) return true;
+
+    // 주차 캐시가 아직 로드되지 않은 경우 → 전체 표시 (로딩 전 깜빡임 방지)
+    if (Object.keys(weekAssignCache).length === 0) {
+        return true;
+    }
+
+    const entry = getScheduleAssignment(schedule);
+    const assigned = entry.assignedServers || [];
+
+    // 이번 주 배정 데이터에서 해당 스케줄 항목 자체가 없는 경우 → 전체 표시
+    if (!weekAssignCache[schedule.id]) {
+        return true;
+    }
+
+    return assigned.length === 0 || assigned.includes(sv);
+}
+
+// ── 내 서버 가져오기 (빠른 출석의 서버 선택 기준) ──
+function getMyServer() {
+    const slots = getMyNameSlots();
+    if (slots.length > 0 && slots[0].server) return slots[0].server;
+    return ''; // 미설정
+}
+
+// 스케줄이 내 서버 담당인지 확인
+function isMyServerSchedule(schedule) {
+    const myServer = getMyServer();
+    if (!myServer) return true; // 서버 미설정 시 모두 표시
+    const assigned = schedule.assignedServers;
+    if (!assigned || assigned.length === 0) return true; // 담당 서버 미설정 시 모두 표시
+    return assigned.includes(myServer);
+}
+
 // 이름+서버 슬롯 객체 배열 반환
 function getMyNameSlots() {
     try {
@@ -5169,9 +5428,695 @@ function selectQuickServer(name, serverKey, slotId) {
     if (slotIdx >= 0) {
         slots[slotIdx].server = clickedWasActive ? '' : serverKey;
         setMyNames(slots);
+        // 오늘 스케줄 탭 ⭐ 표시 즉시 갱신
+        window._viewServer = (clickedWasActive ? '' : serverKey) || getMyServer() || 'jingir';
+        renderTodaySchedules();
     }
 }
 
+
+// ============================================================
+// 📸 스케줄 이미지 분석 & 자동 서버 배정
+// ============================================================
+
+let scheduleImgBase64 = '';
+let pendingAssignment = []; // AI가 분석한 배정 결과 (적용 전 확인용)
+
+// 이미지 미리보기
+function previewScheduleImage(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    document.getElementById('schedule-img-filename').textContent = file.name;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        scheduleImgBase64 = e.target.result.split(',')[1]; // base64만 추출
+
+        const thumb = document.getElementById('schedule-img-thumb');
+        thumb.src = e.target.result;
+
+        document.getElementById('schedule-img-preview').style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+}
+
+// AI 분석 실행
+async function analyzeScheduleImage() {
+    if (!scheduleImgBase64) return;
+
+    // 관리자 확인
+    if (!isAdmin) {
+        const pw = prompt('관리자 비밀번호를 입력하세요:');
+        if (pw !== ADMIN_PW) { alert('❌ 비밀번호가 틀렸습니다.'); return; }
+    }
+
+    const btnAnalyze = document.getElementById('btn-analyze-img');
+    const loading = document.getElementById('schedule-img-loading');
+    const resultDiv = document.getElementById('schedule-img-result');
+
+    btnAnalyze.disabled = true;
+    loading.style.display = 'block';
+    resultDiv.style.display = 'none';
+
+    // 현재 등록된 스케줄 목록 (AI에게 전달할 참고 데이터)
+    const scheduleList = schedules.map(s => ({
+        id: s.id,
+        name: s.name,
+        time: s.time,
+        dayOfWeek: s.dayOfWeek
+    }));
+
+    const dayNames = ['일','월','화','수','목','금','토'];
+    const scheduleText = scheduleList
+        .sort((a,b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time))
+        .map(s => `${dayNames[s.dayOfWeek]}요일 ${s.time} ${s.name} (id:${s.id})`)
+        .join('\n');
+
+    const prompt = `이 이미지는 게임 길드의 주간 보스 스케줄 표입니다.
+표를 보고 각 보스별로 어느 서버가 담당인지 분석해주세요.
+
+서버는 3개입니다:
+- jingir (진기르)
+- pandora (판도라)  
+- support (지원/사이하/기르 등 세 번째 서버)
+
+현재 시스템에 등록된 스케줄 목록:
+${scheduleText}
+
+분석 규칙:
+1. 표에서 각 보스 셀에 "헌터", "그리", "히든", "DP", "꼬장" 등의 팀명이 있습니다
+2. 표의 서버명(진기르, 판도라, 기르, 사이하, 라바 등)과 팀명을 매칭하세요
+3. 이미지의 서버명을 jingir/pandora/support 중 하나로 매핑하세요
+4. 보스 이름, 시간, 요일로 위 스케줄 목록의 id와 매칭하세요
+
+반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트 없이:
+{
+  "serverMapping": {
+    "이미지서버명1": "jingir",
+    "이미지서버명2": "pandora",
+    "이미지서버명3": "support"
+  },
+  "assignments": [
+    {
+      "scheduleId": "fri_1225_oman1",
+      "scheduleName": "오만1/6층",
+      "day": "금",
+      "time": "12:25",
+      "assignedServers": ["jingir", "pandora"],
+      "note": "진기르:헌터, 판도라:DP"
+    }
+  ],
+  "unmatched": ["매칭못한 보스명1", "매칭못한 보스명2"]
+}`;
+
+    try {
+        // CORS 우회: iframe을 통한 Claude Artifact API 사용
+        const result = await callClaudeViaArtifact(scheduleImgBase64, prompt);
+        pendingAssignment = result.assignments || [];
+        showAnalysisResult(result);
+
+    } catch (err) {
+        console.error('분석 실패:', err);
+        resultDiv.innerHTML = `<div style="color:#e74c3c; padding:10px; background:#fee; border-radius:6px;">❌ 분석 실패: ${err.message}<br><br>
+            <strong>해결 방법:</strong><br>
+            GitHub Pages가 아닌 로컬 파일(file://)로 실행 중이면<br>
+            웹 서버를 통해 접속하거나 Claude.ai Artifact를 통해 실행하세요.</div>`;
+        resultDiv.style.display = 'block';
+    } finally {
+        btnAnalyze.disabled = false;
+        loading.style.display = 'none';
+    }
+}
+
+// Claude API 호출
+async function callClaudeViaArtifact(imageBase64, promptText) {
+    // API 키 확인 (localStorage 또는 입력란)
+    const apiKey = localStorage.getItem('anthropicApiKey') || 
+                   document.getElementById('anthropic-api-key')?.value || '';
+    if (!apiKey || !apiKey.startsWith('sk-ant-')) {
+        throw new Error('API 키를 입력해주세요.\n\n🔑 Anthropic Console(console.anthropic.com)에서\nAPI 키를 발급받아 입력란에 붙여넣으세요.');
+    }
+
+    // 이미지 타입 감지
+    let mediaType = 'image/png';
+    if (imageBase64.startsWith('/9j/')) mediaType = 'image/jpeg';
+    else if (imageBase64.startsWith('iVBOR')) mediaType = 'image/png';
+    else if (imageBase64.startsWith('R0lGO')) mediaType = 'image/gif';
+    else if (imageBase64.startsWith('UklGR')) mediaType = 'image/webp';
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 4000,
+            messages: [{
+                role: 'user',
+                content: [
+                    {
+                        type: 'image',
+                        source: {
+                            type: 'base64',
+                            media_type: mediaType,
+                            data: imageBase64
+                        }
+                    },
+                    { type: 'text', text: promptText }
+                ]
+            }]
+        })
+    });
+
+    if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`API 오류 ${response.status}: ${errText.slice(0,200)}`);
+    }
+
+    const data = await response.json();
+    const textContent = data.content?.find(c => c.type === 'text')?.text || '';
+
+    // JSON 파싱
+    const jsonMatch = textContent.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('AI 응답에서 JSON을 찾을 수 없습니다:\n' + textContent.slice(0,300));
+
+    return JSON.parse(jsonMatch[0]);
+}
+
+// 분석 결과 표시
+function showAnalysisResult(result) {
+    const serverNames = { jingir: '진기르', pandora: '판도라', support: '지원' };
+    const serverColors = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+
+    // 서버 매핑 표시
+    let mappingHtml = '';
+    if (result.serverMapping) {
+        const mappings = Object.entries(result.serverMapping)
+            .map(([k,v]) => `<span style="background:#f8f9fa; padding:3px 8px; border-radius:4px; font-size:0.85rem;">
+                ${k} → <strong style="color:${serverColors[v]||'#666'}">${serverNames[v]||v}</strong>
+            </span>`).join(' ');
+        mappingHtml = `<div style="margin-bottom:10px; padding:8px; background:#e8f4fd; border-radius:6px; font-size:0.88rem;">
+            <strong>서버 매핑:</strong> ${mappings}
+        </div>`;
+    }
+
+    // 배정 결과 테이블
+    const rows = (result.assignments || []).map(a => {
+        const badges = (a.assignedServers || []).map(sv =>
+            `<span style="padding:2px 7px; border-radius:4px; background:${serverColors[sv]||'#95a5a6'}; color:white; font-size:0.78rem; font-weight:bold; margin-right:3px;">${serverNames[sv]||sv}</span>`
+        ).join('');
+
+        const matched = schedules.find(s => s.id === a.scheduleId);
+        const matchBadge = matched
+            ? '<span style="color:#27ae60; font-size:0.8rem;">✅ 매칭</span>'
+            : '<span style="color:#e74c3c; font-size:0.8rem;">❌ 미매칭</span>';
+
+        return `<tr style="border-bottom:1px solid #eee;">
+            <td style="padding:7px 8px; font-weight:bold;">${a.day||''} ${a.time||''}</td>
+            <td style="padding:7px 8px;">${a.scheduleName||a.scheduleId}</td>
+            <td style="padding:7px 8px;">${badges || '<span style="color:#aaa">없음</span>'}</td>
+            <td style="padding:7px 8px; font-size:0.8rem; color:#7f8c8d;">${a.note||''}</td>
+            <td style="padding:7px 8px;">${matchBadge}</td>
+        </tr>`;
+    }).join('');
+
+    // 미매칭 표시
+    let unmatchedHtml = '';
+    if (result.unmatched && result.unmatched.length > 0) {
+        unmatchedHtml = `<div style="margin-top:10px; padding:8px; background:#fef5e7; border-radius:6px; font-size:0.85rem; color:#d35400;">
+            ⚠️ 매칭 못한 보스: ${result.unmatched.join(', ')}
+        </div>`;
+    }
+
+    const matched = (result.assignments||[]).filter(a => schedules.find(s=>s.id===a.scheduleId)).length;
+    const total = (result.assignments||[]).length;
+
+    document.getElementById('img-result-table').innerHTML = `
+        ${mappingHtml}
+        <div style="margin-bottom:8px; font-size:0.9rem; color:#2c3e50;">
+            <strong>분석 결과: ${total}개 보스 / 매칭 성공: ${matched}개</strong>
+        </div>
+        <div style="overflow-x:auto; border:1px solid #eee; border-radius:6px;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.88rem;">
+                <thead><tr style="background:#f8f9fa; color:#555;">
+                    <th style="padding:8px; text-align:left;">요일/시간</th>
+                    <th style="padding:8px; text-align:left;">보스</th>
+                    <th style="padding:8px; text-align:left;">담당 서버</th>
+                    <th style="padding:8px; text-align:left;">비고</th>
+                    <th style="padding:8px; text-align:left;">상태</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+        ${unmatchedHtml}
+    `;
+
+    document.getElementById('modal-schedule-img-result').classList.add('active');
+}
+
+// 배정 적용 (Firebase 저장)
+async function applyScheduleAssignment() {
+    if (!pendingAssignment || pendingAssignment.length === 0) return;
+
+    const matched = pendingAssignment.filter(a => schedules.find(s => s.id === a.scheduleId));
+    if (matched.length === 0) {
+        alert('❌ 매칭된 스케줄이 없습니다.');
+        return;
+    }
+
+    if (!confirm(`✅ ${matched.length}개 스케줄에 서버를 배정하시겠습니까?\n\n(매칭 실패 항목은 제외됩니다)`)) return;
+
+    try {
+        const updates = {};
+        matched.forEach(a => {
+            updates[`boss_schedules/${a.scheduleId}/assignedServers`] = a.assignedServers || [];
+        });
+
+        await db.ref().update(updates);
+
+        alert(`🎉 ${matched.length}개 스케줄 서버 배정 완료!`);
+        document.getElementById('modal-schedule-img-result').classList.remove('active');
+
+        // 업로드 UI 초기화
+        document.getElementById('schedule-img-input').value = '';
+        document.getElementById('schedule-img-filename').textContent = '선택된 파일 없음';
+        document.getElementById('schedule-img-preview').style.display = 'none';
+        document.getElementById('schedule-img-result').style.display = 'none';
+        scheduleImgBase64 = '';
+        pendingAssignment = [];
+
+    } catch (err) {
+        alert('❌ 저장 실패: ' + err.message);
+    }
+}
+
+// API 키 localStorage 저장
+function saveApiKey(val) {
+    if (val && val.startsWith('sk-ant-')) {
+        localStorage.setItem('anthropicApiKey', val);
+    }
+}
+
+// 페이지 로드 시 API 키 복원
+function loadApiKey() {
+    const saved = localStorage.getItem('anthropicApiKey');
+    const input = document.getElementById('anthropic-api-key');
+    if (saved && input) input.value = saved;
+}
+
+// ============================================================
+// 📅 서버별 스케줄 달력 배정
+// ============================================================
+
+let currentAssignServer = '';     // 현재 배정 중인 서버
+let assignSelected = new Set();   // 선택된 scheduleId Set
+
+const SERVER_COLORS = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+const SERVER_NAMES  = { jingir: '진기르',  pandora: '판도라',  support: '지원' };
+const DAY_NAMES = ['일','월','화','수','목','금','토'];
+
+// 서버 선택
+function selectAssignServer(serverKey) {
+    currentAssignServer = serverKey;
+    assignSelected = new Set();
+
+    // 버튼 스타일 업데이트
+    ['jingir','pandora','support'].forEach(sv => {
+        const btn = document.getElementById('assign-btn-' + sv);
+        if (!btn) return;
+        const c = SERVER_COLORS[sv];
+        if (sv === serverKey) {
+            btn.style.background = c;
+            btn.style.color = 'white';
+            btn.style.boxShadow = '0 2px 8px ' + c + '66';
+        } else {
+            btn.style.background = 'white';
+            btn.style.color = c;
+            btn.style.boxShadow = '';
+        }
+    });
+
+    // 주차별 배정 불러오기 (Firebase)
+    const week = currentAssignWeek || formatDate2(getWeekStartSun(new Date()));
+    db.ref(getAssignPath(week)).once('value', (snapshot) => {
+        const weekData = snapshot.val() || {};
+
+        schedules.forEach(s => {
+            const entry = weekData[s.id] || {};
+            const assigned = entry.assignedServers || [];
+            if (!assigned.includes(serverKey)) return;
+
+            const slashIdx2 = s.name.indexOf('/');
+            const slash = slashIdx2 > 0;
+            if (slash) {
+                const floor = (entry.serverFloors || {})[serverKey] || '';
+                const f1 = s.name.slice(0, slashIdx2).trim();
+                const f2 = s.name.slice(slashIdx2 + 1).trim();
+                if (!floor || floor.includes('/')) {
+                    assignSelected.add(s.id + '__L');
+                    assignSelected.add(s.id + '__R');
+                } else if (floor === f1) {
+                    assignSelected.add(s.id + '__L');
+                } else if (floor === f2) {
+                    assignSelected.add(s.id + '__R');
+                } else {
+                    assignSelected.add(s.id + '__L');
+                    assignSelected.add(s.id + '__R');
+                }
+            } else {
+                assignSelected.add(s.id);
+            }
+        });
+
+        document.getElementById('assign-placeholder').style.display = 'none';
+        document.getElementById('assign-calendar').style.display = 'block';
+        renderAssignCalendar();
+    });
+}
+
+// 달력 렌더링
+function renderAssignCalendar() {
+    const color = SERVER_COLORS[currentAssignServer] || '#3498db';
+    const dow = [0,1,2,3,4,5,6]; // 일~토
+    const dayLabels = ['일','월','화','수','목','금','토'];
+
+    // 요일별 스케줄 그룹
+    const byDay = {};
+    dow.forEach(d => byDay[d] = []);
+    schedules.forEach(s => {
+        if (byDay[s.dayOfWeek] !== undefined) byDay[s.dayOfWeek].push(s);
+    });
+    dow.forEach(d => byDay[d].sort((a,b) => a.time.localeCompare(b.time)));
+
+    // 최대 행 수
+    const maxRows = Math.max(...dow.map(d => byDay[d].length));
+
+    // 테이블 생성
+    let html = `<table style="border-collapse:collapse; min-width:100%; font-size:0.85rem;">
+        <thead><tr>`;
+
+    dow.forEach(d => {
+        const cnt = byDay[d].length;
+        html += `<th style="padding:8px 6px; text-align:center; background:#f1f3f4; border:1px solid #dee2e6; min-width:90px; color:#555;">
+            ${dayLabels[d]}<br><span style="font-size:0.75rem; color:#aaa;">(${cnt}개)</span>
+        </th>`;
+    });
+    html += '</tr></thead><tbody>';
+
+    for (let row = 0; row < maxRows; row++) {
+        html += '<tr>';
+        dow.forEach(d => {
+            const s = byDay[d][row];
+            if (!s) {
+                html += '<td style="border:1px solid #f0f0f0; padding:4px;"></td>';
+                return;
+            }
+            const isSelected = assignSelected.has(s.id);
+            const bg = isSelected ? color : '#f8f9fa';
+            const txtColor = isSelected ? 'white' : '#555';
+            const border = isSelected ? `2px solid ${color}` : '1px solid #dee2e6';
+            // 이름에 슬래시 있으면 좌/우 분할 (예: 오만1/6층 → 1층|6층)
+            // 슬래시 있으면 좌/우 분할 (숫자/숫자 또는 텍스트/텍스트 모두)
+            const slashIdx = s.name.indexOf('/');
+            const slashMatch = slashIdx > 0;
+            if (slashMatch) {
+                // 슬래시 기준으로 분할 후 층 중복 정리
+                const rawL = s.name.slice(0, slashIdx).trim();
+                const rawR = s.name.slice(slashIdx + 1).trim();
+                const numLayerRe = /^\D*\d+층$/;   // "6층", "8층", "10층" 등
+                const txtLayerRe = /^[^0-9]+층$/;   // "마령층", "암살층" 등
+                let floor1, floor2;
+                if (numLayerRe.test(rawR)) {
+                    // 우측이 숫자+층 → 좌측 그대로 유지 (오만1층/6층 → 오만1층 | 6층)
+                    floor1 = rawL;
+                    floor2 = rawR;
+                } else if (txtLayerRe.test(rawR)) {
+                    // 우측이 텍스트+층 → 둘 다 층 제거 (암살층/마령층 → 암살 | 마령)
+                    floor1 = rawL.replace(/층$/, '');
+                    floor2 = rawR.replace(/층$/, '');
+                } else {
+                    floor1 = rawL;
+                    floor2 = rawR;
+                }
+                const prefix  = '';
+                const suffix  = '';
+                const subId1  = s.id + '__L';
+                const subId2  = s.id + '__R';
+                const isSel1  = assignSelected.has(subId1);
+                const isSel2  = assignSelected.has(subId2);
+                const bg1     = isSel1 ? color : '#f8f9fa';
+                const bg2     = isSel2 ? color : '#f8f9fa';
+                const txt1    = isSel1 ? 'white' : '#555';
+                const txt2    = isSel2 ? 'white' : '#555';
+                const brd1    = isSel1 ? `2px solid ${color}` : '1px solid #dee2e6';
+                const brd2    = isSel2 ? `2px solid ${color}` : '1px solid #dee2e6';
+                html += `<td style="border:1px solid #f0f0f0; padding:4px;">
+                    <div style="font-size:0.72rem; color:#aaa; text-align:center; margin-bottom:2px;">${s.time}</div>
+                    <div style="display:flex; gap:3px;">
+                        <div onclick="toggleAssignSub('${s.id}','L')"
+                            id="assign-cell-${subId1}"
+                            style="flex:1; padding:6px 2px; border-radius:5px; cursor:pointer; text-align:center;
+                                   background:${bg1}; color:${txt1}; border:${brd1}; transition:all 0.15s; user-select:none;">
+                            <div style="font-weight:bold; font-size:0.88rem;">${floor1}</div>
+                        </div>
+                        <div onclick="toggleAssignSub('${s.id}','R')"
+                            id="assign-cell-${subId2}"
+                            style="flex:1; padding:6px 2px; border-radius:5px; cursor:pointer; text-align:center;
+                                   background:${bg2}; color:${txt2}; border:${brd2}; transition:all 0.15s; user-select:none;">
+                            <div style="font-weight:bold; font-size:0.88rem;">${floor2}</div>
+                        </div>
+                    </div>
+                </td>`;
+            } else {
+                // 일반 셀
+                html += `<td style="border:1px solid #f0f0f0; padding:4px;">
+                    <div onclick="toggleAssign('${s.id}')"
+                        id="assign-cell-${s.id}"
+                        style="padding:7px 5px; border-radius:6px; cursor:pointer; text-align:center;
+                               background:${bg}; color:${txtColor}; border:${border}; transition:all 0.15s;
+                               user-select:none;">
+                        <div style="font-weight:bold; font-size:0.82rem;">${s.name}</div>
+                        <div style="font-size:0.75rem; opacity:0.85;">${s.time}</div>
+                    </div>
+                </td>`;
+            }
+        });
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
+
+    document.getElementById('assign-calendar-body').innerHTML = html;
+    updateAssignCount();
+}
+
+// 셀 토글 (일반)
+function toggleAssign(scheduleId) {
+    if (assignSelected.has(scheduleId)) {
+        assignSelected.delete(scheduleId);
+    } else {
+        assignSelected.add(scheduleId);
+    }
+    const cell = document.getElementById('assign-cell-' + scheduleId);
+    if (!cell) return;
+    const color = SERVER_COLORS[currentAssignServer] || '#3498db';
+    const isSel = assignSelected.has(scheduleId);
+    cell.style.background = isSel ? color : '#f8f9fa';
+    cell.style.color      = isSel ? 'white' : '#555';
+    cell.style.border     = isSel ? `2px solid ${color}` : '1px solid #dee2e6';
+    updateAssignCount();
+}
+
+// 분할 셀 토글 (L/R)
+function toggleAssignSub(scheduleId, side) {
+    const subId = scheduleId + '__' + side;
+    if (assignSelected.has(subId)) {
+        assignSelected.delete(subId);
+    } else {
+        assignSelected.add(subId);
+    }
+    const cell = document.getElementById('assign-cell-' + subId);
+    if (!cell) return;
+    const color = SERVER_COLORS[currentAssignServer] || '#3498db';
+    const isSel = assignSelected.has(subId);
+    cell.style.background = isSel ? color : '#f8f9fa';
+    cell.style.color      = isSel ? 'white' : '#555';
+    cell.style.border     = isSel ? `2px solid ${color}` : '1px solid #dee2e6';
+    updateAssignCount();
+}
+
+// 전체 선택/해제
+function selectAllAssign(selectAll) {
+    if (selectAll) {
+        schedules.forEach(s => {
+            const slash = s.name.includes('/');
+            if (slash) {
+                assignSelected.add(s.id + '__L');
+                assignSelected.add(s.id + '__R');
+            } else {
+                assignSelected.add(s.id);
+            }
+        });
+    } else {
+        assignSelected.clear();
+    }
+    renderAssignCalendar();
+}
+
+// 선택 개수 업데이트 (분할 셀은 __L/__R 제외하고 스케줄 단위로 계산)
+function updateAssignCount() {
+    const el = document.getElementById('assign-count');
+    if (!el) return;
+    // 실제 선택된 스케줄 수 (L/R은 같은 스케줄 취급)
+    const selectedScheduleIds = new Set();
+    assignSelected.forEach(id => {
+        selectedScheduleIds.add(id.replace(/__[LR]$/, ''));
+    });
+    el.textContent = '선택: ' + selectedScheduleIds.size + '개 / 전체: ' + schedules.length + '개';
+}
+
+// Firebase에 저장
+async function applyServerAssignment() {
+    if (!currentAssignServer) return;
+    if (!isAdmin) {
+        const pw = prompt('관리자 비밀번호를 입력하세요:');
+        if (pw !== ADMIN_PW) { alert('❌ 비밀번호가 틀렸습니다.'); return; }
+    }
+
+    const serverName = SERVER_NAMES[currentAssignServer];
+    // 분할 셀(L/R)을 스케줄 단위로 집계
+    const selectedScheduleCount = new Set(
+        [...assignSelected].map(id => id.replace(/__[LR]$/, ''))
+    ).size;
+    if (!confirm(`${serverName} 서버 배정을 저장할까요?\n선택: ${selectedScheduleCount}개 스케줄`)) return;
+
+    const week = currentAssignWeek || formatDate2(getWeekStartSun(new Date()));
+
+    try {
+        // 현재 주차의 전체 데이터 먼저 읽기 (다른 서버 배정 유지 위해)
+        const snapshot = await db.ref(getAssignPath(week)).once('value');
+        const weekData = snapshot.val() || {};
+
+        const updates = {};
+        schedules.forEach(s => {
+            const slashIdx3 = s.name.indexOf('/');
+            const slash = slashIdx3 > 0;
+            const floor1 = slash ? s.name.slice(0, slashIdx3).trim() : null;
+            const floor2 = slash ? s.name.slice(slashIdx3 + 1).trim() : null;
+
+            const entry = weekData[s.id] || { assignedServers: [], serverFloors: {} };
+            const current = [...(entry.assignedServers || [])];
+
+            // 이 서버 담당 여부 업데이트
+            const isSelected = slash
+                ? (assignSelected.has(s.id + '__L') || assignSelected.has(s.id + '__R'))
+                : assignSelected.has(s.id);
+            const updatedServers = isSelected
+                ? (current.includes(currentAssignServer) ? current : [...current, currentAssignServer])
+                : current.filter(sv => sv !== currentAssignServer);
+
+            // 층 정보 업데이트
+            const curFloors = {...(entry.serverFloors || {})};
+            if (slash) {
+                if (assignSelected.has(s.id + '__L') && assignSelected.has(s.id + '__R')) {
+                    curFloors[currentAssignServer] = floor1 + '/' + floor2;
+                } else if (assignSelected.has(s.id + '__L')) {
+                    curFloors[currentAssignServer] = floor1;
+                } else if (assignSelected.has(s.id + '__R')) {
+                    curFloors[currentAssignServer] = floor2;
+                } else {
+                    delete curFloors[currentAssignServer];
+                }
+            }
+
+            updates[getAssignPath(week) + '/' + s.id] = {
+                assignedServers: updatedServers,
+                serverFloors: curFloors
+            };
+        });
+
+        await db.ref().update(updates);
+
+        const wEnd = new Date(week);
+        wEnd.setDate(wEnd.getDate() + 6);
+        alert('🎉 ' + serverName + ' 서버 배정 저장 완료!\n주차: ' + formatMD(new Date(week)) + ' ~ ' + formatMD(wEnd));
+    } catch(err) {
+        alert('❌ 저장 실패: ' + err.message);
+    }
+}
+
+// ============================================================
+// 📅 주차별 서버 배정 관리 (일요일~토요일 기준)
+// ============================================================
+
+let currentAssignWeek = '';  // 현재 배정 중인 주차 시작일 (YYYY-MM-DD, 일요일)
+
+// 주차 시작일 계산 (일요일 기준)
+function getWeekStartSun(date) {
+    const d = new Date(date);
+    const dow = d.getDay(); // 0=일
+    d.setDate(d.getDate() - dow);
+    d.setHours(0,0,0,0);
+    return d;
+}
+
+function formatDate2(date) {
+    return date.getFullYear() + '-'
+        + String(date.getMonth()+1).padStart(2,'0') + '-'
+        + String(date.getDate()).padStart(2,'0');
+}
+
+function formatMD(date) {
+    return (date.getMonth()+1) + '/' + date.getDate();
+}
+
+// 주차 드롭다운 채우기
+function populateAssignWeekSelect() {
+    const sel = document.getElementById('assign-week-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+
+    const today = new Date();
+    const thisWeekStart = getWeekStartSun(today);
+
+    // 지난 주 ~ 다음 4주 (총 6개)
+    for (let i = -1; i <= 4; i++) {
+        const wStart = new Date(thisWeekStart);
+        wStart.setDate(thisWeekStart.getDate() + i * 7);
+        const wEnd = new Date(wStart);
+        wEnd.setDate(wStart.getDate() + 6);
+
+        const val = formatDate2(wStart);
+        let label = formatMD(wStart) + ' ~ ' + formatMD(wEnd);
+        if (i === 0) label = '이번 주 (' + label + ')';
+        else if (i === -1) label = '지난 주 (' + label + ')';
+        else if (i === 1) label = '다음 주 (' + label + ')';
+
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = label;
+        if (i === 0) opt.selected = true;
+        sel.appendChild(opt);
+    }
+    currentAssignWeek = sel.value;
+}
+
+// 주차 변경 시
+function onAssignWeekChange() {
+    const sel = document.getElementById('assign-week-select');
+    currentAssignWeek = sel.value;
+    // 서버가 선택되어 있으면 해당 주차 데이터 다시 불러오기
+    if (currentAssignServer) selectAssignServer(currentAssignServer);
+}
+
+// 주차별 Firebase 경로
+function getAssignPath(weekStart) {
+    return 'boss_schedule_assignments/' + weekStart;
+}
 </script>
 
 </body>
