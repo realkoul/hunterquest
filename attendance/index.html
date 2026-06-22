@@ -2541,11 +2541,14 @@ function loadStats() {
 function calculateStats(attendanceData) {
     const userStats = {};
     
-    // 이번 주 시작일(수요일) 계산
+    // 이번 주 시작일(수요일) ~ 종료일(다음주 화요일) 계산
     const weekStart = getWeekStart();
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);  // 수+6 = 다음주 화요일
     const weekStartStr = formatLocalDate(weekStart);
-    
-    console.log('📅 이번 주 시작일(수):', weekStartStr);
+    const weekEndStr   = formatLocalDate(weekEnd);
+
+    console.log('📅 이번 주 범위(수~화):', weekStartStr, '~', weekEndStr);
     
     // 이번 주에 스케줄된 총 보스 수 계산 (UI 표시용 — '이번 주 총 스케줄')
     // 주차 배정 캐시가 있는 경우: 내 서버에 배정된 스케줄만 집계
@@ -2600,8 +2603,8 @@ function calculateStats(attendanceData) {
         // 날짜 추출 (YYYY-MM-DD_bossId 형식)
         const dateStr = key.split('_')[0];
         
-        // 이번 주 시작일 이후 데이터만 처리
-        if (dateStr < weekStartStr) {
+        // 이번 주 범위(수~화) 외 데이터 제외
+        if (dateStr < weekStartStr || dateStr > weekEndStr) {
             return;
         }
         
