@@ -287,7 +287,6 @@
     <div class="header">
         <div>
             <h1>📅 헌터혈맹 출석관리<span class="version">v1.8</span></h1>
-            <p style="color:#7f8c8d; margin-top:8px;">● hunterquest-fbdee 서버 (테스트 DB)</p>
         </div>
         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
             <button id="admin-toggle-btn" onclick="toggleAdminMode()"
@@ -1622,8 +1621,11 @@ async function renderTodaySchedules() {
     const timeStatus = getAttendanceTimeStatus(currentBoss.time);
     const isMyBoss = isMyServerSchedule(currentBoss);
 
-    // 담당 서버 배지
-    const assignedServers = currentBoss.assignedServers || [];
+    // 담당 서버 배지 — weekAssignCache 기준 (구 assignedServers 폴백)
+    const cacheEntry = weekAssignCache[currentBoss.id];
+    const assignedServers = (cacheEntry && cacheEntry.assignedServers)
+        ? cacheEntry.assignedServers
+        : (currentBoss.assignedServers || []);
     const serverBadgesHtml = assignedServers.length > 0
         ? assignedServers.map(sv =>
             `<span style="display:inline-block; padding:2px 8px; border-radius:4px; background:${serverColors[sv]||'#95a5a6'}; color:white; font-size:0.78rem; font-weight:bold; margin-right:4px;">${serverNames[sv]||sv}</span>`
@@ -2125,20 +2127,26 @@ function renderAttendanceTable() {
             : '';
         
         // 관리 열 버튼 구성
-        // 공통(사용자 모드 포함): ⭕ 출석 버튼 표시
-        // 관리자 수동 모드(과거 날짜 선택)만: 출석/불참 전체
+        // 해당 유저의 서버 기준으로 담당 보스인지 판단
+        // 관리자 수동 모드(과거 날짜 선택)만: 서버 무관 전체 허용
+        const currentBossObj = schedules.find(s => s.id === currentScheduleId);
+        const isBossUserServer = !currentBossObj || isScheduleForServer(currentBossObj, u.server);
+
         let actionButtonsHtml;
         if (isAdmin && currentScheduleDate) {
-            // 관리자 전용 — 과거 날짜 수동 수정
+            // 관리자 전용 — 과거 날짜 수동 수정 (서버 무관)
             actionButtonsHtml = `
                 <button class="attendance-btn btn-o ${(status==='present'||status==='late')?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 출석</button>
                 <button class="attendance-btn btn-x ${status==='absent'?'active':''}" onclick="updateAttendance(${u.id}, 'absent')">❌ 불참</button>
             `;
+        } else if (!isBossUserServer) {
+            // 해당 유저 서버 스케줄 아님 — 버튼 숨김
+            actionButtonsHtml = `<span style="color:#bbb; font-size:0.8rem;">-</span>`;
         } else {
             // 사용자 모드 + 관리자 자동 모드 공통
             const isMarked = status === 'present' || status === 'late';
             actionButtonsHtml = `
-                <button class="attendance-btn btn-o ${isMarked?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 출석</button>
+                <button class="attendance-btn btn-o ${isMarked?'active':''}" onclick="updateAttendance(${u.id}, 'present', '${u.server}')">⭕ 출석</button>
             `;
         }
         
@@ -2161,18 +2169,31 @@ function filterAttendanceTable() {
 // 출석 업데이트
 // 자동 모드(currentScheduleDate=null): 시간 기반으로 status 자동 결정 (±10분 내 → present). 시간 외엔 거부.
 // 수동 모드(currentScheduleDate=선택된 과거 날짜): requestedStatus 그대로 저장 (관리자 수정용)
-function updateAttendance(userId, requestedStatus) {
+function updateAttendance(userId, requestedStatus, targetServer) {
     if (!currentScheduleId) {
         alert('현재 진행 중인 보스가 없습니다.\n\n출석은 보스 시간 기준 ±10분 내에만 가능합니다.');
         return;
     }
 
-    // 내 서버 담당 아닌 보스는 자동 모드에서 출석 차단
+    // 자동 모드에서 서버 기준 차단
+    // targetServer: 목록에서 직접 누를 때 해당 유저 서버
+    // 없으면(빠른 출석 등): getMyServer() 사용
     if (!currentScheduleDate) {
         const boss = schedules.find(s => s.id === currentScheduleId);
-        if (boss && !isMyServerSchedule(boss)) {
-            alert('⚠️ 이 보스는 내 서버 담당이 아닙니다.\n\n서버 배정을 확인하거나 빠른 출석의 서버를 변경해주세요.');
-            return;
+        if (boss) {
+            const cacheLoaded = Object.keys(weekAssignCache).length > 0;
+            if (cacheLoaded) {
+                const serverToCheck = targetServer || getMyServer();
+                if (!isScheduleForServer(boss, serverToCheck)) {
+                    alert('⚠️ 이 보스는 해당 서버 담당이 아닙니다.');
+                    return;
+                }
+            } else {
+                // 캐시 미로드: 안전하게 차단
+                alert('⚠️ 서버 배정 정보를 불러오는 중입니다.\n잠시 후 다시 시도해주세요.');
+                loadWeekAssignment();
+                return;
+            }
         }
     }
 
@@ -4911,12 +4932,48 @@ function getMyServer() {
     return ''; // 미설정
 }
 
+// 특정 서버가 해당 스케줄 담당인지 확인 (범용)
+function isScheduleForServer(schedule, serverKey) {
+    const cacheLoaded = Object.keys(weekAssignCache).length > 0;
+
+    if (cacheLoaded) {
+        const entry = weekAssignCache[schedule.id];
+        if (!entry) return false;
+        const assigned = entry.assignedServers || [];
+        if (assigned.length === 0) return true; // 전체 공통 스케줄
+        if (!serverKey) return false; // 서버 미설정 + 배정 있는 보스
+        return assigned.includes(serverKey);
+    }
+
+    // 캐시 미로드 폴백
+    if (!serverKey) return false;
+    const assigned = schedule.assignedServers;
+    if (!assigned || assigned.length === 0) return true;
+    return assigned.includes(serverKey);
+}
+
 // 스케줄이 내 서버 담당인지 확인
 function isMyServerSchedule(schedule) {
     const myServer = getMyServer();
-    if (!myServer) return true; // 서버 미설정 시 모두 표시
+    const cacheLoaded = Object.keys(weekAssignCache).length > 0;
+
+    // 캐시 로드됨: 배정 데이터 기준으로 판단
+    if (cacheLoaded) {
+        const entry = weekAssignCache[schedule.id];
+        // 이번 주 배정 없는 스케줄 → 내 서버 아님
+        if (!entry) return false;
+        const assigned = entry.assignedServers || [];
+        // 배정 서버가 없는 스케줄(전체 공통) → 허용
+        if (assigned.length === 0) return true;
+        // 서버 미설정 상태에서 배정된 보스 → 차단 (어느 서버 담당인지 모름)
+        if (!myServer) return false;
+        return assigned.includes(myServer);
+    }
+
+    // 캐시 미로드: 서버 미설정이면 차단, 설정됐으면 구 데이터 폴백
+    if (!myServer) return false;
     const assigned = schedule.assignedServers;
-    if (!assigned || assigned.length === 0) return true; // 담당 서버 미설정 시 모두 표시
+    if (!assigned || assigned.length === 0) return true;
     return assigned.includes(myServer);
 }
 
@@ -5136,9 +5193,15 @@ function updateMyNameDisplay() {
             </button>`;
         }).join('');
 
+        // 현재 진행 중인 보스가 선택된 서버 담당인지 확인
+        const currentBossForQuick = schedules.find(s => s.id === currentScheduleId);
+        const isMyBossForQuick = currentBossForQuick ? isScheduleForServer(currentBossForQuick, activeServer) : true;
+
         let quickBtnHtml;
         if (!exists) {
             quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#bdc3c7;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">⭕ 빠른 출석</button>`;
+        } else if (!isMyBossForQuick) {
+            quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#bdc3c7;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">🔕 선택 서버 스케줄 아님</button>`;
         } else if (isAttended) {
             quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#27ae60;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">✅ 출석 완료</button>`;
         } else {
@@ -5200,14 +5263,13 @@ function quickAttendanceByName(name, slotId) {
         return;
     }
 
-    // 선택된 서버 확인
+    // 선택된 서버 먼저 확인
     let selectedServer = '';
     if (slotId) {
         const activeBtn = document.querySelector(`[id^="${slotId}-"].quick-server-active`);
         if (activeBtn) {
             selectedServer = activeBtn.id.replace(slotId + '-', '');
         } else {
-            // active 클래스 없으면 style로 판단 (background 색상 있는 것)
             const allBtns = document.querySelectorAll(`[id^="${slotId}-"]`);
             allBtns.forEach(btn => {
                 if (btn.style.background && btn.style.background !== 'white' && btn.style.background !== '') {
@@ -5217,12 +5279,20 @@ function quickAttendanceByName(name, slotId) {
         }
     }
 
+    // 선택된 서버 기준으로 담당 보스인지 실시간 체크
+    const bossForQuick = schedules.find(s => s.id === currentScheduleId);
+    if (bossForQuick && !isScheduleForServer(bossForQuick, selectedServer || getMyServer())) {
+        alert('⚠️ 이 보스는 선택한 서버 담당이 아닙니다.');
+        updateMyNameDisplay();
+        return;
+    }
+
     console.log(`🚀 빠른 출석: ${name}, 서버: ${selectedServer || '미선택'}`);
 
     // 즉시 로딩 상태로 전환
     setQuickBtnState(name, 'loading');
 
-    const promise = updateAttendance(user.id, 'present');
+    const promise = updateAttendance(user.id, 'present', selectedServer || getMyServer());
     if (!promise) {
         setQuickBtnState(name, 'idle');
         return;
@@ -5434,6 +5504,8 @@ function selectQuickServer(name, serverKey, slotId) {
         // 오늘 스케줄 탭 ⭐ 표시 즉시 갱신
         window._viewServer = (clickedWasActive ? '' : serverKey) || getMyServer() || 'jingir';
         renderTodaySchedules();
+        // 빠른 출석 버튼 상태 갱신 (서버 변경 시 활성/비활성 즉시 반영)
+        updateMyNameDisplay();
     }
 }
 
