@@ -5168,8 +5168,17 @@ function updateMyNameDisplay() {
             { key: 'support', label: '지원',   color: '#27ae60' },
         ];
 
-        // 현재 이 슬롯에 선택된 서버 (설정값 우선, 없으면 첫 번째)
-        const activeServer = slotServer || svList[0].key;
+        // 현재 이 슬롯에 선택된 서버 (설정값 우선, 없으면 유저 서버, 없으면 첫 번째)
+        const activeServer = slotServer || (user && user.server) || svList[0].key;
+        // 저장값이 없으면 폴백값으로 즉시 동기화
+        if (!slotServer && activeServer) {
+            const slotsNow = getMyNameSlots();
+            const idx = slotsNow.findIndex(s => s.name === name);
+            if (idx >= 0 && !slotsNow[idx].server) {
+                slotsNow[idx].server = activeServer;
+                setMyNames(slotsNow);
+            }
+        }
         const slotId = 'quick-slot-' + safeName.replace(/[^a-zA-Z0-9]/g, '_');
 
         const serverToggleBtns = svList.map(s => {
@@ -5292,7 +5301,18 @@ function quickAttendanceByName(name, slotId) {
     // 즉시 로딩 상태로 전환
     setQuickBtnState(name, 'loading');
 
-    const promise = updateAttendance(user.id, 'present', selectedServer || getMyServer());
+    // 선택한 서버가 기존 저장 서버와 다르면 Firebase 유저 서버도 업데이트
+    const finalServer = selectedServer || getMyServer();
+    if (finalServer && user.server !== finalServer) {
+        db.ref(`boss_attendance_users/${user.id}/server`).set(finalServer).then(() => {
+            user.server = finalServer; // 로컬 캐시도 즉시 반영
+            console.log(`🔄 서버 변경 저장: ${name} → ${finalServer}`);
+        }).catch(err => {
+            console.warn('서버 변경 저장 실패:', err);
+        });
+    }
+
+    const promise = updateAttendance(user.id, 'present', finalServer);
     if (!promise) {
         setQuickBtnState(name, 'idle');
         return;
@@ -5474,13 +5494,15 @@ function selectQuickServer(name, serverKey, slotId) {
     const allBtns = document.querySelectorAll('[id^="' + slotId + '-"]');
     const clickedWasActive = document.getElementById(slotId + '-' + serverKey)?.classList.contains('quick-server-active');
 
+    // 이미 선택된 버튼 재클릭 시 무시 (서버는 항상 하나 선택 유지)
+    if (clickedWasActive) return;
+
     allBtns.forEach(btn => {
         const btnKey = btn.id.replace(slotId + '-', '');
         const c = colorMap[btnKey] || '#666';
         const isThis = btnKey === serverKey;
-        const becomeActive = isThis && !clickedWasActive; // 같은 버튼 재클릭 시 해제
 
-        if (becomeActive) {
+        if (isThis) {
             // 선택 상태: 색상 꽉 참 + 크게
             btn.classList.add('quick-server-active');
             btn.style.cssText = `flex:2; padding:8px 6px; border-radius:7px; border:2px solid ${c};
@@ -5499,10 +5521,10 @@ function selectQuickServer(name, serverKey, slotId) {
     const slots = getMyNameSlots();
     const slotIdx = slots.findIndex(s => s.name === name);
     if (slotIdx >= 0) {
-        slots[slotIdx].server = clickedWasActive ? '' : serverKey;
+        slots[slotIdx].server = serverKey;
         setMyNames(slots);
         // 오늘 스케줄 탭 ⭐ 표시 즉시 갱신
-        window._viewServer = (clickedWasActive ? '' : serverKey) || getMyServer() || 'jingir';
+        window._viewServer = serverKey || getMyServer() || 'jingir';
         renderTodaySchedules();
         // 빠른 출석 버튼 상태 갱신 (서버 변경 시 활성/비활성 즉시 반영)
         updateMyNameDisplay();
