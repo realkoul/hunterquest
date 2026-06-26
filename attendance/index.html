@@ -63,6 +63,9 @@
         .attendance-btn.btn-x { border-color: #c0392b; color: #c0392b; background: white; }
         .attendance-btn.btn-x:hover { background: #c0392b; color: white; }
         .attendance-btn.btn-x.active { background: #c0392b; color: white; }
+        .attendance-btn.btn-war { border-color: #e67e22; color: #e67e22; background: white; }
+        .attendance-btn.btn-war:hover { background: #e67e22; color: white; }
+        .attendance-btn.btn-war.active { background: #e67e22; color: white; }
         
         /* 통계 */
         .stat-box { background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }
@@ -2130,7 +2133,10 @@ function renderAttendanceTable() {
         // 해당 유저의 서버 기준으로 담당 보스인지 판단
         // 관리자 수동 모드(과거 날짜 선택)만: 서버 무관 전체 허용
         const currentBossObj = schedules.find(s => s.id === currentScheduleId);
-        const isBossUserServer = !currentBossObj || isScheduleForServer(currentBossObj, u.server);
+        // 진행 중인 보스가 있고 캐시 로드됐을 때만 서버 배정 판단
+        // 그 외(보스 없음, 캐시 미로드)는 내 서버 담당으로 간주
+        const isUserServerBoss = !currentBossObj || !currentScheduleId
+            || isScheduleForServer(currentBossObj, u.server);
 
         let actionButtonsHtml;
         if (isAdmin && currentScheduleDate) {
@@ -2139,15 +2145,19 @@ function renderAttendanceTable() {
                 <button class="attendance-btn btn-o ${(status==='present'||status==='late')?'active':''}" onclick="updateAttendance(${u.id}, 'present')">⭕ 출석</button>
                 <button class="attendance-btn btn-x ${status==='absent'?'active':''}" onclick="updateAttendance(${u.id}, 'absent')">❌ 불참</button>
             `;
-        } else if (!isBossUserServer) {
-            // 해당 유저 서버 스케줄 아님 — 버튼 숨김
-            actionButtonsHtml = `<span style="color:#bbb; font-size:0.8rem;">-</span>`;
-        } else {
-            // 사용자 모드 + 관리자 자동 모드 공통
+        } else if (isUserServerBoss) {
+            // 내 서버 담당 보스 — ⭕ 출석 + ⚔️ 쟁참석 함께 표시
             const isMarked = status === 'present' || status === 'late';
-            actionButtonsHtml = `
-                <button class="attendance-btn btn-o ${isMarked?'active':''}" onclick="updateAttendance(${u.id}, 'present', '${u.server}')">⭕ 출석</button>
-            `;
+            actionButtonsHtml = isMarked
+                ? `<button class="attendance-btn btn-o active" disabled>✅ 출석완료</button>`
+                : `<button class="attendance-btn btn-o" onclick="updateAttendance(${u.id}, 'present', '${u.server}')">⭕ 출석</button>
+                   <button class="attendance-btn btn-war" onclick="updateAttendance(${u.id}, 'present', 'war')">⚔️ 쟁참석</button>`;
+        } else {
+            // 내 서버 스케줄 아님 — ⚔️ 쟁참석만 표시
+            const isWarMarked = status === 'present' || status === 'late';
+            actionButtonsHtml = isWarMarked
+                ? `<button class="attendance-btn btn-o active" disabled>✅ 출석완료</button>`
+                : `<button class="attendance-btn btn-war" onclick="updateAttendance(${u.id}, 'present', 'war')">⚔️ 쟁참석</button>`;
         }
         
         return `
@@ -2175,10 +2185,8 @@ function updateAttendance(userId, requestedStatus, targetServer) {
         return;
     }
 
-    // 자동 모드에서 서버 기준 차단
-    // targetServer: 목록에서 직접 누를 때 해당 유저 서버
-    // 없으면(빠른 출석 등): getMyServer() 사용
-    if (!currentScheduleDate) {
+    // 자동 모드에서 서버 기준 차단 (쟁참석 모드는 제외)
+    if (!currentScheduleDate && targetServer !== 'war') {
         const boss = schedules.find(s => s.id === currentScheduleId);
         if (boss) {
             const cacheLoaded = Object.keys(weekAssignCache).length > 0;
@@ -2574,7 +2582,16 @@ function calculateStats(attendanceData) {
     // 이번 주에 스케줄된 총 보스 수 계산 (UI 표시용 — '이번 주 총 스케줄')
     // 주차 배정 캐시가 있는 경우: 내 서버에 배정된 스케줄만 집계
     // 캐시 없는 경우: 전체 스케줄 수로 폴백
-    const statsMyServer = getMyServer();
+    // war 선택 중에는 실제 저장된 서버로 통계 계산
+    const rawStatsServer = getMyServer(); // war 필터 적용됨
+    const statsMyServer = rawStatsServer || (() => {
+        // war 선택 중이면 슬롯엔 'war'만 남으므로 users 목록에서 실제 서버 복구
+        for (const nm of getMyNames()) {
+            const u = users.find(x => x.name === nm);
+            if (u && u.server && u.server !== 'war') return u.server;
+        }
+        return '';
+    })();
     const statsCacheLoaded = Object.keys(weekAssignCache).length > 0;
 
     let totalSchedules = 0;
@@ -4928,8 +4945,9 @@ function isMyServerScheduleWeekly(schedule, serverKey) {
 // ── 내 서버 가져오기 (빠른 출석의 서버 선택 기준) ──
 function getMyServer() {
     const slots = getMyNameSlots();
-    if (slots.length > 0 && slots[0].server) return slots[0].server;
-    return ''; // 미설정
+    // war는 임시 선택 상태 — 실제 서버로 취급하지 않음
+    const server = slots.length > 0 ? slots[0].server : '';
+    return (server && server !== 'war') ? server : '';
 }
 
 // 특정 서버가 해당 스케줄 담당인지 확인 (범용)
@@ -5166,12 +5184,13 @@ function updateMyNameDisplay() {
             { key: 'jingir',  label: '진기르', color: '#3498db' },
             { key: 'pandora', label: '판도라', color: '#9b59b6' },
             { key: 'support', label: '지원',   color: '#27ae60' },
+            { key: 'war',     label: '⚔️ 쟁참석', color: '#e67e22' },
         ];
 
         // 현재 이 슬롯에 선택된 서버 (설정값 우선, 없으면 유저 서버, 없으면 첫 번째)
+        // war는 임시 선택 상태이므로 폴백 저장 제외
         const activeServer = slotServer || (user && user.server) || svList[0].key;
-        // 저장값이 없으면 폴백값으로 즉시 동기화
-        if (!slotServer && activeServer) {
+        if (!slotServer && activeServer && slotServer !== 'war') {
             const slotsNow = getMyNameSlots();
             const idx = slotsNow.findIndex(s => s.name === name);
             if (idx >= 0 && !slotsNow[idx].server) {
@@ -5183,38 +5202,37 @@ function updateMyNameDisplay() {
 
         const serverToggleBtns = svList.map(s => {
             const isAct = activeServer === s.key;
-            // 선택: 색상 꽉 참 + 크고 굵게 / 미선택: 흐린 회색 + 작고 옅게
             const style = isAct
-                ? `flex:${isAct ? 2 : 1}; padding:8px 6px; border-radius:7px; border:2px solid ${s.color};
+                ? `flex:${s.key !== 'war' ? 1 : 2}; padding:8px 6px; border-radius:7px; border:2px solid ${s.color};
                    background:${s.color}; color:white;
                    font-weight:bold; font-size:0.9rem; cursor:pointer;
                    transition:all 0.2s; box-shadow:0 2px 6px ${s.color}55;`
                 : `flex:1; padding:6px 4px; border-radius:7px; border:1px solid #d0d0d0;
                    background:#f0f0f0; color:#aaaaaa;
-                   font-weight:normal; font-size:0.78rem; cursor:pointer;
+                   font-weight:normal; font-size:0.85rem; cursor:pointer;
                    transition:all 0.2s;`;
             return `<button type="button"
                 id="${slotId}-${s.key}"
                 class="${isAct ? 'quick-server-active' : ''}"
                 onclick="selectQuickServer('${safeName}', '${s.key}', '${slotId}')"
-                style="${style}">
-                ${s.label}
-            </button>`;
+                style="${style}">${s.label}</button>`;
         }).join('');
 
-        // 현재 진행 중인 보스가 선택된 서버 담당인지 확인
+        // 현재 진행 중인 보스가 선택된 서버 담당인지 확인 (쟁참석은 스케줄 무관 허용)
         const currentBossForQuick = schedules.find(s => s.id === currentScheduleId);
-        const isMyBossForQuick = currentBossForQuick ? isScheduleForServer(currentBossForQuick, activeServer) : true;
+        const isWarMode = activeServer === 'war';
+        const isMyBossForQuick = isWarMode || (currentBossForQuick ? isScheduleForServer(currentBossForQuick, activeServer) : true);
 
         let quickBtnHtml;
         if (!exists) {
-            quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#bdc3c7;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">⭕ 빠른 출석</button>`;
+            quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#bdc3c7;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">⭕ 출석하기</button>`;
         } else if (!isMyBossForQuick) {
             quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#bdc3c7;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">🔕 선택 서버 스케줄 아님</button>`;
         } else if (isAttended) {
             quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#27ae60;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">✅ 출석 완료</button>`;
         } else {
-            quickBtnHtml = `<button data-quick-name="${safeName}" data-slot-id="${slotId}" onclick="quickAttendanceByName('${safeName}', '${slotId}')" style="width:100%;padding:9px;background:#16a085;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.95rem;font-weight:bold;">⭕ 빠른 출석</button>`;
+            const btnColor = isWarMode ? '#e67e22' : '#16a085';
+            quickBtnHtml = `<button data-quick-name="${safeName}" data-slot-id="${slotId}" onclick="quickAttendanceByName('${safeName}', '${slotId}')" style="width:100%;padding:9px;background:${btnColor};color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.95rem;font-weight:bold;">⭕ 출석하기</button>`;
         }
 
         return `
@@ -5254,7 +5272,7 @@ function setQuickBtnState(name, state) {
             btn.style.cursor = 'not-allowed';
         } else { // idle — 실패 시 원상 복구
             btn.disabled = false;
-            btn.textContent = '⭕ 빠른 출석';
+            btn.textContent = '⭕ 출석하기';
             btn.style.background = '#16a085';
             btn.style.cursor = 'pointer';
         }
@@ -5288,31 +5306,36 @@ function quickAttendanceByName(name, slotId) {
         }
     }
 
-    // 선택된 서버 기준으로 담당 보스인지 실시간 체크
-    const bossForQuick = schedules.find(s => s.id === currentScheduleId);
-    if (bossForQuick && !isScheduleForServer(bossForQuick, selectedServer || getMyServer())) {
-        alert('⚠️ 이 보스는 선택한 서버 담당이 아닙니다.');
-        updateMyNameDisplay();
-        return;
+    // 쟁참석 모드 확인
+    const isWarAttend = selectedServer === 'war';
+
+    // 쟁참석이 아닌 경우에만 서버 체크
+    if (!isWarAttend) {
+        const bossForQuick = schedules.find(s => s.id === currentScheduleId);
+        if (bossForQuick && !isScheduleForServer(bossForQuick, selectedServer || getMyServer())) {
+            alert('⚠️ 이 보스는 선택한 서버 담당이 아닙니다.');
+            updateMyNameDisplay();
+            return;
+        }
     }
 
-    console.log(`🚀 빠른 출석: ${name}, 서버: ${selectedServer || '미선택'}`);
+    console.log(`🚀 빠른 출석: ${name}, 서버: ${selectedServer || '미선택'}${isWarAttend ? ' (쟁참석)' : ''}`);
 
     // 즉시 로딩 상태로 전환
     setQuickBtnState(name, 'loading');
 
-    // 선택한 서버가 기존 저장 서버와 다르면 Firebase 유저 서버도 업데이트
-    const finalServer = selectedServer || getMyServer();
-    if (finalServer && user.server !== finalServer) {
+    // 쟁참석이 아닌 경우에만 서버 변경 저장
+    const finalServer = isWarAttend ? (user.server || getMyServer()) : (selectedServer || getMyServer());
+    if (!isWarAttend && finalServer && user.server !== finalServer) {
         db.ref(`boss_attendance_users/${user.id}/server`).set(finalServer).then(() => {
-            user.server = finalServer; // 로컬 캐시도 즉시 반영
+            user.server = finalServer;
             console.log(`🔄 서버 변경 저장: ${name} → ${finalServer}`);
         }).catch(err => {
             console.warn('서버 변경 저장 실패:', err);
         });
     }
 
-    const promise = updateAttendance(user.id, 'present', finalServer);
+    const promise = updateAttendance(user.id, 'present', isWarAttend ? 'war' : finalServer);
     if (!promise) {
         setQuickBtnState(name, 'idle');
         return;
@@ -5467,7 +5490,7 @@ function copyAttendanceLinkForName(name) {
 
 // 내 이름 슬롯 서버 선택 (토글)
 function selectMyServer(slotIdx, serverKey) {
-    const colorMap = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+    const colorMap = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60', war: '#e67e22' };
     const btns = document.querySelectorAll('.my-server-btn[data-slot="' + slotIdx + '"]');
     btns.forEach(btn => {
         const btnServer = btn.getAttribute('data-server');
@@ -5490,7 +5513,7 @@ function selectMyServer(slotIdx, serverKey) {
 
 // 빠른 출석 박스 서버 선택 (토글, 설정 저장도 함께)
 function selectQuickServer(name, serverKey, slotId) {
-    const colorMap = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+    const colorMap = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60', war: '#e67e22' };
     const allBtns = document.querySelectorAll('[id^="' + slotId + '-"]');
     const clickedWasActive = document.getElementById(slotId + '-' + serverKey)?.classList.contains('quick-server-active');
 
@@ -5518,15 +5541,18 @@ function selectQuickServer(name, serverKey, slotId) {
     });
 
     // 선택한 서버를 슬롯 설정에도 저장
+    // war: slot.server에 'war' 임시 저장 (출석 시에는 실제 서버 정보 유지)
     const slots = getMyNameSlots();
     const slotIdx = slots.findIndex(s => s.name === name);
     if (slotIdx >= 0) {
-        slots[slotIdx].server = serverKey;
+        slots[slotIdx].server = serverKey; // war 포함 그대로 저장 (임시 선택 상태)
         setMyNames(slots);
-        // 오늘 스케줄 탭 ⭐ 표시 즉시 갱신
-        window._viewServer = serverKey || getMyServer() || 'jingir';
-        renderTodaySchedules();
-        // 빠른 출석 버튼 상태 갱신 (서버 변경 시 활성/비활성 즉시 반영)
+        // 오늘 스케줄 탭 ⭐ 표시 (쟁참석 선택 시엔 탭 변경 없음)
+        if (serverKey !== 'war') {
+            window._viewServer = serverKey || getMyServer() || 'jingir';
+            renderTodaySchedules();
+        }
+        // 빠른 출석 버튼 상태 갱신
         updateMyNameDisplay();
     }
 }
