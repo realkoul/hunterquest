@@ -271,6 +271,28 @@
     </style>
 </head>
 <body>
+<!-- 데이터 로딩 오버레이 -->
+<div id="loading-overlay" style="
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(255,255,255,0.92); z-index: 9999;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px;">
+    <div style="font-size: 2rem;">⚔️</div>
+    <div style="font-size: 1.1rem; color: #2c3e50; font-weight: bold;">헌터혈맹 출석관리</div>
+    <div style="font-size: 0.9rem; color: #7f8c8d;">데이터를 불러오는 중...</div>
+    <div style="width: 200px; height: 4px; background: #ecf0f1; border-radius: 2px; overflow: hidden;">
+        <div style="height: 100%; background: #3498db; border-radius: 2px;
+            animation: loadingBar 1.2s ease-in-out infinite;">
+        </div>
+    </div>
+</div>
+<style>
+@keyframes loadingBar {
+    0% { width: 0%; margin-left: 0; }
+    50% { width: 60%; margin-left: 20%; }
+    100% { width: 0%; margin-left: 100%; }
+}
+</style>
 
 <!-- ===== 잠금 화면 ===== -->
 <div id="lock-screen">
@@ -331,19 +353,6 @@
         </div>
         
         <!-- 아이템 드랍 기록 -->
-        <div class="card" id="item-drop-section" style="display: none;">
-            <h2>📦 아이템 드랍</h2>
-            <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; align-items: center;">
-                <select id="drop-item-select" style="flex: 1; min-width: 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
-                    <option value="">아이템 선택</option>
-                </select>
-                <select id="drop-winner-select" style="flex: 1; min-width: 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
-                    <option value="">획득자 선택</option>
-                </select>
-                <button class="btn btn-primary" onclick="addDrop()" style="padding: 10px 20px; font-size: 1rem;">➕ 추가</button>
-            </div>
-            <div id="drops-list"></div>
-        </div>
         
         <div class="card">
             <h2>📋 출석 체크</h2>
@@ -506,17 +515,11 @@
                 <p style="color:#7f8c8d; margin:15px 0 15px;">각 보스별로 드랍되는 아이템을 관리합니다. 출석 체크 시 선택할 수 있습니다.</p>
                 <div style="margin-bottom:15px;">
                     <label style="color:#2c3e50; font-weight:bold; margin-bottom:8px; display:block;">보스 선택:</label>
-                    <select id="admin-boss-selector" onchange="loadAdminBossItems()" style="width:100%; padding:10px; font-size:1rem; border:2px solid #5D6D7E; border-radius:6px;">
+                    <select id="admin-boss-selector" onchange="populateAdminBossSelector()" style="width:100%; padding:10px; font-size:1rem; border:2px solid #5D6D7E; border-radius:6px;">
                         <option value="">보스를 선택하세요</option>
                     </select>
                 </div>
-                <div id="admin-boss-items-container" style="display:none;">
-                    <div style="display:flex; gap:10px; margin-bottom:15px; flex-wrap:wrap;">
-                        <input type="text" id="admin-new-item-name" placeholder="아이템 이름 입력..." style="flex:1; min-width:200px; padding:10px; font-size:1rem; border:2px solid #e0e0e0; border-radius:6px;">
-                        <button class="btn btn-success" onclick="addAdminBossItem()" style="padding:10px 20px; font-size:1rem;">➕ 아이템 추가</button>
-                    </div>
-                    <div id="admin-boss-items-list" style="display:flex; flex-wrap:wrap; gap:8px; min-height:40px; padding:15px; background:#f8f9fa; border-radius:6px;"></div>
-                </div>
+
             </div>
         </div>
 
@@ -999,6 +1002,19 @@ const db = firebase.database();
 // 전역 변수
 let users = [];
 let schedules = [];
+
+// 데이터 로드 상태 추적
+const dataLoadState = { users: false, schedules: false, weekAssign: false };
+function checkAllDataLoaded() {
+    if (dataLoadState.users && dataLoadState.schedules && dataLoadState.weekAssign) {
+        // 모든 데이터 로드 완료 → 로딩 오버레이 제거
+        const overlay = document.getElementById('loading-overlay');
+        if (overlay) overlay.style.display = 'none';
+        updateMyNameDisplay();
+        renderAttendanceTable();
+        renderTodaySchedules();
+    }
+}
 let todayAttendance = null;
 let currentScheduleId = null;
 let currentScheduleDate = null; // 수동 선택된 과거 보스의 날짜 (null이면 오늘)
@@ -1222,16 +1238,12 @@ function refreshTimeBasedUI() {
         playBossStartSound();
         renderTodaySchedules();
         loadTodayAttendance();
-        loadBossItems(newCurrent.id);
-        loadDrops(newCurrent.id);
         console.log('⏰ 시간 변화 → 보스 전환:', newCurrent.name);
     } else if (!newCurrent && oldId) {
         // 출석 가능 윈도우 종료
         currentScheduleId = null;
         renderTodaySchedules();
         renderAttendanceTable();
-        const itemSection = document.getElementById('item-drop-section');
-        if (itemSection) itemSection.style.display = 'none';
         console.log('⏰ 출석 윈도우 종료');
     } else {
         // 보스는 그대로지만 시간이 흘러서 정시 전후가 바뀔 수 있음 → 테이블 재렌더링
@@ -1303,15 +1315,12 @@ function changeBoss() {
             currentScheduleId = current.id;
             renderTodaySchedules();
             renderAttendanceTable();
-            loadBossItems(current.id);
-            loadDrops(current.id);
             console.log('✅ 현재 보스로 전환:', current.name);
         } else {
             currentScheduleId = null;
             renderTodaySchedules();
             renderAttendanceTable();
-            document.getElementById('item-drop-section').style.display = 'none';
-            console.log('⚠️ 현재 진행 중인 보스가 없습니다.');
+                console.log('⚠️ 현재 진행 중인 보스가 없습니다.');
         }
     } else {
         // 수동 선택
@@ -1355,8 +1364,6 @@ function changeBoss() {
             db.ref(`boss_attendance/${attendanceKey}`).once('value', (snapshot) => {
                 todayAttendance = snapshot.val() || { attendees: {} };
                 renderAttendanceTable();
-                loadBossItems(bossId);
-                loadDrops(bossId, dateStr);
                 console.log('✅ 보스 전환:', boss.name, dateStr);
             });
         }
@@ -1388,16 +1395,14 @@ function loadUsers() {
         const data = snapshot.val();
         users = data ? Object.values(data).filter(u => u && u.id && u.name) : [];
         renderAttendanceTable();
-        renderUserList(); // 명단 관리 탭 업데이트
-        
-        // 내 이름 빠른 출석 영역 갱신 (users 배열에 의존)
-        if (typeof updateMyNameDisplay === 'function') {
-            updateMyNameDisplay();
-        }
-        
-        // 사용자 로드 완료 후 URL 파라미터 체크
-        if (users.length > 0) {
-            checkUrlParams();
+        renderUserList();
+        if (typeof updateMyNameDisplay === 'function') updateMyNameDisplay();
+        if (users.length > 0) checkUrlParams();
+
+        // 최초 1회만 로드 완료 처리
+        if (!dataLoadState.users) {
+            dataLoadState.users = true;
+            checkAllDataLoaded();
         }
     });
 };
@@ -1407,11 +1412,17 @@ function loadSchedules() {
     db.ref('boss_schedules').on('value', (snapshot) => {
         const data = snapshot.val();
         schedules = data ? Object.values(data).filter(s => s && s.isActive) : [];
-        renderSchedules(); // 주간출석현황 탭 (달력)
-        renderSchedulesList(); // 관리페이지 탭 (리스트)
+        renderSchedules();
+        renderSchedulesList();
         renderTodaySchedules();
         loadTodayAttendance();
-        populateBossSelector(); // 스케줄 로드 완료 후 드롭다운 채우기
+        populateBossSelector();
+
+        // 최초 1회만 로드 완료 처리
+        if (!dataLoadState.schedules) {
+            dataLoadState.schedules = true;
+            checkAllDataLoaded();
+        }
     });
 };
 
@@ -4215,8 +4226,6 @@ function saveRelics() {
 
 // ========== 관리페이지 보스 아이템 ==========
 
-let adminCurrentBossId = null;
-let adminCurrentBossItems = [];
 
 // 관리페이지 보스 선택 드롭다운 채우기
 function populateAdminBossSelector() {
@@ -4227,91 +4236,6 @@ function populateAdminBossSelector() {
         schedules.map(s => `<option value="${s.id}">${s.name} (${s.time})</option>`).join('');
 }
 
-// 관리페이지에서 보스 아이템 로드
-function loadAdminBossItems() {
-    const selector = document.getElementById('admin-boss-selector');
-    const bossId = selector.value;
-    
-    if (!bossId) {
-        document.getElementById('admin-boss-items-container').style.display = 'none';
-        return;
-    }
-    
-    adminCurrentBossId = bossId;
-    document.getElementById('admin-boss-items-container').style.display = 'block';
-    
-    db.ref(`boss_items/${bossId}`).on('value', (snapshot) => {
-        const data = snapshot.val();
-        adminCurrentBossItems = data?.items || [];
-        renderAdminBossItems();
-    });
-}
-
-// 관리페이지 아이템 목록 렌더링
-function renderAdminBossItems() {
-    const container = document.getElementById('admin-boss-items-list');
-    
-    if (adminCurrentBossItems.length === 0) {
-        container.innerHTML = '<p style="color: #95a5a6; font-size: 0.95rem; margin: 0;">등록된 아이템이 없습니다. 아이템을 추가하세요.</p>';
-        return;
-    }
-    
-    container.innerHTML = adminCurrentBossItems.map((item, index) => `
-        <span style="display: inline-flex; align-items: center; background: #d5f4e6; color: #16a085; padding: 8px 14px; border-radius: 6px; font-size: 1rem; font-weight: 500;">
-            ${item}
-            <button onclick="deleteAdminBossItem(${index})" style="margin-left: 10px; background: none; border: none; color: #c0392b; cursor: pointer; font-size: 1.2rem; padding: 0; line-height: 1; font-weight: bold;">×</button>
-        </span>
-    `).join('');
-}
-
-// 관리페이지 아이템 추가
-function addAdminBossItem() {
-    const input = document.getElementById('admin-new-item-name');
-    const itemName = input.value.trim();
-    
-    if (!itemName) {
-        alert('아이템 이름을 입력하세요.');
-        return;
-    }
-    
-    if (!adminCurrentBossId) {
-        alert('보스를 먼저 선택하세요.');
-        return;
-    }
-    
-    if (adminCurrentBossItems.includes(itemName)) {
-        alert('이미 등록된 아이템입니다.');
-        return;
-    }
-    
-    const newItems = [...adminCurrentBossItems, itemName];
-    
-    db.ref(`boss_items/${adminCurrentBossId}/items`).set(newItems).then(() => {
-        input.value = '';
-        alert(`✅ "${itemName}" 아이템이 추가되었습니다!`);
-    }).catch(error => {
-        console.error('Error:', error);
-        alert('⚠️ 아이템 추가 실패: ' + error.message);
-    });
-}
-
-// 관리페이지 아이템 삭제
-function deleteAdminBossItem(index) {
-    const itemName = adminCurrentBossItems[index];
-    
-    if (!confirm(`"${itemName}" 아이템을 삭제하시겠습니까?`)) {
-        return;
-    }
-    
-    const newItems = adminCurrentBossItems.filter((_, i) => i !== index);
-    
-    db.ref(`boss_items/${adminCurrentBossId}/items`).set(newItems).then(() => {
-        alert(`✅ "${itemName}" 아이템이 삭제되었습니다!`);
-    }).catch(error => {
-        console.error('Error:', error);
-        alert('⚠️ 아이템 삭제 실패: ' + error.message);
-    });
-}
 
 // ========== 데이터 관리 ==========
 
@@ -4739,241 +4663,6 @@ function downloadCSV(content, filename) {
 
 // ========== 아이템 드랍 관리 ==========
 
-let currentBossItems = [];
-let currentDrops = [];
-
-// 보스별 아이템 목록 로드
-function loadBossItems(bossId) {
-    if (!bossId || !isAdmin) {
-        document.getElementById('item-drop-section').style.display = 'none';
-        return;
-    }
-    
-    document.getElementById('item-drop-section').style.display = 'block';
-    
-    db.ref(`boss_items/${bossId}`).on('value', (snapshot) => {
-        const data = snapshot.val();
-        currentBossItems = data?.items || [];
-        renderBossItems();
-        updateDropSelects();
-    });
-}
-
-// 아이템 목록 렌더링
-function renderBossItems() {
-    const container = document.getElementById('boss-items-list');
-    
-    if (currentBossItems.length === 0) {
-        container.innerHTML = '<p style="color: #95a5a6; font-size: 0.9rem; margin: 0;">등록된 아이템이 없습니다. 아이템을 추가하세요.</p>';
-        return;
-    }
-    
-    container.innerHTML = currentBossItems.map((item, index) => `
-        <span style="display: inline-flex; align-items: center; background: #d5f4e6; color: #16a085; padding: 5px 10px; border-radius: 4px; font-size: 0.9rem;">
-            ${item}
-            <button onclick="deleteBossItem(${index})" style="margin-left: 8px; background: none; border: none; color: #c0392b; cursor: pointer; font-size: 1rem; padding: 0; line-height: 1;">×</button>
-        </span>
-    `).join('');
-}
-
-// 아이템 추가
-function addBossItem() {
-    const input = document.getElementById('new-item-name');
-    const itemName = input.value.trim();
-    
-    if (!itemName) {
-        alert('아이템 이름을 입력하세요.');
-        return;
-    }
-    
-    if (!currentScheduleId) {
-        alert('보스를 먼저 선택하세요.');
-        return;
-    }
-    
-    if (currentBossItems.includes(itemName)) {
-        alert('이미 등록된 아이템입니다.');
-        return;
-    }
-    
-    const newItems = [...currentBossItems, itemName];
-    
-    db.ref(`boss_items/${currentScheduleId}/items`).set(newItems).then(() => {
-        input.value = '';
-        alert(`✅ "${itemName}" 아이템이 추가되었습니다!`);
-    }).catch(error => {
-        console.error('Error:', error);
-        alert('⚠️ 아이템 추가 실패: ' + error.message);
-    });
-}
-
-// 아이템 삭제
-function deleteBossItem(index) {
-    const itemName = currentBossItems[index];
-    
-    if (!confirm(`"${itemName}" 아이템을 삭제하시겠습니까?`)) {
-        return;
-    }
-    
-    const newItems = currentBossItems.filter((_, i) => i !== index);
-    
-    db.ref(`boss_items/${currentScheduleId}/items`).set(newItems).then(() => {
-        alert(`✅ "${itemName}" 아이템이 삭제되었습니다!`);
-    }).catch(error => {
-        console.error('Error:', error);
-        alert('⚠️ 아이템 삭제 실패: ' + error.message);
-    });
-}
-
-// 드랍 셀렉트 업데이트
-function updateDropSelects() {
-    const itemSelect = document.getElementById('drop-item-select');
-    const winnerSelect = document.getElementById('drop-winner-select');
-    
-    // 아이템 목록
-    itemSelect.innerHTML = '<option value="">아이템 선택</option>' +
-        currentBossItems.map(item => `<option value="${item}">${item}</option>`).join('');
-    
-    // 사용자 목록
-    winnerSelect.innerHTML = '<option value="">획득자 선택</option>' +
-        users.map(u => `<option value="${u.id}">${u.name}</option>`).join('');
-}
-
-// 드랍 기록 로드
-function loadDrops(bossId, dateStr = null) {
-    if (!bossId) return;
-    
-    const date = dateStr || formatLocalDate(new Date());
-    const dropKey = `${date}_${bossId}`;
-    
-    db.ref(`boss_drops/${dropKey}`).on('value', (snapshot) => {
-        const data = snapshot.val();
-        currentDrops = data?.items || [];
-        renderDrops();
-    });
-}
-
-// 드랍 목록 렌더링
-function renderDrops() {
-    const container = document.getElementById('drops-list');
-    
-    if (currentDrops.length === 0) {
-        container.innerHTML = '<p style="color: #95a5a6; text-align: center; padding: 20px;">아직 드랍 기록이 없습니다.</p>';
-        return;
-    }
-    
-    container.innerHTML = currentDrops.map((drop, index) => {
-        const deliveredClass = drop.delivered ? 'status-present' : 'status-absent';
-        const deliveredText = drop.delivered ? '✅ 전달됨' : '⏳ 미전달';
-        
-        return `
-            <div style="background: white; border: 2px solid #e0e0e0; border-radius: 6px; padding: 12px; margin-bottom: 10px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                    <div style="flex: 1; min-width: 200px;">
-                        <div style="font-weight: bold; color: #2c3e50; margin-bottom: 5px; font-size: 1.05rem;">${drop.itemName}</div>
-                        <div style="color: #7f8c8d; font-size: 0.9rem;">획득: <strong>${drop.winner}</strong></div>
-                        <div style="color: #95a5a6; font-size: 0.85rem; margin-top: 3px;">${new Date(drop.timestamp).toLocaleString('ko-KR')}</div>
-                    </div>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                        <label style="display: flex; align-items: center; cursor: pointer; padding: 6px 12px; background: ${drop.delivered ? '#d5f4e6' : '#fadbd8'}; border-radius: 4px;">
-                            <input type="checkbox" ${drop.delivered ? 'checked' : ''} onchange="toggleDelivered(${index})" style="margin-right: 6px; width: 18px; height: 18px; cursor: pointer;">
-                            <span style="color: ${drop.delivered ? '#16a085' : '#c0392b'}; font-weight: bold; font-size: 0.9rem;">${deliveredText}</span>
-                        </label>
-                        <button class="btn btn-danger" onclick="deleteDrop(${index})" style="padding: 6px 12px; font-size: 0.9rem;">🗑️</button>
-                    </div>
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
-// 드랍 추가
-function addDrop() {
-    const itemSelect = document.getElementById('drop-item-select');
-    const winnerSelect = document.getElementById('drop-winner-select');
-    
-    const itemName = itemSelect.value;
-    const winnerId = parseInt(winnerSelect.value);
-    
-    if (!itemName) {
-        alert('아이템을 선택하세요.');
-        return;
-    }
-    
-    if (!winnerId) {
-        alert('획득자를 선택하세요.');
-        return;
-    }
-    
-    if (!currentScheduleId) {
-        alert('보스를 먼저 선택하세요.');
-        return;
-    }
-    
-    const winner = users.find(u => u.id === winnerId);
-    if (!winner) {
-        alert('획득자를 찾을 수 없습니다.');
-        return;
-    }
-    
-    const date = currentScheduleDate || formatLocalDate(new Date());
-    const dropKey = `${date}_${currentScheduleId}`;
-    
-    const newDrop = {
-        id: Date.now(),
-        itemName: itemName,
-        winner: winner.name,
-        winnerId: winnerId,
-        delivered: false,
-        timestamp: new Date().toISOString()
-    };
-    
-    const newDrops = [...currentDrops, newDrop];
-    
-    db.ref(`boss_drops/${dropKey}/items`).set(newDrops).then(() => {
-        itemSelect.value = '';
-        winnerSelect.value = '';
-        alert(`✅ "${itemName}" 드랍이 기록되었습니다!`);
-    }).catch(error => {
-        console.error('Error:', error);
-        alert('⚠️ 드랍 기록 실패: ' + error.message);
-    });
-}
-
-// 전달 상태 토글
-function toggleDelivered(index) {
-    const drop = currentDrops[index];
-    drop.delivered = !drop.delivered;
-    
-    const date = currentScheduleDate || formatLocalDate(new Date());
-    const dropKey = `${date}_${currentScheduleId}`;
-    
-    db.ref(`boss_drops/${dropKey}/items`).set(currentDrops).catch(error => {
-        console.error('Error:', error);
-        alert('⚠️ 전달 상태 변경 실패: ' + error.message);
-    });
-}
-
-// 드랍 삭제
-function deleteDrop(index) {
-    const drop = currentDrops[index];
-    
-    if (!confirm(`"${drop.itemName}" 드랍을 삭제하시겠습니까?`)) {
-        return;
-    }
-    
-    const newDrops = currentDrops.filter((_, i) => i !== index);
-    
-    const date = currentScheduleDate || formatLocalDate(new Date());
-    const dropKey = `${date}_${currentScheduleId}`;
-    
-    db.ref(`boss_drops/${dropKey}/items`).set(newDrops).then(() => {
-        alert(`✅ 드랍이 삭제되었습니다!`);
-    }).catch(error => {
-        console.error('Error:', error);
-        alert('⚠️ 드랍 삭제 실패: ' + error.message);
-    });
-}
 
 // ========== 내 이름 설정 (1~5번 슬롯) ==========
 
@@ -5002,10 +4691,15 @@ function loadWeekAssignment() {
     return db.ref(getAssignPath(weekStart)).once('value').then(snap => {
         weekAssignCache = snap.val() || {};
         weekAssignCacheKey = weekStart;
-        // 캐시 로드 후 오늘 스케줄 표 + 출석 버튼 갱신
         renderTodaySchedules();
         renderAttendanceTable();
         updateMyNameDisplay();
+
+        // 최초 1회만 로드 완료 처리
+        if (!dataLoadState.weekAssign) {
+            dataLoadState.weekAssign = true;
+            checkAllDataLoaded();
+        }
     });
 }
 
