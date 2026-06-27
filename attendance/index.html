@@ -2674,24 +2674,21 @@ function calculateStats(attendanceData) {
     // 총 출석 횟수 = 서버 배정 스케줄 + 쟁참여 보스 (배정 없는데 출석자 있는 것)
     let weeklyBossCount = 0; // 총 출석 횟수 (분모)
     let warBossCount = 0;    // 쟁참여 보스 수 (디버그용)
+    const serverBossCount = { jingir: 0, pandora: 0, support: 0 }; // 서버별 집계
 
+    // ── 루프1: 전체 통계 카드용 (filterSv 적용) ──
     Object.entries(attendanceData).forEach(([key, attendance]) => {
         const dateStr = key.split('_')[0];
         if (dateStr < weekStartStr || dateStr > weekEndStr) return;
-
         const attendees = attendance.attendees || {};
         if (Object.keys(attendees).length === 0) return;
-
         const bossId = key.split('_').slice(1).join('_');
         const entry = statsCacheLoaded ? weekAssignCache[bossId] : null;
         const assigned = entry ? (entry.assignedServers || []) : [];
 
-        // 서버 필터 기준으로 포함 여부 결정
         if (filterSv) {
-            // 선택 서버에 배정된 보스 → 포함
             const isAssignedToFilter = assigned.length === 0 || assigned.includes(filterSv);
-            // 배정 없는 보스(쟁참여) → 출석자 중 해당 서버 유저가 있으면 포함
-            const hasFilterServerAttendee = users.some(u => {
+            const hasFilterServerAttendee = !isAssignedToFilter && users.some(u => {
                 if (u.server !== filterSv) return false;
                 const raw = attendees[String(u.id)] !== undefined
                     ? attendees[String(u.id)] : attendees[u.id];
@@ -2700,29 +2697,51 @@ function calculateStats(attendanceData) {
             });
             if (!isAssignedToFilter && !hasFilterServerAttendee) return;
         }
-
         weeklyBossCount++;
         if (!entry || assigned.length === 0) warBossCount++;
-        
-        // 모든 사용자에 대해 이 보스의 출석 상태 확인
-        // (마킹 안 된 사용자는 어떤 컬럼에도 들어가지 않지만 분모에는 포함됨)
+    });
+
+    // ── 루프2: 개인별 통계용 (filterSv 무관, 항상 전체 기준) ──
+    Object.entries(attendanceData).forEach(([key, attendance]) => {
+        const dateStr = key.split('_')[0];
+        if (dateStr < weekStartStr || dateStr > weekEndStr) return;
+        const attendees = attendance.attendees || {};
+        if (Object.keys(attendees).length === 0) return;
+        const bossId = key.split('_').slice(1).join('_');
+        const entry = statsCacheLoaded ? weekAssignCache[bossId] : null;
+        const assigned = entry ? (entry.assignedServers || []) : [];
+
+        // 서버별 카운트 집계
+        ['jingir', 'pandora', 'support'].forEach(sv => {
+            const isAssignedSv = assigned.length === 0 || assigned.includes(sv);
+            const hasServerAttendeeSv = !isAssignedSv && users.some(u => {
+                if (u.server !== sv) return false;
+                const raw = attendees[String(u.id)] !== undefined
+                    ? attendees[String(u.id)] : attendees[u.id];
+                const st = normalizeStatus(raw);
+                return st === 'present' || st === 'late';
+            });
+            if (isAssignedSv || hasServerAttendeeSv) serverBossCount[sv]++;
+        });
+
+        // 유저별 출석/불참 집계
         users.forEach(u => {
             const uid = String(u.id);
             if (!userStats[uid]) return;
-            
-            // 문자열 키와 숫자 키 둘 다 시도 (기존 데이터 호환)
+            const userAssigned = assigned.length === 0 || assigned.includes(u.server);
             const raw = attendees[uid] !== undefined ? attendees[uid] : attendees[u.id];
             const status = normalizeStatus(raw);
-            
+            const isWarAttend = !userAssigned && (status === 'present' || status === 'late');
+            if (!userAssigned && !isWarAttend) return;
+
             if (status === 'present' || status === 'late') {
-                // 기존 'late' 데이터도 출석으로 집계
                 userStats[uid].present++;
             } else if (status === 'absent') {
                 userStats[uid].absent++;
+            } else {
+                userStats[uid].absent++; // 마킹 안 된 경우 자동 불참
             }
-            
-            // total은 이 사용자가 마킹된 횟수 (참고용, 분모로는 안 씀)
-            if (status) userStats[uid].total++;
+            userStats[uid].total++;
         });
     });
     
@@ -2734,29 +2753,8 @@ function calculateStats(attendanceData) {
 
     // 개인별 참여율: 각 유저 서버 기준 스케줄 수를 분모로 사용
     // 서버별 총 출석 횟수 미리 계산
-    const serverTotalMap = {};
-    ['jingir', 'pandora', 'support'].forEach(sv => {
-        let cnt = 0;
-        Object.entries(attendanceData).forEach(([key, attendance]) => {
-            const dateStr = key.split('_')[0];
-            if (dateStr < weekStartStr || dateStr > weekEndStr) return;
-            const attendees = attendance.attendees || {};
-            if (Object.keys(attendees).length === 0) return;
-            const bossId = key.split('_').slice(1).join('_');
-            const entry = statsCacheLoaded ? weekAssignCache[bossId] : null;
-            const assigned = entry ? (entry.assignedServers || []) : [];
-            // 해당 서버 배정 보스 or 해당 서버 유저가 쟁참여한 보스
-            const isAssigned = assigned.length === 0 || assigned.includes(sv);
-            const hasServerAttendee = !isAssigned && users.some(u => {
-                if (u.server !== sv) return false;
-                const raw = attendees[String(u.id)] !== undefined
-                    ? attendees[String(u.id)] : attendees[u.id];
-                return normalizeStatus(raw) === 'present' || normalizeStatus(raw) === 'late';
-            });
-            if (isAssigned || hasServerAttendee) cnt++;
-        });
-        serverTotalMap[sv] = cnt;
-    });
+    // serverTotalMap: 위에서 집계한 serverBossCount 재활용
+    const serverTotalMap = { ...serverBossCount };
 
     Object.values(userStats).forEach(stat => {
         const userTotal = serverTotalMap[stat.server] || totalSchedules;
