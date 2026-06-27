@@ -2,6 +2,7 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>헌터혈맹 출석관리 v1.8</title>
     <style>
@@ -1198,6 +1199,9 @@ function loadData() {
 function refreshTimeBasedUI() {
     // 수동 선택 모드면 아무것도 안 함 (관리자가 과거 데이터 수정 중)
     if (currentScheduleDate) return;
+    // 오늘 보스를 수동 선택한 상태(드롭다운이 '자동'이 아님)면 자동 전환하지 않고 유지
+    const _bossSel = document.getElementById('boss-selector');
+    if (_bossSel && _bossSel.value !== 'current') return;
     
     const newCurrent = getCurrentBoss();
     const oldId = currentScheduleId;
@@ -1239,35 +1243,41 @@ function populateBossSelector() {
     // 현재 옵션
     selector.innerHTML = '<option value="current">⭐ 현재 진행 중인 보스 (자동)</option>';
 
-    if (!isAdmin) return; // 사용자 모드: 현재 보스만
-    
-    // 오늘부터 7일 전까지
-    for (let i = 0; i < 7; i++) {
+    // 오늘 보스 목록 (일반 유저도 선택 가능 — 겹치는 보스 직접 선택용)
+    // 아직 안 지난 보스만 표시 (현재 시각 - 10분 이후 시작 보스)
+    const todayDate = formatLocalDate(now);
+    const todayDow = now.getDay();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const todaySchedules = schedules
+        .filter(s => {
+            if (s.dayOfWeek !== todayDow) return false;
+            const [h, m] = s.time.split(':').map(Number);
+            const bossMinutes = h * 60 + m;
+            return bossMinutes >= nowMinutes - 10; // ±10분 이내 + 미래 보스
+        })
+        .sort((a, b) => a.time.localeCompare(b.time));
+
+    if (todaySchedules.length > 0) {
+        selector.innerHTML += '<option disabled>━━ 오늘 보스 ━━</option>';
+        todaySchedules.forEach(boss => {
+            selector.innerHTML += `<option value="${todayDate}_${boss.id}">오늘 ${boss.time} ${boss.name}</option>`;
+        });
+    }
+
+    if (!isAdmin) return; // 과거 날짜는 관리자만
+
+    // 어제부터 6일 전까지 (관리자 전용)
+    selector.innerHTML += '<option disabled>━━ 과거 (관리자) ━━</option>';
+    for (let i = 1; i < 7; i++) {
         const date = new Date(now);
         date.setDate(date.getDate() - i);
-        
-        const dateStr = formatLocalDate(date); // YYYY-MM-DD
+        const dateStr = formatLocalDate(date);
         const dayOfWeek = date.getDay();
-        const dayLabel = i === 0 ? '오늘' : i === 1 ? '어제' : `${i}일 전`;
-        
-        // 해당 요일의 보스들
+        const dayLabel = i === 1 ? '어제' : `${i}일 전`;
         const daySchedules = schedules.filter(s => s.dayOfWeek === dayOfWeek);
-        
-        if (daySchedules.length > 0) {
-            if (i === 0) {
-                selector.innerHTML += '<option disabled>━━━━━━━━━━━━━━━━</option>';
-            }
-            
-            daySchedules.forEach(boss => {
-                const value = `${dateStr}_${boss.id}`;
-                const label = `${dayLabel} ${boss.time} ${boss.name}`;
-                selector.innerHTML += `<option value="${value}">${label}</option>`;
-            });
-            
-            if (i === 0) {
-                selector.innerHTML += '<option disabled>━━━━━━━━━━━━━━━━</option>';
-            }
-        }
+        daySchedules.forEach(boss => {
+            selector.innerHTML += `<option value="${dateStr}_${boss.id}">${dayLabel} ${boss.time} ${boss.name}</option>`;
+        });
     }
 }
 
@@ -1305,10 +1315,13 @@ function changeBoss() {
         console.log('🔍 수동 선택:', { value, dateStr, bossId });
         
         const boss = schedules.find(s => s.id === bossId);
-        
+        const todayStr = formatLocalDate(new Date());
+
         if (boss) {
             currentScheduleId = bossId;
-            currentScheduleDate = dateStr; // 과거 날짜 추적
+            // 오늘 날짜 선택은 수동 모드 아님 (서버 체크 유지)
+            // 과거 날짜만 수동 모드 (관리자 전용 불참 버튼 표시)
+            currentScheduleDate = (dateStr !== todayStr) ? dateStr : null;
             
             // 선택된 보스 정보 표시
             document.getElementById('today-schedules').innerHTML = `
@@ -4903,8 +4916,10 @@ function loadWeekAssignment() {
     return db.ref(getAssignPath(weekStart)).once('value').then(snap => {
         weekAssignCache = snap.val() || {};
         weekAssignCacheKey = weekStart;
-        // 캐시 로드 후 오늘 스케줄 표 갱신
+        // 캐시 로드 후 오늘 스케줄 표 + 출석 버튼 갱신
         renderTodaySchedules();
+        renderAttendanceTable();
+        updateMyNameDisplay();
     });
 }
 
