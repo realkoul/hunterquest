@@ -386,25 +386,33 @@
     <!-- Tab 2: 통계 -->
     <div id="tab-stats" class="tab-content">
         <div class="card">
-            <h2>📊 전체 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 수~화)</span></h2>
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <h2>📊 전체 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 수~화)</span></h2>
+                <div style="display:flex; gap:6px;">
+                    <button onclick="setStatsServer('all')" id="stat-btn-all"
+                        style="padding:6px 14px; border-radius:20px; border:2px solid #5d6d7e; background:#5d6d7e; color:white; font-weight:bold; cursor:pointer; font-size:0.85rem;">전체</button>
+                    <button onclick="setStatsServer('jingir')" id="stat-btn-jingir"
+                        style="padding:6px 14px; border-radius:20px; border:2px solid #3498db; background:white; color:#3498db; font-weight:bold; cursor:pointer; font-size:0.85rem;">진기르</button>
+                    <button onclick="setStatsServer('pandora')" id="stat-btn-pandora"
+                        style="padding:6px 14px; border-radius:20px; border:2px solid #9b59b6; background:white; color:#9b59b6; font-weight:bold; cursor:pointer; font-size:0.85rem;">판도라</button>
+                    <button onclick="setStatsServer('support')" id="stat-btn-support"
+                        style="padding:6px 14px; border-radius:20px; border:2px solid #27ae60; background:white; color:#27ae60; font-weight:bold; cursor:pointer; font-size:0.85rem;">지원</button>
+                </div>
+            </div>
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:15px; margin-top:20px;">
                 <div class="stat-box">
                     <h3 id="stat-total-schedules">0</h3>
-                    <p>총 보스 횟수</p>
-                </div>
-                <div class="stat-box">
-                    <h3 id="stat-checked-bosses">0</h3>
-                    <p>출석 체크된 보스</p>
+                    <p>총 출석 횟수<br><span style="font-size:0.7rem;opacity:0.7;">(주간 스케줄 + 쟁참여)</span></p>
                 </div>
                 <div class="stat-box">
                     <h3 id="stat-avg-rate">0%</h3>
-                    <p>평균 참여율<br><span style="font-size: 0.7rem; opacity: 0.7;">(출석 체크된 보스 기준)</span></p>
+                    <p>평균 참여율<br><span style="font-size: 0.7rem; opacity: 0.7;">(총 출석 횟수 기준)</span></p>
                 </div>
             </div>
         </div>
         
         <div class="card">
-            <h2>👥 개인별 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 수~화, 출석 체크된 보스 기준)</span></h2>
+            <h2>👥 개인별 통계 <span style="color: #7f8c8d; font-size: 0.85rem; font-weight: normal;">(이번 주 수~화, 총 출석 횟수 기준)</span></h2>
             <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
                 <input type="text" id="stats-search-user" placeholder="🔍 이름 검색..." onkeyup="filterStats()" style="flex: 1 1 200px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px;">
                 <select id="stats-server-filter" onchange="filterStats()" style="flex: 0 0 150px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px; background: white;">
@@ -419,11 +427,12 @@
                     <thead>
                         <tr>
                             <th style="position: sticky; top: 0; z-index: 1;">순위</th>
-                            <th style="position: sticky; top: 0; z-index: 1;">이름</th>
-                            <th style="position: sticky; top: 0; z-index: 1;">서버</th>
-                            <th style="position: sticky; top: 0; z-index: 1;">출석</th>
-                            <th style="position: sticky; top: 0; z-index: 1;">불참</th>
-                            <th style="position: sticky; top: 0; z-index: 1;">참여율</th>
+                            <th id="stats-th-name" onclick="toggleStatsSort('name')" style="position:sticky;top:0;z-index:1;cursor:pointer;user-select:none;white-space:nowrap;">이름<span class="sort-arrow"></span></th>
+                            <th id="stats-th-server" onclick="toggleStatsSort('server')" style="position:sticky;top:0;z-index:1;cursor:pointer;user-select:none;white-space:nowrap;">서버<span class="sort-arrow"></span></th>
+                            <th id="stats-th-serverTotal" onclick="toggleStatsSort('serverTotal')" style="position:sticky;top:0;z-index:1;cursor:pointer;user-select:none;white-space:nowrap;">총횟수<span class="sort-arrow"></span></th>
+                            <th id="stats-th-present" onclick="toggleStatsSort('present')" style="position:sticky;top:0;z-index:1;cursor:pointer;user-select:none;white-space:nowrap;">출석<span class="sort-arrow"></span></th>
+                            <th id="stats-th-absent" onclick="toggleStatsSort('absent')" style="position:sticky;top:0;z-index:1;cursor:pointer;user-select:none;white-space:nowrap;">불참<span class="sort-arrow"></span></th>
+                            <th id="stats-th-rate" onclick="toggleStatsSort('rate')" style="position:sticky;top:0;z-index:1;cursor:pointer;user-select:none;white-space:nowrap;">참여율<span class="sort-arrow"></span></th>
                         </tr>
                     </thead>
                     <tbody id="stats-tbody"></tbody>
@@ -2580,62 +2589,76 @@ function loadStats() {
 };
 
 // 통계 계산 (이번 주 수~화 기준)
+
+// 통계 테이블 정렬 상태
+let statsSortKey = '';    // 정렬 기준 컬럼
+let statsSortDir = 0;     // 0: 기본, 1: 오름차순, -1: 내림차순
+
+function toggleStatsSort(key) {
+    if (statsSortKey !== key) {
+        statsSortKey = key;
+        statsSortDir = 1;
+    } else {
+        if (statsSortDir === 0) statsSortDir = 1;
+        else if (statsSortDir === 1) statsSortDir = -1;
+        else { statsSortDir = 0; statsSortKey = ''; }
+    }
+    // 헤더 화살표 업데이트
+    ['name','server','serverTotal','present','absent','rate'].forEach(k => {
+        const el = document.getElementById('stats-th-' + k);
+        if (!el) return;
+        const arrow = el.querySelector('.sort-arrow');
+        if (!arrow) return;
+        if (k === statsSortKey) {
+            arrow.textContent = statsSortDir === 1 ? ' ▲' : statsSortDir === -1 ? ' ▼' : '';
+        } else {
+            arrow.textContent = '';
+        }
+    });
+    filterStats();
+}
+
+// 현재 통계 서버 필터 (전체 통계 탭 버튼 연동)
+let currentStatsServer = 'all';
+
+function setStatsServer(sv) {
+    currentStatsServer = sv;
+    // 버튼 스타일 업데이트
+    const colors = { all: '#5d6d7e', jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+    ['all','jingir','pandora','support'].forEach(k => {
+        const btn = document.getElementById(`stat-btn-${k}`);
+        if (!btn) return;
+        const c = colors[k];
+        if (k === sv) {
+            btn.style.background = c; btn.style.color = 'white';
+        } else {
+            btn.style.background = 'white'; btn.style.color = c;
+        }
+    });
+    // 개인별 통계 서버 필터도 연동
+    const sf = document.getElementById('stats-server-filter');
+    if (sf) sf.value = sv === 'all' ? 'all' : sv;
+    // 통계 재계산
+    filterStats();
+}
+
 function calculateStats(attendanceData) {
     const userStats = {};
     
     // 이번 주 시작일(수요일) ~ 종료일(다음주 화요일) 계산
     const weekStart = getWeekStart();
     const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);  // 수+6 = 다음주 화요일
+    weekEnd.setDate(weekStart.getDate() + 6);
     const weekStartStr = formatLocalDate(weekStart);
     const weekEndStr   = formatLocalDate(weekEnd);
 
     console.log('📅 이번 주 범위(수~화):', weekStartStr, '~', weekEndStr);
-    
-    // 이번 주에 스케줄된 총 보스 수 계산 (UI 표시용 — '이번 주 총 스케줄')
-    // 주차 배정 캐시가 있는 경우: 내 서버에 배정된 스케줄만 집계
-    // 캐시 없는 경우: 전체 스케줄 수로 폴백
-    // war 선택 중에는 실제 저장된 서버로 통계 계산
-    const rawStatsServer = getMyServer(); // war 필터 적용됨
-    const statsMyServer = rawStatsServer || (() => {
-        // war 선택 중이면 슬롯엔 'war'만 남으므로 users 목록에서 실제 서버 복구
-        for (const nm of getMyNames()) {
-            const u = users.find(x => x.name === nm);
-            if (u && u.server && u.server !== 'war') return u.server;
-        }
-        return '';
-    })();
+
+    // 서버 필터: 전체 통계 탭 버튼 기준
+    const filterSv = currentStatsServer === 'all' ? null : currentStatsServer;
     const statsCacheLoaded = Object.keys(weekAssignCache).length > 0;
 
-    let totalSchedules = 0;
-    const thisWeek = [];
-    for (let i = 0; i < 7; i++) {
-        const date = new Date(weekStart);
-        date.setDate(date.getDate() + i);
-        const dateStr = formatLocalDate(date);
-        const dayOfWeekNum = date.getDay();
-
-        // 해당 요일 스케줄 중 내 서버에 배정된 것만 필터
-        const daySchedules = schedules.filter(s => {
-            if (s.dayOfWeek !== dayOfWeekNum) return false;
-            if (!statsCacheLoaded || !statsMyServer) return true; // 캐시 없으면 전체 포함
-            const entry = weekAssignCache[s.id];
-            if (!entry) return false; // 배정 데이터 없는 스케줄 제외
-            const assigned = entry.assignedServers || [];
-            return assigned.includes(statsMyServer);
-        });
-        totalSchedules += daySchedules.length;
-
-        thisWeek.push({
-            dateStr: dateStr,
-            dayOfWeek: dayOfWeekNum,
-            scheduledCount: daySchedules.length
-        });
-    }
-    
-    console.log('📊 이번 주 총 스케줄:', totalSchedules, '개');
-    
-    // 모든 사용자에 대해 통계 객체 초기화 (한번도 마킹 안 된 사람도 포함되도록)
+    // ── 모든 사용자 통계 초기화 ──
     users.forEach(u => {
         userStats[String(u.id)] = {
             userId: String(u.id),
@@ -2643,27 +2666,43 @@ function calculateStats(attendanceData) {
             server: u.server || '',
             present: 0,
             absent: 0,
-            total: 0  // 이 값은 더 이상 분모로 쓰지 않음 (참고용)
+            total: 0
         };
     });
-    
-    // 이번 주 출석 체크가 실제로 진행된 보스 수 (참여율 분모로 사용)
-    let weeklyBossCount = 0;
-    
+
+    // ── 이번 주 Firebase 출석 데이터 순회 ──
+    // 총 출석 횟수 = 서버 배정 스케줄 + 쟁참여 보스 (배정 없는데 출석자 있는 것)
+    let weeklyBossCount = 0; // 총 출석 횟수 (분모)
+    let warBossCount = 0;    // 쟁참여 보스 수 (디버그용)
+
     Object.entries(attendanceData).forEach(([key, attendance]) => {
-        // 날짜 추출 (YYYY-MM-DD_bossId 형식)
         const dateStr = key.split('_')[0];
-        
-        // 이번 주 범위(수~화) 외 데이터 제외
-        if (dateStr < weekStartStr || dateStr > weekEndStr) {
-            return;
-        }
-        
-        // 출석자가 한 명이라도 있는 경우만 '진행된 보스'로 카운트
+        if (dateStr < weekStartStr || dateStr > weekEndStr) return;
+
         const attendees = attendance.attendees || {};
         if (Object.keys(attendees).length === 0) return;
-        
+
+        const bossId = key.split('_').slice(1).join('_');
+        const entry = statsCacheLoaded ? weekAssignCache[bossId] : null;
+        const assigned = entry ? (entry.assignedServers || []) : [];
+
+        // 서버 필터 기준으로 포함 여부 결정
+        if (filterSv) {
+            // 선택 서버에 배정된 보스 → 포함
+            const isAssignedToFilter = assigned.length === 0 || assigned.includes(filterSv);
+            // 배정 없는 보스(쟁참여) → 출석자 중 해당 서버 유저가 있으면 포함
+            const hasFilterServerAttendee = users.some(u => {
+                if (u.server !== filterSv) return false;
+                const raw = attendees[String(u.id)] !== undefined
+                    ? attendees[String(u.id)] : attendees[u.id];
+                const st = normalizeStatus(raw);
+                return st === 'present' || st === 'late';
+            });
+            if (!isAssignedToFilter && !hasFilterServerAttendee) return;
+        }
+
         weeklyBossCount++;
+        if (!entry || assigned.length === 0) warBossCount++;
         
         // 모든 사용자에 대해 이 보스의 출석 상태 확인
         // (마킹 안 된 사용자는 어떤 컬럼에도 들어가지 않지만 분모에는 포함됨)
@@ -2689,23 +2728,52 @@ function calculateStats(attendanceData) {
     
     console.log('📊 이번 주 출석 체크된 보스:', weeklyBossCount, '개');
     
-    // 참여율 계산 — 분모는 '이번 주 출석 체크된 보스 수'
+    // 총 출석 횟수 = weeklyBossCount (서버 배정 스케줄 + 쟁참여 보스)
+    const totalSchedules = weeklyBossCount;
+    console.log('📊 총 출석 횟수:', totalSchedules, '(쟁참여 포함:', warBossCount, ')');
+
+    // 개인별 참여율: 각 유저 서버 기준 스케줄 수를 분모로 사용
+    // 서버별 총 출석 횟수 미리 계산
+    const serverTotalMap = {};
+    ['jingir', 'pandora', 'support'].forEach(sv => {
+        let cnt = 0;
+        Object.entries(attendanceData).forEach(([key, attendance]) => {
+            const dateStr = key.split('_')[0];
+            if (dateStr < weekStartStr || dateStr > weekEndStr) return;
+            const attendees = attendance.attendees || {};
+            if (Object.keys(attendees).length === 0) return;
+            const bossId = key.split('_').slice(1).join('_');
+            const entry = statsCacheLoaded ? weekAssignCache[bossId] : null;
+            const assigned = entry ? (entry.assignedServers || []) : [];
+            // 해당 서버 배정 보스 or 해당 서버 유저가 쟁참여한 보스
+            const isAssigned = assigned.length === 0 || assigned.includes(sv);
+            const hasServerAttendee = !isAssigned && users.some(u => {
+                if (u.server !== sv) return false;
+                const raw = attendees[String(u.id)] !== undefined
+                    ? attendees[String(u.id)] : attendees[u.id];
+                return normalizeStatus(raw) === 'present' || normalizeStatus(raw) === 'late';
+            });
+            if (isAssigned || hasServerAttendee) cnt++;
+        });
+        serverTotalMap[sv] = cnt;
+    });
+
     Object.values(userStats).forEach(stat => {
-        stat.rate = weeklyBossCount > 0 
-            ? (stat.present / weeklyBossCount * 100).toFixed(1) 
+        const userTotal = serverTotalMap[stat.server] || totalSchedules;
+        stat.serverTotal = userTotal; // 개인 분모 저장
+        stat.rate = userTotal > 0
+            ? (stat.present / userTotal * 100).toFixed(1)
             : '0.0';
     });
-    
-    return { userStats, totalSchedules, weeklyBossCount };
+
+    return { userStats, totalSchedules, serverTotalMap };
 };
 
 // 통계 렌더링
 function renderStats(stats) {
     document.getElementById('stat-total-schedules').textContent = stats.totalSchedules;
-    
-    // 출석 체크된 보스 수
-    const checkedEl = document.getElementById('stat-checked-bosses');
-    if (checkedEl) checkedEl.textContent = stats.weeklyBossCount;
+
+    // stat-checked-bosses 제거됨
     
     const userStatsArray = Object.values(stats.userStats);
     
@@ -2727,34 +2795,53 @@ function renderStats(stats) {
         filteredStats = filteredStats.filter(s => s.server === serverFilter);
     }
     
-    const avgRate = filteredStats.length > 0 
-        ? (filteredStats.reduce((sum, s) => sum + parseFloat(s.rate), 0) / filteredStats.length).toFixed(1)
+    // 전체 통계 평균 참여율: 서버 탭 기준 유저들의 평균
+    const statsServerFilter = currentStatsServer === 'all' ? null : currentStatsServer;
+    const statsFiltered = statsServerFilter
+        ? Object.values(stats.userStats).filter(s => s.server === statsServerFilter)
+        : Object.values(stats.userStats);
+    const avgRate = statsFiltered.length > 0
+        ? (statsFiltered.reduce((sum, s) => sum + parseFloat(s.rate), 0) / statsFiltered.length).toFixed(1)
         : 0;
     document.getElementById('stat-avg-rate').textContent = avgRate + '%';
+    // 총 출석 횟수도 서버 탭 기준으로 표시
+    if (statsServerFilter && stats.serverTotalMap) {
+        document.getElementById('stat-total-schedules').textContent =
+            stats.serverTotalMap[statsServerFilter] || stats.totalSchedules;
+    }
     
     // 내 이름 목록 가져오기
     const myNames = (typeof getMyNames === 'function') ? getMyNames() : [];
     const myNamesSet = new Set(myNames);
-    
-    // 정렬: 내 이름 우선, 그 다음 참여율 순
+
     const sorted = filteredStats.slice().sort((a, b) => {
         const aIsMine = myNamesSet.has(a.userName);
         const bIsMine = myNamesSet.has(b.userName);
-        
-        // 내 이름 우선
+
+        // 컬럼 정렬 선택 시
+        if (statsSortKey && statsSortDir !== 0) {
+            let av, bv;
+            if (statsSortKey === 'name')        { av = a.userName; bv = b.userName; }
+            else if (statsSortKey === 'server') { av = a.server || ''; bv = b.server || ''; }
+            else if (statsSortKey === 'serverTotal') { av = a.serverTotal || 0; bv = b.serverTotal || 0; }
+            else if (statsSortKey === 'present') { av = a.present; bv = b.present; }
+            else if (statsSortKey === 'absent')  { av = a.absent;  bv = b.absent; }
+            else if (statsSortKey === 'rate')    { av = parseFloat(a.rate); bv = parseFloat(b.rate); }
+
+            if (typeof av === 'string') {
+                const cmp = av.localeCompare(bv, 'ko');
+                return statsSortDir === 1 ? cmp : -cmp;
+            } else {
+                return statsSortDir === 1 ? av - bv : bv - av;
+            }
+        }
+
+        // 기본 정렬: 내 이름 우선 → 참여율 내림차순 → 이름 가나다순
         if (aIsMine && !bIsMine) return -1;
         if (!aIsMine && bIsMine) return 1;
-        
-        // 내 이름끼리는 등록 순서 유지
-        if (aIsMine && bIsMine) {
-            return myNames.indexOf(a.userName) - myNames.indexOf(b.userName);
-        }
-        
-        // 나머지는 참여율 내림차순
+        if (aIsMine && bIsMine) return myNames.indexOf(a.userName) - myNames.indexOf(b.userName);
         const rateDiff = parseFloat(b.rate) - parseFloat(a.rate);
         if (rateDiff !== 0) return rateDiff;
-        
-        // 참여율 동률이면 이름 가나다순
         return a.userName.localeCompare(b.userName, 'ko');
     });
     
@@ -2770,6 +2857,7 @@ function renderStats(stats) {
                 <td>${i + 1}</td>
                 <td><a href="javascript:void(0)" onclick="showUserBossCalendar('${s.userName}')" style="color: #3498db; text-decoration: none; font-weight: bold; cursor: pointer;">${s.userName}</a></td>
                 <td>${serverName}</td>
+                <td style="color:#7f8c8d;">${s.serverTotal || '-'}</td>
                 <td>${s.present}</td>
                 <td>${s.absent}</td>
                 <td><strong>${s.rate}%</strong></td>
