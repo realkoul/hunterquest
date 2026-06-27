@@ -1430,6 +1430,17 @@ function loadSchedules() {
 function loadTodayAttendance() {
     const currentBoss = getCurrentBoss();
     if (currentBoss) {
+        // 보스 윈도우에 들어오면 출석 데이터 리스너 응답을 기다리지 않고
+        // currentScheduleId를 즉시 확정한다.
+        // (이전: 리스너 콜백 안에서만 세팅 → 콜백 도착 전 클릭 시 "보스 없음" 오류)
+        const bossChanged = currentScheduleId !== currentBoss.id;
+        currentScheduleId = currentBoss.id;
+        if (bossChanged) todayAttendance = null; // 새 보스면 이전 데이터로 잘못된 '완료' 표시 방지
+        // 즉시 UI 반영 — 출석 버튼이 곧바로 동작하도록
+        renderAttendanceTable();
+        renderTodaySchedules();
+        updateMyNameDisplay();
+
         const today = formatLocalDate(new Date());
         const attendanceKey = `${today}_${currentBoss.id}`;
         db.ref(`boss_attendance/${attendanceKey}`).on('value', (snapshot) => {
@@ -1761,7 +1772,7 @@ function showCurrentAttendees(boss) {
         return;
     }
     
-    const today = new Date().toISOString().split('T')[0];
+    const today = formatLocalDate(new Date());
     const attendanceKey = `${today}_${boss.id}`;
     
     // 새 리스너 등록
