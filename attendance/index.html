@@ -1601,17 +1601,9 @@ async function renderTodaySchedules() {
     const weekCacheLoaded = Object.keys(weekAssignCache).length > 0;
 
     // 선택된 서버 기준 필터
-    // - 캐시 로드됨 + 서버 선택됨: 해당 서버에 배정된 스케줄만 표시 (미배정 숨김)
-    // - 캐시 미로드: 전체 표시 (로딩 전 깜빡임 방지)
-    const viewSchedules = (weekCacheLoaded && viewServer)
-        ? todaySchedules.filter(s => {
-            const entry = weekAssignCache[s.id];
-            if (!entry) return true; // 배정 없는 스케줄 → 전체 표시
-            const assigned = entry.assignedServers || [];
-            if (assigned.length === 0) return true; // 배정 서버 없으면 전체 표시
-            return assigned.includes(viewServer);
-          })
-        : todaySchedules;
+    // 전체 스케줄 표시 (배정 여부 무관)
+    // 내 서버 미배정인 경우 라벨로 구분
+    const viewSchedules = todaySchedules;
 
     let scheduleTableHtml = '';
     if (viewSchedules.length > 0 || weekCacheLoaded) {
@@ -1652,10 +1644,16 @@ async function renderTodaySchedules() {
             }
 
             // 서버별 보스 표시명 계산
-            const entry = getScheduleAssignment(s);
-            const isUnassignedBoss = !weekAssignCache[s.id];
-            const displayName = getBossDisplayName(s, viewServer)
-                + (isUnassignedBoss ? ' <span style="font-size:0.75rem;color:#aaa;font-weight:400;">(미배정)</span>' : '');
+            const cacheEntry = weekAssignCache[s.id];
+            const isUnassignedBoss = !cacheEntry; // 이번 주 배정 자체 없음
+            const assignedServers = cacheEntry ? (cacheEntry.assignedServers || []) : [];
+            const isNotMyServer = !isUnassignedBoss && assignedServers.length > 0 && !assignedServers.includes(viewServer);
+            const labelHtml = isUnassignedBoss
+                ? ' <span style="font-size:0.75rem;color:#aaa;font-weight:400;">(미배정)</span>'
+                : isNotMyServer
+                    ? ' <span style="font-size:0.75rem;color:#e67e22;font-weight:400;">(미배정)</span>'
+                    : '';
+            const displayName = getBossDisplayName(s, viewServer) + labelHtml;
 
             return `<div style="border-radius:8px;padding:12px 16px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;${cardStyle}">
                 <div style="display:flex;align-items:center;gap:12px;flex:1;">
