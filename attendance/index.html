@@ -4,30 +4,46 @@
     <meta charset="UTF-8">
     <meta http-equiv="Cache-Control" content="no-cache">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>헌터혈맹 출석관리 v1.8</title>
+    <title>헌터혈맹 출석관리 v2.0</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Malgun Gothic', sans-serif; background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); min-height: 100vh; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; background: #ecf0f1; border-radius: 12px; padding: 30px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
-        
+        body { font-family: 'Malgun Gothic', sans-serif; background: #f0f2f5; min-height: 100vh; padding: 16px; }
+        .container { max-width: 640px; margin: 0 auto; background: white; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); overflow: hidden; }
+
         /* 헤더 */
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
-        .header h1 { color: #2c3e50; font-size: 2rem; }
-        .version { background: #5D6D7E; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.9rem; margin-left: 10px; }
-        .btn-back { padding: 10px 20px; background: #7f8c8d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: all 0.3s; }
-        .btn-back:hover { background: #5d6d7e; transform: translateY(-2px); }
-        
-        /* Tab */
-        .tabs { display: flex; gap: 5px; border-bottom: 2px solid #bdc3c7; margin-bottom: 20px; flex-wrap: wrap; }
-        .tab { padding: 12px 24px; background: white; border: none; border-bottom: 3px solid transparent; cursor: pointer; font-weight: bold; color: #7f8c8d; transition: all 0.3s; }
-        .tab:hover { color: #5D6D7E; }
-        .tab.active { color: #2c3e50; border-bottom-color: #2c3e50; }
+        .header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid #e8e8e8; background: white; flex-wrap: wrap; gap: 8px; }
+        .header h1 { color: #2c3e50; font-size: 1.1rem; font-weight: bold; display: flex; align-items: center; gap: 6px; }
+        .version { background: #5D6D7E; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-left: 4px; }
+
+        /* 상단 탭 숨김 */
+        .tabs { display: none; }
+        .tab { display: none; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        
+
+        /* 하단 네비게이션 */
+        .bottom-nav {
+            position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+            width: 100%; max-width: 640px;
+            background: white; border-top: 1px solid #e8e8e8;
+            display: flex; z-index: 1000;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.08);
+        }
+        .bottom-nav-item {
+            flex: 1; display: flex; flex-direction: column; align-items: center;
+            padding: 8px 4px; cursor: pointer; border: none; background: none;
+            color: #aaa; font-size: 0.7rem; font-weight: bold; transition: all 0.2s;
+            gap: 3px;
+        }
+        .bottom-nav-item .nav-icon { font-size: 1.2rem; }
+        .bottom-nav-item.active { color: #2c3e50; }
+        .bottom-nav-item.active .nav-icon { transform: scale(1.1); }
+        /* 하단 네비 높이만큼 본문 여백 */
+        .container { padding-bottom: 60px; }
+
         /* 카드 */
-        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.08); }
-        .card h2 { color: #2c3e50; margin-bottom: 15px; }
+        .card { background: white; border-radius: 0; padding: 16px 18px; margin-bottom: 0; border-bottom: 1px solid #f0f0f0; }
+        .card h2 { color: #2c3e50; margin-bottom: 12px; font-size: 1rem; }
         
         /* 버튼 */
         .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: all 0.3s; }
@@ -48,6 +64,8 @@
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e0e0e0; }
         th { background: #34495e; color: white; font-weight: bold; }
+        /* 개인별 통계 표 - 데이터 셀도 헤더처럼 줄바꿈 방지 (좁은 화면에서 이름이 2줄로 쪼개지는 것 방지, 필요 시 가로 스크롤) */
+        #stats-table td { white-space: nowrap; }
         tr:hover { background: #f8f9fa; }
         
         /* 출석 상태 */
@@ -181,14 +199,70 @@
             
             /* 카드 패딩 줄이기 */
             .card { padding: 12px; margin-bottom: 12px; }
-            
-            /* 보스 관리 테이블 - 가로 스크롤 */
-            .card table {
+
+            /* 길드원 명단 관리 테이블 - 컴팩트 카드 레이아웃 (기존 출석체크 표와 동일한 패턴) */
+            #user-mgmt-table thead { display: none; }
+            #user-mgmt-table, #user-list-tbody, #user-list-tbody tr {
                 display: block;
-                overflow-x: auto;
-                white-space: nowrap;
-                -webkit-overflow-scrolling: touch;
             }
+            #user-list-tbody tr {
+                background: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 8px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            }
+            #user-list-tbody td {
+                display: block;
+                padding: 0;
+                border: none;
+                text-align: left;
+            }
+            /* ID - 작고 옅게 */
+            #user-list-tbody td[data-label="ID"] {
+                font-size: 0.75rem;
+                color: #aaa;
+                margin-bottom: 2px;
+            }
+            #user-list-tbody td[data-label="ID"]::before {
+                content: 'ID ';
+            }
+            /* 이름 - 크고 굵게 강조 */
+            #user-list-tbody td[data-label="이름"] {
+                font-size: 1.15rem;
+                margin-bottom: 6px;
+            }
+            /* 서버 / 성물 / 상태 - 라벨과 함께 한 줄씩 */
+            #user-list-tbody td[data-label="서버"],
+            #user-list-tbody td[data-label="성물"],
+            #user-list-tbody td[data-label="상태"] {
+                display: inline-block;
+                font-size: 0.85rem;
+                margin-right: 12px;
+                margin-bottom: 8px;
+            }
+            #user-list-tbody td[data-label="서버"]::before,
+            #user-list-tbody td[data-label="성물"]::before,
+            #user-list-tbody td[data-label="상태"]::before {
+                content: attr(data-label) ': ';
+                color: #7f8c8d;
+                font-weight: normal;
+            }
+            /* 관리 버튼 - 가로로 나란히, 필요 시 줄바꿈 */
+            #user-list-tbody td[data-label="관리"] {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+                margin-top: 6px;
+            }
+            #user-list-tbody td[data-label="관리"] button {
+                margin-left: 0 !important;
+            }
+            
+            /* 통계 등 일반 표 - 컴팩트 폰트만 조정. 가로 스크롤은 표를 감싸는 div의 overflow가 담당
+               (표 자체를 display:block으로 바꾸면 thead/tbody/tr은 그대로 표 방식이라
+                브라우저가 CSS로 손댈 수 없는 내부 익명 표 박스를 만들어버려 폭이 내용만큼만 좁아지는 문제가 있었음) */
             .card table th,
             .card table td {
                 font-size: 0.85rem;
@@ -215,7 +289,8 @@
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: linear-gradient(135deg, #1a252f 0%, #2c3e50 100%);
             z-index: 99999; display: flex; flex-direction: column;
-            justify-content: center; align-items: center;
+            justify-content: flex-start; align-items: center;
+            overflow-y: auto; padding-top: 15vh;
         }
         .lock-box {
             text-align: center; padding: 40px 50px;
@@ -294,7 +369,8 @@
 <!-- ===== 잠금 화면 ===== -->
 <div id="lock-screen">
     <div class="lock-box">
-        <h2>🔒 헌터혈맹 출석관리</h2>
+        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAATCElEQVR42sWad5RdVb3HP3ufc26dO3OnZjItU9JJQkgIARJ6T0IHUTpKezyKuLCgr7jkPZeIT3yKFAVEaQKiSElUSkIgtPTeZjIlM5ncudNub+fs/f44d5IA+hTE9+6sve5ad83Z51e/+/v7/bYwTVPbts0/8iMEaP2P2Vv+PQ8bhkCIjworigv8QQ9tU6vQGqQs/v5RAaRASvH/o4DjaLR2hR77aK2LC047v4Xbv3cUPr+FUsXfPyK8Uhql9P+9AsESD5dfOwe/34PWGikFcxfWc8d3F1BeHqC5LcyJZ9cTrrI4/8pJlJUGmHtMHV+9+9gDVldKc+yJzZx5/hSE+HSeMKSU31ZKfeIHC3mHz980nSNPrqFrW4LYSJZrbp9N2QSLWfOraJ7jYd6MOSw40qRjOMrhRzUydV6Y6glBBroz9O9NcNZFk7js9mlsfDfKnp3DSCk+ca58IgXGLOcPWoyvL8URWSommsyYXU9rWzmN0wKccXQN72/sZnd3gq9fuYSu3FtknQSPPbGTi86pY3x1GWnbYdasWiYdU0p7R4SONUkA0qnCx3LqU4eQEK7AhnHQtUppHEfj2Iqb75rNYfOrSEfh+IXViOocIZ/BaGYQW9k011STN3ezN9lNIhNnUmM1g7koAV8M4XVomWdREVZk44IrvjqZ0y9swbbVIXnlgoQ0xIdy7K96YExwrfnQkqZkXH0p0+eM58xzp5ITBaKjIzQ1BjjyCD+11V7u/uEGdncmOfOiME8/2c7Mw4NMaZM8/NMRahq8BKsdfvCdbgzD4eJrytmxLUldTSmrN+9j2sR6AiUBDNMkl7XJZe0D7z40Aj4aYuZHlXMf0vgCJuObypg4tYbJh1UzZUY5U6eGaJpgES7PY+o0r7ymefrZCA3jPFRWWmzdMsKCY+p45TdDHD5jHCV+k188MsolV4a5+9+Hqa5oJJaM0NOjsAsO6z+I09ICd97WQN24IFd+cQbRiMnu3Rl2bkmyY8sQu7YM0L1nmKFI6s+ilTCkoZV2AIHWmsbWMFffMpem1nKmTyulsd6iNFBAk2ZwJEFH5yjrNg+ye3eC67/UyAcbUrzxWpyHfjybu+7u5iu3trFyxTBtUzz09iiEkOhQF6TDVNR7WLt+P8r2UlFn88R9gzz488N4+cW9tLfnOGZ+GdOmlNLUFCLoCVLAz2DUoKO9QGd7iteXdvDKMzsPwLWUAuEPenUmlcPySAp5xZHHNXL/U6cxub5A/0CC9j3DbNg8xPpNI+zYnqCvL0Mq7mCnNDOPDfPMczO478cDnHVGBcfODaNxqMTHy+tGiA7anHJ6nvvuG+W2myvotWO092Qp9ZTy64dGuPjC8QxECtxwxRYkCo9fUlHlobUtwPQZAWbPDjF9ShltLSVoWcHPHxjgrltXIA2BcgA05r2PLuJrNy4lPpJDSsHwUIaR4RijIc1VN73F1o3DZJMaxwZDgGGAKQXeUsm2TaNcc+0G5h/RyBO/GqRvj42woKHepGacQUfPKG+uT9PUVEJnX5x1GzTRqIV0BJkRDyuWx/j5Q+0E/QLtSJy8JtqbZX9PlnfeHMbrNwhVmNx7zwwWnGCwtytRFN4NpS/cMAvTV6P52j0Lefj76+naNczwQJpINMvMKT68HsjGNKYlsLxjtEGjEThK45WCje8l2bltFzNnhknZXqrLvUQGc3T2OuzeoYi8IZg83WE0KfD4LYKlmo6dcdatj7L05QzCdumFUhohQQpc5AHstIMqkYTKBZmcZng4jXI0wTIv135lDrOOrcIc7M9w9pl1zJ5VzW+f2snqt/cRj2UxPF6qq/xIU2DIMbQVrgJaA+5JKhEU4g6r3x1izdohJrT6OPKoUmbPKeGExV6SWR/7Ijm6O7JsXptk95YUIwMaC5DCRRVV3FoX36G1RkgXQv0BE8PnsH8wQ2mJh9PPa+Gy6w/j6HnlbN4Rx+ztSVIaqiAxMspxZ1RzyjlVrN84wGjaIlAiKOQ1BekgrSKkKfB7RFEZVyFlCxytMRV0bM6yY12WJ70DNLdalFdadHdkiQ8qcMBjSoKmPIj32t3F3aq4H+55U8hALpNnzQcZ9vYM0zC5kvOuaKVjRz+xEY0WArOvM0k8m8X0Zrjjjjc576xJtO8ewbJy9HTFaZ0c4qSTJ5G1FYaUJFNJlr2yCzt98MDxlxhMnBjGKcKwISXZdIbePUn62gtIL5g+0AoKKNfU8iBsc4h/lQPYUBq2aJodRkh469UcXq+HSU1h3ls5yp/e2s65Z4+ne10Ss78nQUd3krOOr6K5sZR8zsPF5y7g/dW9KDvMMQsquOHquVRVxQGT5W9n2b5nkHzawZCSxGgG23G47uqFTJtSipR5hLB4bWUnP7p3FVILzlgykWkTG7AdGyFdLxaj8BBPglYCaSieenoNArj15hNobvQjDYeyMoPNW1I88sRqrv9SK2YgTXdnEjOyN0l3Tw7PvDw3fnEq3/j2ahYc3cq/fWsKw6PNxGIeKsfvo6xkGDCYflgFP7rrFAxDo5WX3y/t4P5H3mPLjv2cd7aHYGAftq7gjbdBSJdytzaN58ar6zE8oyjA49EorYtw4DIapcAjYcPGAMv+GGDThkE+WN/NSSfXURaIMJoJ8/Z7UWw7y0WfC7FzT4rovhxmpCdJT3uG36zMc8mSGh55vIT1m/o5+cQA4+syjBtnky9AZKgChGZcjaK+1kZKTTZt4fUYaAV2QZPLCUy/ximoA0mpNeTzNtKKIz1RlOOlu8uLFMJNgAOJ60ZVOu24DyrI2w6ZrMLjK5DLSwYH8yxeXE9fpMCqtwr0tycw4/E0qQHFS39IsmZ9hPPOaeaF5/v4zx84pPIZfH6LUCCIz2NhO4pUJksylcYuaEI+L11dQ+ic+05hgBDKhVvtLq3c5FRKYmhJJhHkty/keGf9LswikqHG8ldgGJr9vXFMs6iadECCoxThsId4TPGtb3Zz5gkzWP/uDkyATZsiXHHbVB5/bB3J+DB9PUk27ezntJMnMXtKA00NPgIlkM8rYsMhtrfHWb5qB5s3DhMKQGW9hZACp1CM5eLfoUkqihY3LUikk7y9ohfLgTEeOZYTygG/13DL1UN2kwJyWZuXl/ZyzbVTGBrOkIwXMEHQvTtOaUjy1BNzufnWjeyLpPjGP53G2YsrGd84hO045FI+pKHwB9MsypSz+NQz+P4DqwiHvZxz+mFIFIYn7Yot/lx9oQ+qpjUYhyBQ0WMC8PvA1g45DbZyDiQ4AnIFhy/e0MgXrqjle1+PoJTClFIytD/Nts1J5h1rcspZ5ahCmCWLq6lt3Mm+SCnLfg8bd3YQCno49fh6Fp48yMy5KT5/zkw27BjmxOO9hP0DJHGwEQjUh6BxTFAN2I5DTXkVZy+ZiSmKNTQCKSWx+AhdvVFOO34m2Ty01NXgKNs9G5QmELBomOBl244sXTviLp22LEkuV2DXuhjLXill3eo4DeObKakYJa8c9nWX89RLy9m6egQCYFleDj+yknBZL/UNQdq7/Kx6J4vPCjNrTg5fySCKD3crXLTUKMAfTHPJpWVcKtsO/I9GYQk/z70wyHNLs3xuyXQmTR0i6xQw/DFs3PATQrNudZbJEyx2b4kiBJhj1ln1x70ccfw83lw5xAnza0mnPJjBHBU1Kc449nAqQ3sJlfg4fGoNlj9CQQgyaYNlb2zgwceSnL1oBtNntaBwXIgcs7oYownKDSGhUeTRjo0QopgrbuI7tkYVQCmHgp0n79h4tEbgIIQkkciRLNiYsSSJWA7DEJhKucG3f1+c0WiaO79xBA8+uI0PVjWw8PR6xjX3c/UtlVw4NA3D0IRr+xFmjr7OBl57s49dm4fJJsEpFBCGwsZG4xw4n8YS0dEKA5t0soRnnpRs3b0PQxYLKAXSkIyOxoj0xfjls5vI52FScy0XXFZCaWWcbM6hbnyQ0mofSx/td42icVFIClAaVq/YzxELm6itsfjB/Svpj8xl1qxGKmvTeANppBD0d4bo6Sjn1eVdvPjSVkROYngUWkNB51BkMcijP1I9KZfhIAxNdGSY55/fgqU/jEICsAzB049vpABcfqVGyFryOGgBSjgkRxUd24dBg0K7Cijl1ptr39rHhrdqqW+oYu2adn73pw2sWldBfXUlpgGRwTjDwym6uqP0781gOGBZEmWDZRoY0kLiRwovpqkO0gXhKiDcAMM0JX6PgVkQqCIyKeWezgXbpdWmKfAYJhpwgIJtU1IaYNv7AyTiuQN1gXloRy2ZyHH/XWu55IbpnH/JdE5fOB3LlwYs3l29n4d/uR3SbmHjMQVaFt3vQDQa48Xn0+TzISxL0dMzCo5AFOHT1g4U88NWDlkcPCZIE0wLQkEPoZIA1VUltE2o4I1VO8jbtmt5FLaj8PgNkrH8h4v6Q4t5wxSkknk2rY2w8MI6KupitEzqwyHM5i0eAqUg/W64aa0PxLdXwMpVnax8v/Ng3Dtu5ZazOaiAVmQLBdrqa7j+yvkEAgYlQS8VYR+hMoOyMoOaWk024WPdtj3FyktjF/0EGmmKP6/AgTgU4PEZKAV2AZKOg53J0FTbzDe/vAhpFDkCB7/ck1YeOKyEMsg5BR75xdvs3Zt2gVLYODiIklEWnKs4ThgYHhtp5JDWCAjHrXHR7N8+EXD7Qbaj0Uqh9Bg34S8rcKCtUkxAYTqYhsL2J5lzVifztHWQIrgU7OBJeaCNrvEbFpvfr8LjMVEKvF4LaYdQ2TzalhimK1Q2YaEKAXJpg0zSID4qGIzaRAeGGI5m0Qq0kUfIAsKwx8jW/67AWAfOsgT5eJDY3gYKNgip0Fp9xAhFl2kOcnoNhhDksi6sSAe6ugf59WOSbF6glEM+C5mMTSqVI5EsEE9kiMUzxOJp4rEc6YSDx28QLvOSHayEpCAXC+Hzxg8ad8xohw44xjL7pLOb8U9KM7jXwRAGljRwlNtmFLrYtStyec0Y4wSthQvJSqBFgW2bo2STDkoCReMpp7iUS5nHrCEBQ4K3RHLBZU2UlElWvh6lIlzivkNoKhoEha4Slj6zG8MQOIei0KExnU7YzGltpEMMkc8ViMXT+DwGG1cPEx9R5NMgZbH8k+6Lx7i/zriJPobpQoIHA5QmlVZ4vAK/18ApaISAfMHBNKUb8x6HWfPDXH6LwbIXstQ0lBAsEXg8JmhJY32YtRtHP5R+5kdDB+D9Fb107ohRNc5PVU2Qky5qItQ4xKRpIVa9OkR3RxI7J2hoCDMwPEoy5uD3mRwxr4pASLNy+SDZjIP0gECQzDkICcecWkVFhZ9Vr0dIZ/I4Gtqaw4yM5Iml0kxuLeeq66pxrAh+q4lw1qZna4xcJk8qmWdlbJCBiNvJHusN/cX2eiqZJxpJ0b1nFCdrMPu4asZPT7Howjrqqivp6kqQzRY49bRGghUGezqSDEaTnLKklJtun4ihQnT2jlDQmhOOa+NfvjODxkmK3z/fy0B3gfETAiw6p5VkMk8ineGCi9q45VuNVLRG2LkxTNd7Pp746Wb27U0Q6U8yMpQhlcp/vDf6l4Z8QhTnXVKgleaCq6Yxf1EZgcYhWiZ7SfYGefJnfaxZE2HRkgaqa/w8/osO9m7PctkdpfzrnbPZubmU1HCAeScl+dUz6/iPr+2HAnzu0lamTC/jd7/dQ9Brcc2Nk2mbn6Wrd5DIjjADWz088ZOtjAxnD9Bxlxzqj3Wnxd8ypRybMk49rJrTL5nAhLkONZOT1I8rY8NyxaMPttM80ctlV7Ty6rIIjz7UxTFnmvzX/TMIei2+f88Wnrwnw7wFFdzw5TZ27Rrlhed6OfPMZs65vJxRNUjfTovothBvv7ifN//QdRDY/srERvytY9axmZYUgpMWt3DCBTVUTknQOFljZst46sEIW7dHuOm2FkJ+D9/+VjuBihzjGyxW/anA7V9t4cijQzz0QAexqMV1tzVTOzVDz54CQ7vLWP9qkqXPtjM6kj1YJ+jPcMQ0NirVaPbsGmHr+yOUWdWYRgAVHOGExaXUVVfw8H3d5JwM3/nuREajBpE+zU8emkQqk+Heu7s5fHYt1905DseXoHdLkF0rvDz93+2sWNZNNmsjDeHC8t86g/40g+5DO8TzFtSz5MoJ1M/MUd2WRRZ8PPOzKF2do9z+9RZqGy0e+GEXkT6TS2+oZ9zkPAOdgsHtIV57NsKrL+7BcVRRcP2Jh3zi007qx5JcKU1JyMM5l05iwbnllLfFqKoTbHnH4ZVnByjkFUctrObEC/2k0lkS3WE2vV7g+Ud20rc34Z7WxX0+1S2Av/eqwVhuABx2RA0XXzeRlnkFKlrS2EkfI4OKytYcsX0mg9tLeemxXpa/0vUxT37qawyfxV0JIUBIVxi/3+L8q6Zw3PlhaqemUGaOeG+ILa85PPXATvp7E8Wpo/5M7k+Iz/Kyx6HemHXkOC7551Yqak1efKSfZb/pcPn8Z2D1D9NR09QHG4GfzZKG0IAuCXl0fVOpy8WEuz7rd4l/1HWbQ73xmVv9kM//AIq4uPnmv4ECAAAAAElFTkSuQmCC" style="width:80px;height:80px;object-fit:contain;margin-bottom:16px;display:block;margin-left:auto;margin-right:auto;" alt="헌터혈맹">
+        <h2>헌터혈맹 출석관리</h2>
         <p>비밀번호를 입력하세요</p>
         <input type="password" id="lock-password" class="lock-input"
                placeholder="Password"
@@ -308,72 +384,86 @@
 <div class="container">
     <!-- 헤더 -->
     <div class="header">
-        <div>
-            <h1>📅 헌터혈맹 출석관리<span class="version">v1.8</span></h1>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
+        <h1><img src="data:image/png;base64,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" style="width:32px;height:32px;object-fit:contain;" alt="헌터혈맹"> 헌터혈맹 출석관리<span class="version">v2.0</span></h1>
+        <div style="display:flex; gap:6px; align-items:center;">
             <button id="sound-toggle-btn" onclick="toggleSound()"
-                style="padding: 8px 12px; background: #ecf0f1; color: #2c3e50; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight:bold; transition: all 0.3s;" title="알림음 on/off">
+                style="padding:6px 10px; background:#f0f0f0; color:#2c3e50; border:none; border-radius:6px; cursor:pointer; font-size:0.82rem; font-weight:bold;">
                 🔔 알림
             </button>
             <button id="admin-toggle-btn" onclick="toggleAdminMode()"
-                style="padding: 8px 14px; background: #7f8c8d; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold; transition: all 0.3s;">
+                style="padding:6px 10px; background:#7f8c8d; color:white; border:none; border-radius:6px; cursor:pointer; font-size:0.82rem; font-weight:bold;">
                 🔒 사용자 모드
             </button>
         </div>
     </div>
     
-    <!-- Tab -->
-    <div class="tabs">
-        <button class="tab active" onclick="switchTab('attendance')">📋 출석 체크</button>
-        <button class="tab" onclick="switchTab('schedules')">📊 주간출석현황</button>
-        <button class="tab" onclick="switchTab('stats')">📈 통계</button>
-        <button class="tab admin-only" onclick="switchTab('users')">⚙️ 관리페이지</button>
+    <!-- 하단 네비게이션 -->
+    <div class="bottom-nav">
+        <button class="bottom-nav-item active" id="nav-attendance" onclick="switchTab('attendance')">
+            <span class="nav-icon">📋</span>출석 체크
+        </button>
+        <button class="bottom-nav-item" id="nav-schedules" onclick="switchTab('schedules')">
+            <span class="nav-icon">📊</span>주간 현황
+        </button>
+        <button class="bottom-nav-item" id="nav-stats" onclick="switchTab('stats')">
+            <span class="nav-icon">📈</span>통계
+        </button>
+        <button class="bottom-nav-item admin-only" id="nav-users" onclick="switchTab('users')" style="display:none;">
+            <span class="nav-icon">⚙️</span>관리
+        </button>
     </div>
     
     <!-- Tab 1: 출석 체크 -->
     <div id="tab-attendance" class="tab-content active">
-        <div class="card">
-            <h2>📅 현재 진행 중인 보스</h2>
-            <div style="display: flex; gap: 10px; margin-bottom: 15px; align-items: center; flex-wrap: wrap;">
-                <label style="color: #2c3e50; font-weight: bold;">보스 선택:</label>
-                <select id="boss-selector" onchange="changeBoss()" style="flex: 1; min-width: 250px; padding: 10px; font-size: 1rem; border: 2px solid #5D6D7E; border-radius: 6px; background: white;">
-                    <option value="current">⭐ 현재 진행 중인 보스 (자동)</option>
-                </select>
+
+        <!-- 상단: 내 이름 + 현재 보스 나란히 -->
+        <div style="padding:14px 18px 0;">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+                <!-- 내 이름 (빠른 출석) -->
+                <div id="my-name-display" style="background:#fff8e6; border-radius:10px; border:1px solid #ffd966; padding:31px 12px;">
+                    <div id="my-names-quick-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+                </div>
+                <!-- 현재 보스 카드 -->
+                <div id="current-boss-card"></div>
             </div>
-            <div id="today-schedules"></div>
+            <!-- 출석하기 버튼 (전체 폭) — updateMyNameDisplay에서 렌더링 -->
+            <div id="quick-attend-btn-area" style="margin-bottom:10px;"></div>
         </div>
-        
+
+        <!-- 보스 선택 드롭다운 -->
+        <div style="padding:0 18px 8px; border-bottom:1px solid #f0f0f0;">
+            <select id="boss-selector" onchange="changeBoss()" style="width:100%; padding:8px 10px; font-size:0.9rem; border:1.5px solid #d0d0d0; border-radius:8px; background:white; margin-bottom:0;">
+                <option value="current">⭐ 현재 진행 중인 보스 (자동)</option>
+            </select>
+        </div>
+
+        <!-- 오늘 스케줄 + 출석 완료 -->
+        <div id="today-schedules" style="padding:0 18px 14px;"></div>
+
         <!-- 성물 필요 인원 -->
-        <div class="card" id="relic-alert-section" style="display: none;">
+        <div class="card" id="relic-alert-section" style="display:none;">
             <h2>⚠️ 성물 필요 인원</h2>
-            <div id="relic-alert-list" style="margin-top: 10px;"></div>
+            <div id="relic-alert-list" style="margin-top:10px;"></div>
         </div>
-        
-        <!-- 아이템 드랍 기록 -->
-        
-        <div class="card">
-            <h2>📋 출석 체크</h2>
-            <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
-                <input type="text" id="search-user" placeholder="🔍 이름 검색..." onkeyup="filterAttendanceTable()" style="flex: 1; min-width: 200px; margin: 0;">
-                <select id="server-filter" onchange="filterAttendanceTable()" style="flex: 0 0 150px; margin: 0;">
+
+        <!-- 출석 체크 목록 -->
+        <div style="padding:14px 18px;">
+            <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+                <input type="text" id="search-user" placeholder="🔍 이름 검색..." onkeyup="filterAttendanceTable()" style="flex:1; min-width:140px; margin:0; padding:8px 10px; font-size:0.9rem; border:1.5px solid #d0d0d0; border-radius:8px;">
+                <select id="server-filter" onchange="filterAttendanceTable()" style="flex:0 0 110px; margin:0; padding:8px 10px; font-size:0.9rem; border:1.5px solid #d0d0d0; border-radius:8px;">
                     <option value="all">전체 서버</option>
                     <option value="jingir">진기르</option>
                     <option value="pandora">판도라</option>
                     <option value="support">지원</option>
                 </select>
-                <button class="btn btn-primary" onclick="showMyNameModal()" style="flex: 0 0 auto; margin: 0; padding: 10px 20px; font-size: 1rem;">
+                <button class="btn btn-primary" onclick="showMyNameModal()" style="flex:0 0 auto; margin:0; padding:8px 14px; font-size:0.9rem; border-radius:8px;">
                     ⭐ 내 이름
                 </button>
             </div>
-            <div id="my-name-display" style="display: none; margin-bottom: 15px; padding: 12px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
-                <div style="color: #856404; font-weight: bold; margin-bottom: 10px;">📌 내 이름 (빠른 출석)</div>
-                <div id="my-names-quick-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
-            </div>
-            <p style="color: #7f8c8d; font-size: 0.9rem; margin-bottom: 10px;">
+            <p style="color:#7f8c8d; font-size:0.85rem; margin-bottom:10px;">
                 표시: <strong id="filtered-count">0</strong>명 / 전체: <strong id="total-count">0</strong>명
             </p>
-            <div style="overflow-x: auto;">
+            <div style="overflow-x:auto;">
                 <table id="attendance-table">
                     <thead>
                         <tr>
@@ -387,7 +477,7 @@
                 </table>
             </div>
         </div>
-        
+
     </div>
     
     <!-- Tab 2: 통계 -->
@@ -430,7 +520,7 @@
                 </select>
             </div>
             <div style="overflow: auto; max-height: 600px; border: 1px solid #e0e0e0; border-radius: 6px;">
-                <table>
+                <table id="stats-table">
                     <thead>
                         <tr>
                             <th style="position: sticky; top: 0; z-index: 1;">순위</th>
@@ -486,7 +576,7 @@
                     표시: <strong id="filtered-user-count">0</strong>명 / 전체: <strong id="total-user-count">0</strong>명
                 </p>
                 <div style="overflow-x:auto;">
-                    <table>
+                    <table id="user-mgmt-table">
                         <thead>
                             <tr>
                                 <th width="8%">ID</th>
@@ -1017,6 +1107,10 @@ let todayAttendance = null;
 let currentScheduleId = null;
 let currentScheduleDate = null; // 수동 선택된 과거 보스의 날짜 (null이면 오늘)
 let currentAttendeesListener = null; // 현재 출석 인원 리스너
+let currentAttendeesCb = null;       // 현재 출석 인원 리스너 콜백 (경로 공유 시 자기 콜백만 제거용)
+let todayAttendanceRef = null;       // 오늘 출석 리스너 ref
+let todayAttendanceCb = null;        // 오늘 출석 리스너 콜백
+let _usersListenerAttached = false;  // boss_attendance_users 리스너 중복 부착 방지
 let servers = JSON.parse(localStorage.getItem('servers') || '{"jingir":"진기르","pandora":"판도라","support":"지원"}');
 
 // 아코디언 토글
@@ -1155,6 +1249,8 @@ const ADMIN_PW = 'ht2026'; // ← 비밀번호 변경 시 여기 수정
 
 function applyMode() {
     document.querySelectorAll('.admin-only').forEach(el => {
+        // 'flex' 고정 대신 인라인 오버라이드를 제거해 각 요소 고유 CSS(class)가 display를 결정하도록 함
+        // (.bottom-nav-item은 이미 display:flex, .tab-content는 .active일 때 display:block)
         el.style.display = isAdmin ? '' : 'none';
     });
 
@@ -1392,10 +1488,11 @@ function changeBoss() {
 
 // Tab 전환
 function switchTab(tab) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    event.target.classList.add('active');
+    document.querySelectorAll('.bottom-nav-item').forEach(b => b.classList.remove('active'));
     document.getElementById(`tab-${tab}`).classList.add('active');
+    const navBtn = document.getElementById(`nav-${tab}`);
+    if (navBtn) navBtn.classList.add('active');
     
     if (tab === 'stats') loadStats();
     if (tab === 'users') {
@@ -1411,6 +1508,8 @@ function switchTab(tab) {
 
 // 사용자 로드
 function loadUsers() {
+    if (_usersListenerAttached) return; // .on은 영구 구독 → 최초 1회만 부착 (중복 부착/렌더 방지)
+    _usersListenerAttached = true;
     db.ref('boss_attendance_users').on('value', (snapshot) => {
         const data = snapshot.val();
         users = data ? Object.values(data).filter(u => u && u.id && u.name) : [];
@@ -1448,6 +1547,13 @@ function loadSchedules() {
 
 // 오늘 출석 로드
 function loadTodayAttendance() {
+    // 이전 출석 리스너 정리 — 자기 콜백만 제거하여 같은 경로의 다른 리스너(현재 출석 인원)는 보존
+    if (todayAttendanceRef && todayAttendanceCb) {
+        todayAttendanceRef.off('value', todayAttendanceCb);
+    }
+    todayAttendanceRef = null;
+    todayAttendanceCb = null;
+
     const currentBoss = getCurrentBoss();
     if (currentBoss) {
         // 보스 윈도우에 들어오면 출석 데이터 리스너 응답을 기다리지 않고
@@ -1463,7 +1569,8 @@ function loadTodayAttendance() {
 
         const today = formatLocalDate(new Date());
         const attendanceKey = `${today}_${currentBoss.id}`;
-        db.ref(`boss_attendance/${attendanceKey}`).on('value', (snapshot) => {
+        todayAttendanceRef = db.ref(`boss_attendance/${attendanceKey}`);
+        todayAttendanceCb = todayAttendanceRef.on('value', (snapshot) => {
             todayAttendance = snapshot.val();
             currentScheduleId = currentBoss.id;
             renderAttendanceTable();
@@ -1582,6 +1689,7 @@ function getCurrentBoss() {
 // 오늘 스케줄 렌더링
 async function renderTodaySchedules() {
     const container = document.getElementById('today-schedules');
+    const bossCard = document.getElementById('current-boss-card');
     const currentBoss = getCurrentBoss();
     const myServer = getMyServer();
     const serverNames = { jingir: '진기르', pandora: '판도라', support: '지원' };
@@ -1680,10 +1788,11 @@ async function renderTodaySchedules() {
 
     // ── 현재 보스 없음 ──
     if (!currentBoss) {
-        container.innerHTML = scheduleTableHtml + `
-            <div style="padding:15px; background:#f8f9fa; border-radius:8px; border-left:4px solid #95a5a6;">
-                <p style="color:#7f8c8d; margin:0;">⏰ 현재 출석 가능한 보스가 없습니다.</p>
-                <p style="color:#95a5a6; margin:6px 0 0 0; font-size:0.85rem;">출석은 보스 시간 10분전 부터 가능하며 보스 젠 후에 10분뒤 종료 됩니다.</p>
+        container.innerHTML = scheduleTableHtml;
+        if (bossCard) bossCard.innerHTML = `
+            <div style="background:#f8f9fa; border-radius:10px; border:1px solid #e0e0e0; padding:12px; height:100%; display:flex; flex-direction:column; justify-content:center;">
+                <p style="color:#7f8c8d; margin:0; font-size:0.85rem; font-weight:bold;">진행 중인 보스 없음</p>
+                <p style="color:#95a5a6; margin:4px 0 0; font-size:0.78rem;">보스 10분 전부터 출석 가능</p>
             </div>`;
         return;
     }
@@ -1714,12 +1823,18 @@ async function renderTodaySchedules() {
     // 현재 보스 표시명 → 내 서버 기준으로 계산
     const currentBossDisplayName = getBossDisplayName(currentBoss, myServer);
 
-    container.innerHTML = scheduleTableHtml + `
-        <div class="schedule-card" style="border-left-color:#27ae60;">
-            <h3>🕐 ${currentBoss.time} ${currentBossDisplayName}</h3>
-            <div style="margin:6px 0;">${serverBadgesHtml}</div>
-            <p style="margin:8px 0 0 0;">${statusBadge}</p>
-            <p class="schedule-info" style="margin-top:8px;">${currentBoss.description || ''}</p>
+    // 스케줄 표
+    container.innerHTML = scheduleTableHtml;
+
+    // 현재 보스 카드 (상단 그리드 우측)
+    if (bossCard) bossCard.innerHTML = `
+        <div style="background:${timeStatus.status === 'present' ? '#e8faf4' : '#f8f9fa'}; border-radius:10px; border:1px solid ${timeStatus.status === 'present' ? '#16a085' : '#e0e0e0'}; padding:12px; height:100%; display:flex; flex-direction:column; justify-content:space-between;">
+            <div>
+                <div style="font-size:0.78rem; color:${timeStatus.status === 'present' ? '#16a085' : '#95a5a6'}; font-weight:bold; margin-bottom:4px;">${timeStatus.status === 'present' ? '⭕ 진행 중' : '⏸ 대기 중'}</div>
+                <div style="font-size:1.3rem; font-weight:bold; color:#2c3e50;">${currentBossDisplayName}</div>
+                <div style="font-size:0.8rem; color:#7f8c8d; margin-top:2px;">${currentBoss.time}</div>
+            </div>
+            <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${serverBadgesHtml}</div>
         </div>`;
 
     // 성물 필요 인원 표시
@@ -1780,11 +1895,12 @@ function autoMarkAbsent(boss) {
 
 // 현재 보스 출석 인원 표시
 function showCurrentAttendees(boss) {
-    // 이전 리스너 정리
-    if (currentAttendeesListener) {
-        currentAttendeesListener.off();
-        currentAttendeesListener = null;
+    // 이전 리스너 정리 — 자기 콜백만 제거하여 같은 경로의 다른 리스너(오늘 출석)는 보존
+    if (currentAttendeesListener && currentAttendeesCb) {
+        currentAttendeesListener.off('value', currentAttendeesCb);
     }
+    currentAttendeesListener = null;
+    currentAttendeesCb = null;
     
     if (!boss) {
         const section = document.getElementById('current-attendees-section');
@@ -1797,7 +1913,7 @@ function showCurrentAttendees(boss) {
     
     // 새 리스너 등록
     currentAttendeesListener = db.ref(`boss_attendance/${attendanceKey}`);
-    currentAttendeesListener.on('value', (snapshot) => {
+    currentAttendeesCb = currentAttendeesListener.on('value', (snapshot) => {
         const attendanceData = snapshot.val();
         
         // 출석 인원 섹션 DOM
@@ -4047,7 +4163,6 @@ function addNewUser() {
     db.ref(`boss_attendance_users/${newId}`).set(newUser).then(() => {
         alert(`✅ "${name}" 님이 추가되었습니다!`);
         closeAddUserModal();
-        loadUsers(); // 사용자 목록 새로고침
     }).catch(error => {
         console.error('Error:', error);
         alert('⚠️ 사용자 추가 실패: ' + error.message);
@@ -4093,7 +4208,6 @@ function updateUser() {
         const serverName = servers[server] || '미지정';
         alert(`✅ "${user.name}" 님의 서버가 "${serverName}"(으)로 변경되었습니다!`);
         closeEditUserModal();
-        loadUsers(); // 사용자 목록 새로고침
     }).catch(error => {
         console.error('Error:', error);
         alert('⚠️ 서버 변경 실패: ' + error.message);
@@ -4179,7 +4293,6 @@ function deleteUser(userId, userName) {
     // Firebase에서 삭제
     db.ref(`boss_attendance_users/${userId}`).remove().then(() => {
         alert(`✅ "${userName}" 님이 삭제되었습니다.`);
-        loadUsers(); // 사용자 목록 새로고침
     }).catch(error => {
         console.error('Error:', error);
         alert('⚠️ 사용자 삭제 실패: ' + error.message);
@@ -4247,7 +4360,6 @@ function saveRelics() {
     db.ref(`boss_attendance_users/${userId}/missingRelics`).set(missingRelics).then(() => {
         alert(`✅ "${user.name}" 님의 성물 정보가 저장되었습니다!`);
         closeRelicModal();
-        loadUsers(); // 사용자 목록 새로고침
     }).catch(error => {
         console.error('Error:', error);
         alert('⚠️ 성물 저장 실패: ' + error.message);
@@ -4979,16 +5091,36 @@ function updateMyNameDisplay() {
     
     const names = getMyNames();
     if (names.length === 0) {
-        display.style.display = 'none';
-        list.innerHTML = '';
+        // 미설정 시 등록 유도 UI 표시
+        display.style.display = 'flex';
+        display.style.flexDirection = 'column';
+        display.style.alignItems = 'center';
+        display.style.justifyContent = 'center';
+        display.style.cursor = 'pointer';
+        display.style.minHeight = '80px';
+        display.onclick = showMyNameModal;
+        list.innerHTML = `
+            <div style="text-align:center; color:#b8860b;">
+                <div style="font-size:1.5rem; margin-bottom:4px;">👤</div>
+                <div style="font-weight:bold; font-size:0.9rem;">내 이름 등록</div>
+                <div style="font-size:0.75rem; color:#a08030; margin-top:2px;">눌러서 설정</div>
+            </div>`;
+        const btnArea = document.getElementById('quick-attend-btn-area');
+        if (btnArea) btnArea.innerHTML = '';
         return;
     }
-    
-    display.style.display = 'block';
+
+    display.onclick = null;
+    display.style.cursor = 'default';
+    display.style.minHeight = '';
+    display.style.alignItems = '';
+    display.style.justifyContent = '';
+    display.style.display = 'flex';
+    display.style.flexDirection = 'column';
     
     const slots = getMyNameSlots();
     // 각 이름별로 한 행씩 렌더링
-    list.innerHTML = slots.map(slot => {
+    const slotItems = slots.map(slot => {
         const name = slot.name;
         const slotServer = slot.server || '';
         const user = users.find(u => u.name === name);
@@ -5049,26 +5181,35 @@ function updateMyNameDisplay() {
         const currentBossForQuick = schedules.find(s => s.id === currentScheduleId);
         let quickBtnHtml;
         if (!exists) {
-            quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#bdc3c7;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">⭕ 출석하기</button>`;
+            quickBtnHtml = `<button disabled style="width:100%;padding:20px;background:#bdc3c7;color:white;border:none;border-radius:8px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">⭕ 출석하기</button>`;
         } else if (isAttended) {
-            quickBtnHtml = `<button disabled style="width:100%;padding:9px;background:#27ae60;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">✅ 출석 완료</button>`;
+            quickBtnHtml = `<button disabled style="width:100%;padding:20px;background:#27ae60;color:white;border:none;border-radius:8px;cursor:not-allowed;font-size:0.95rem;font-weight:bold;">✅ 출석 완료</button>`;
         } else {
-            quickBtnHtml = `<button data-quick-name="${safeName}" data-slot-id="${slotId}" onclick="quickAttendanceByName('${safeName}', '${slotId}')" style="width:100%;padding:9px;background:#16a085;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.95rem;font-weight:bold;">⭕ 출석하기</button>`;
+            quickBtnHtml = `<button data-quick-name="${safeName}" data-slot-id="${slotId}" onclick="quickAttendanceByName('${safeName}', '${slotId}')" style="width:100%;padding:20px;background:#16a085;color:white;border:none;border-radius:8px;cursor:pointer;font-size:0.95rem;font-weight:bold;">⭕ 출석하기</button>`;
         }
 
-        return `
-            <div style="display: flex; flex-direction: column; gap: 6px; padding: 8px; background: white; border-radius: 6px; border: 1px solid #fde9a0;">
-                <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-                    <span style="font-weight: bold; color: #2c3e50; font-size: 1rem;">${name} ${warningIcon}</span>
-                    <button onclick="removeMyName('${safeName}')" style="padding: 3px 10px; background: transparent; border: 1px solid #856404; color: #856404; border-radius: 4px; cursor: pointer; font-size: 0.8rem; white-space: nowrap; flex-shrink: 0;">해제</button>
-                </div>
-                <div style="display:flex; gap:5px;">
-                    ${serverToggleBtns}
-                </div>
-                ${quickBtnHtml}
-            </div>
-        `;
-    }).join('');
+        return {
+            cardHtml: `
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                        <span style="font-weight:bold; color:#2c3e50; font-size:1.43rem;">${name} ${warningIcon}</span>
+                        <button onclick="removeMyName('${safeName}')" style="padding:3px 8px; background:transparent; border:1px solid #aaa; color:#888; border-radius:4px; cursor:pointer; font-size:0.75rem;">해제</button>
+                    </div>
+                    <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                        ${serverToggleBtns}
+                    </div>
+                </div>`,
+            btnHtml: quickBtnHtml
+        };
+    });
+
+    list.innerHTML = slotItems.map(item => item.cardHtml).join('');
+
+    // 출석하기 버튼을 별도 영역에 렌더링 (전체 폭)
+    const btnArea = document.getElementById('quick-attend-btn-area');
+    if (btnArea) {
+        btnArea.innerHTML = slotItems.map(item => item.btnHtml).join('');
+    }
 }
 
 // 모달 닫기
