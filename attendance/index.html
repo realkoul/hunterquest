@@ -200,65 +200,7 @@
             /* 카드 패딩 줄이기 */
             .card { padding: 12px; margin-bottom: 12px; }
 
-            /* 길드원 명단 관리 테이블 - 컴팩트 카드 레이아웃 (기존 출석체크 표와 동일한 패턴) */
-            #user-mgmt-table thead { display: none; }
-            #user-mgmt-table, #user-list-tbody, #user-list-tbody tr {
-                display: block;
-            }
-            #user-list-tbody tr {
-                background: white;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                padding: 12px;
-                margin-bottom: 8px;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            }
-            #user-list-tbody td {
-                display: block;
-                padding: 0;
-                border: none;
-                text-align: left;
-            }
-            /* ID - 작고 옅게 */
-            #user-list-tbody td[data-label="ID"] {
-                font-size: 0.75rem;
-                color: #aaa;
-                margin-bottom: 2px;
-            }
-            #user-list-tbody td[data-label="ID"]::before {
-                content: 'ID ';
-            }
-            /* 이름 - 크고 굵게 강조 */
-            #user-list-tbody td[data-label="이름"] {
-                font-size: 1.15rem;
-                margin-bottom: 6px;
-            }
-            /* 서버 / 성물 / 상태 - 라벨과 함께 한 줄씩 */
-            #user-list-tbody td[data-label="서버"],
-            #user-list-tbody td[data-label="성물"],
-            #user-list-tbody td[data-label="상태"] {
-                display: inline-block;
-                font-size: 0.85rem;
-                margin-right: 12px;
-                margin-bottom: 8px;
-            }
-            #user-list-tbody td[data-label="서버"]::before,
-            #user-list-tbody td[data-label="성물"]::before,
-            #user-list-tbody td[data-label="상태"]::before {
-                content: attr(data-label) ': ';
-                color: #7f8c8d;
-                font-weight: normal;
-            }
-            /* 관리 버튼 - 가로로 나란히, 필요 시 줄바꿈 */
-            #user-list-tbody td[data-label="관리"] {
-                display: flex;
-                gap: 6px;
-                flex-wrap: wrap;
-                margin-top: 6px;
-            }
-            #user-list-tbody td[data-label="관리"] button {
-                margin-left: 0 !important;
-            }
+
             
             /* 통계 등 일반 표 - 컴팩트 폰트만 조정. 가로 스크롤은 표를 감싸는 div의 overflow가 담당
                (표 자체를 display:block으로 바꾸면 thead/tbody/tr은 그대로 표 방식이라
@@ -2530,6 +2472,34 @@ function renderSchedules() {
                     grid-template-columns: 1fr;
                 }
             }
+
+        /* 길드원 명단 관리 - 항상 카드형 레이아웃 */
+        #user-mgmt-table thead { display: none; }
+        #user-mgmt-table, #user-list-tbody, #user-list-tbody tr { display: block; }
+        #user-list-tbody tr {
+            background: white; border: 1px solid #e0e0e0;
+            border-radius: 8px; padding: 12px; margin-bottom: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        #user-list-tbody td { display: block; padding: 0; border: none; text-align: left; }
+        #user-list-tbody td[data-label="ID"] { font-size: 0.75rem; color: #aaa; margin-bottom: 2px; }
+        #user-list-tbody td[data-label="ID"]::before { content: 'ID '; }
+        #user-list-tbody td[data-label="이름"] { font-size: 1.15rem; margin-bottom: 6px; }
+        #user-list-tbody td[data-label="서버"],
+        #user-list-tbody td[data-label="성물"],
+        #user-list-tbody td[data-label="상태"] {
+            display: inline-block; font-size: 0.85rem;
+            margin-right: 12px; margin-bottom: 8px;
+        }
+        #user-list-tbody td[data-label="서버"]::before,
+        #user-list-tbody td[data-label="성물"]::before,
+        #user-list-tbody td[data-label="상태"]::before {
+            content: attr(data-label) ': '; color: #7f8c8d; font-weight: normal;
+        }
+        #user-list-tbody td[data-label="관리"] {
+            display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;
+        }
+        #user-list-tbody td[data-label="관리"] button { margin-left: 0 !important; }
         </style>
         
         <div class="stats-summary">
