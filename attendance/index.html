@@ -343,6 +343,13 @@
     </style>
 </head>
 <body>
+<!-- 이미지 원본 크기 모달 (container 바깥 — 모바일 position:fixed 클리핑 버그 방지) -->
+<div id="schedule-image-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.9); z-index:99998; overflow:auto; -webkit-overflow-scrolling:touch;">
+    <div style="min-height:100%; display:flex; align-items:center; justify-content:center; padding:10px;">
+        <img id="schedule-image-modal-img" src="" style="border-radius:6px; display:block;">
+    </div>
+    <button onclick="closeScheduleImageModal()" style="position:fixed; top:16px; right:20px; background:rgba(255,255,255,0.2); color:white; border:none; border-radius:50%; width:40px; height:40px; font-size:1.3rem; cursor:pointer; z-index:99999;">✕</button>
+</div>
 <!-- 데이터 로딩 오버레이 -->
 <div id="loading-overlay" style="
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -415,6 +422,21 @@
     
     <!-- Tab 1: 출석 체크 -->
     <div id="tab-attendance" class="tab-content active">
+
+        <!-- 이번 주 서버 스케줄 이미지 -->
+        <div id="weekly-schedule-image-section" style="padding:14px 18px 0; display:none;">
+            <div style="background:white; border-radius:10px; border:1px solid #e0e0e0; overflow:hidden;">
+                <div style="padding:8px 12px; background:#f8f9fa; border-bottom:1px solid #e0e0e0; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                    <span style="font-size:0.85rem; font-weight:bold; color:#2c3e50;">🗓️ 이번 주 서버 스케줄</span>
+                    <div style="display:flex; gap:5px;">
+                        <button onclick="switchScheduleImageServer('jingir')" id="sch-img-tab-jingir" style="padding:4px 10px; border-radius:5px; border:1.5px solid #3498db; background:#3498db; color:white; font-size:0.75rem; font-weight:bold; cursor:pointer;">진기르</button>
+                        <button onclick="switchScheduleImageServer('pandora')" id="sch-img-tab-pandora" style="padding:4px 10px; border-radius:5px; border:1.5px solid #9b59b6; background:white; color:#9b59b6; font-size:0.75rem; font-weight:bold; cursor:pointer;">판도라</button>
+                        <button onclick="switchScheduleImageServer('support')" id="sch-img-tab-support" style="padding:4px 10px; border-radius:5px; border:1.5px solid #27ae60; background:white; color:#27ae60; font-size:0.75rem; font-weight:bold; cursor:pointer;">지원</button>
+                    </div>
+                </div>
+                <div id="weekly-schedule-image-container" style="padding:8px;"></div>
+            </div>
+        </div>
 
         <!-- 상단: 내 이름 + 현재 보스 나란히 -->
         <div style="padding:14px 18px 0;">
@@ -626,6 +648,49 @@
                         <span style="font-size:1.2rem;">📅</span>
                         <strong style="color:#2c3e50; font-size:1rem;">서버별 주간 스케줄 배정</strong>
                         <span style="background:#e74c3c; color:white; font-size:0.75rem; padding:2px 7px; border-radius:4px; font-weight:bold;">관리자</span>
+                    </div>
+
+                    <!-- 🗓️ 이번 주 서버 스케줄 이미지 업로드 (서버별) -->
+                    <div style="background:white; border:1px solid #e0e0e0; border-radius:8px; padding:14px; margin-bottom:16px;">
+                        <div style="font-size:0.9rem; font-weight:bold; color:#2c3e50; margin-bottom:4px;">🗓️ 이번 주 서버 스케줄 이미지</div>
+                        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 12px 0;">
+                            서버별로 다른 이미지를 올릴 수 있습니다. 길드원 화면(출석 체크 탭)에 표시되며, 매주 수요일 0시 기준 자동 삭제됩니다.
+                        </p>
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+                            <div id="admin-sch-img-jingir" style="border:1px solid #e0e0e0; border-radius:8px; padding:10px;">
+                                <div style="font-size:0.82rem; font-weight:bold; color:#3498db; margin-bottom:6px;">진기르</div>
+                                <div class="admin-sch-img-preview" data-server="jingir" style="text-align:center; color:#bbb; font-size:0.78rem; padding:10px; border:1px dashed #e0e0e0; border-radius:6px; margin-bottom:8px; cursor:pointer;">
+                                    업로드된 이미지 없음
+                                </div>
+                                <div style="display:flex; gap:6px;">
+                                    <label for="schedule-image-upload-jingir" style="flex:1; text-align:center; padding:5px 8px; background:#3498db; color:white; border-radius:6px; font-size:0.75rem; font-weight:bold; cursor:pointer;">📤 업로드</label>
+                                    <input type="file" id="schedule-image-upload-jingir" accept="image/*" style="display:none;" onchange="uploadWeeklyScheduleImage(this, 'jingir')">
+                                    <button onclick="deleteWeeklyScheduleImage('jingir')" style="padding:5px 8px; background:#c0392b; color:white; border:none; border-radius:6px; font-size:0.75rem; cursor:pointer;">🗑️</button>
+                                </div>
+                            </div>
+                            <div id="admin-sch-img-pandora" style="border:1px solid #e0e0e0; border-radius:8px; padding:10px;">
+                                <div style="font-size:0.82rem; font-weight:bold; color:#9b59b6; margin-bottom:6px;">판도라</div>
+                                <div class="admin-sch-img-preview" data-server="pandora" style="text-align:center; color:#bbb; font-size:0.78rem; padding:10px; border:1px dashed #e0e0e0; border-radius:6px; margin-bottom:8px; cursor:pointer;">
+                                    업로드된 이미지 없음
+                                </div>
+                                <div style="display:flex; gap:6px;">
+                                    <label for="schedule-image-upload-pandora" style="flex:1; text-align:center; padding:5px 8px; background:#9b59b6; color:white; border-radius:6px; font-size:0.75rem; font-weight:bold; cursor:pointer;">📤 업로드</label>
+                                    <input type="file" id="schedule-image-upload-pandora" accept="image/*" style="display:none;" onchange="uploadWeeklyScheduleImage(this, 'pandora')">
+                                    <button onclick="deleteWeeklyScheduleImage('pandora')" style="padding:5px 8px; background:#c0392b; color:white; border:none; border-radius:6px; font-size:0.75rem; cursor:pointer;">🗑️</button>
+                                </div>
+                            </div>
+                            <div id="admin-sch-img-support" style="border:1px solid #e0e0e0; border-radius:8px; padding:10px;">
+                                <div style="font-size:0.82rem; font-weight:bold; color:#27ae60; margin-bottom:6px;">지원</div>
+                                <div class="admin-sch-img-preview" data-server="support" style="text-align:center; color:#bbb; font-size:0.78rem; padding:10px; border:1px dashed #e0e0e0; border-radius:6px; margin-bottom:8px; cursor:pointer;">
+                                    업로드된 이미지 없음
+                                </div>
+                                <div style="display:flex; gap:6px;">
+                                    <label for="schedule-image-upload-support" style="flex:1; text-align:center; padding:5px 8px; background:#27ae60; color:white; border-radius:6px; font-size:0.75rem; font-weight:bold; cursor:pointer;">📤 업로드</label>
+                                    <input type="file" id="schedule-image-upload-support" accept="image/*" style="display:none;" onchange="uploadWeeklyScheduleImage(this, 'support')">
+                                    <button onclick="deleteWeeklyScheduleImage('support')" style="padding:5px 8px; background:#c0392b; color:white; border:none; border-radius:6px; font-size:0.75rem; cursor:pointer;">🗑️</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- 주차 선택 -->
@@ -1274,6 +1339,7 @@ function applyMode() {
 
     populateBossSelector();
     renderAttendanceTable();
+    loadWeeklyScheduleImage();
 }
 
 function toggleAdminMode() {
@@ -1314,6 +1380,8 @@ window.onload = function() {
     populateAssignWeekSelect();
     // 이번 주 배정 데이터 로드
     loadWeekAssignment();
+    // 이번 주 서버 스케줄 이미지 로드 (+ 지난 주 자동 정리)
+    loadWeeklyScheduleImage();
 };
 
 
@@ -1505,6 +1573,7 @@ function switchTab(tab) {
     if (tab === 'users') {
         renderUserList();
         populateAdminBossSelector();
+        renderAdminScheduleImagePreviews(); // 관리 탭 열 때만 3개 서버 이미지 온디맨드 로드
     }
     // 출석 체크 탭으로 돌아올 때 서버 탭 상태 초기화 (내 서버로 리셋)
     if (tab === 'attendance') {
@@ -4830,6 +4899,219 @@ function getMyNames() {
 // 현재 주차 배정 데이터 캐시 (Firebase에서 로드)
 let weekAssignCache = {};  // { scheduleId: { assignedServers, serverFloors } }
 let weekAssignCacheKey = '';  // 캐시된 주차
+
+// ========== 🗓️ 이번 주 서버 스케줄 이미지 (서버별) ==========
+// 경로: weekly_schedule_image/{weekStartDate}/{serverKey} — 실제 이미지(용량 큼)
+// 경로: weekly_schedule_meta/{weekStartDate}/{serverKey} — 존재 여부만(용량 작음, true/false)
+// 대역폭 절약: 메타만 항상 읽고, 실제 이미지는 "선택된 탭" 것만 온디맨드로 다운로드
+// 자동 정리: 조회 시 이번 주(getWeekStart) 이전 데이터는 메타 기준으로 삭제
+
+let currentScheduleImageServer = getMyServer() || 'jingir';
+let weeklyScheduleImageMeta = {};   // { jingir: true, pandora: false, support: true } — 가벼움
+let weeklyScheduleImageData = {};  // 실제 로드된 이미지만 캐시 (서버별 온디맨드)
+
+function getScheduleImagePath(weekStartStr, serverKey) {
+    return `weekly_schedule_image/${weekStartStr}/${serverKey}`;
+}
+function getScheduleMetaPath(weekStartStr, serverKey) {
+    return `weekly_schedule_meta/${weekStartStr}/${serverKey}`;
+}
+
+// 메타(존재 여부)만 로드 — 용량 작아서 항상 호출해도 부담 없음
+function loadWeeklyScheduleImage() {
+    const weekStartStr = formatLocalDate(getWeekStart());
+
+    // 1) 메타 정보로 지난 주 키 파악 후 정리 (실제 이미지 데이터는 다운로드 없이 삭제만)
+    db.ref('weekly_schedule_meta').once('value').then(snap => {
+        const allMeta = snap.val() || {};
+        const staleKeys = Object.keys(allMeta).filter(k => k !== weekStartStr);
+        if (staleKeys.length > 0) {
+            const cleanupUpdates = {};
+            staleKeys.forEach(k => {
+                cleanupUpdates[`weekly_schedule_meta/${k}`] = null;
+                cleanupUpdates[`weekly_schedule_image/${k}`] = null;
+            });
+            db.ref().update(cleanupUpdates).then(() => {
+                console.log('🧹 지난 주 스케줄 이미지 자동 삭제:', staleKeys);
+            });
+        }
+
+        weeklyScheduleImageMeta = allMeta[weekStartStr] || {};
+        weeklyScheduleImageData = {}; // 서버 전환 시 새로 받도록 캐시 초기화
+        renderScheduleImageTabs();
+        // 현재 선택된 서버(내 서버) 이미지만 온디맨드 다운로드
+        loadScheduleImageForServer(currentScheduleImageServer);
+    });
+}
+
+// 실제 이미지 데이터는 필요한 서버 것만 다운로드 (온디맨드)
+function loadScheduleImageForServer(serverKey) {
+    const weekStartStr = formatLocalDate(getWeekStart());
+
+    // 메타상 이미지가 없으면 다운로드 자체를 하지 않음
+    if (!weeklyScheduleImageMeta[serverKey]) {
+        weeklyScheduleImageData[serverKey] = null;
+        renderWeeklyScheduleImage();
+        return;
+    }
+    // 이미 캐시돼 있으면 재다운로드 안 함
+    if (weeklyScheduleImageData[serverKey]) {
+        renderWeeklyScheduleImage();
+        return;
+    }
+
+    db.ref(getScheduleImagePath(weekStartStr, serverKey)).once('value').then(snap => {
+        weeklyScheduleImageData[serverKey] = snap.val() || null;
+        renderWeeklyScheduleImage();
+    });
+}
+
+function switchScheduleImageServer(serverKey) {
+    currentScheduleImageServer = serverKey;
+    renderScheduleImageTabs();
+    loadScheduleImageForServer(serverKey); // 선택한 서버 것만 그 때 다운로드
+}
+
+// 탭 존재 여부 스타일 갱신 (메타 기준, 다운로드 없음)
+function renderScheduleImageTabs() {
+    const section = document.getElementById('weekly-schedule-image-section');
+    if (!section) return;
+
+    const colors = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+    const hasAnyImage = Object.values(weeklyScheduleImageMeta).some(v => v === true);
+
+    section.style.display = hasAnyImage ? 'block' : 'none';
+
+    ['jingir', 'pandora', 'support'].forEach(sv => {
+        const btn = document.getElementById(`sch-img-tab-${sv}`);
+        if (!btn) return;
+        const isActive = sv === currentScheduleImageServer;
+        btn.style.background = isActive ? colors[sv] : 'white';
+        btn.style.color = isActive ? 'white' : colors[sv];
+    });
+}
+
+// 실제 이미지 렌더링 (로드 완료된 서버만)
+function renderWeeklyScheduleImage() {
+    const container = document.getElementById('weekly-schedule-image-container');
+    if (!container) return;
+
+    const data = weeklyScheduleImageData[currentScheduleImageServer];
+    if (data && data.imageBase64) {
+        container.innerHTML = `<img src="${data.imageBase64}" style="width:100%; border-radius:6px; display:block; cursor:zoom-in;" alt="이번 주 서버 스케줄" onclick="openScheduleImageModal('${data.imageBase64.replace(/'/g, "\\'")}')">`;
+    } else if (!weeklyScheduleImageMeta[currentScheduleImageServer]) {
+        container.innerHTML = `<div style="padding:24px; text-align:center; color:#bbb; font-size:0.85rem;">이 서버는 아직 스케줄 이미지가 없습니다</div>`;
+    } else {
+        container.innerHTML = `<div style="padding:24px; text-align:center; color:#bbb; font-size:0.85rem;">불러오는 중...</div>`;
+    }
+}
+
+// 관리자 미리보기 — 관리 탭을 열 때만 3개 전부 온디맨드 로드 (일반 유저는 호출 안 됨)
+function renderAdminScheduleImagePreviews() {
+    const weekStartStr = formatLocalDate(getWeekStart());
+    ['jingir', 'pandora', 'support'].forEach(sv => {
+        const el = document.querySelector(`.admin-sch-img-preview[data-server="${sv}"]`);
+        if (!el) return;
+
+        if (!weeklyScheduleImageMeta[sv]) {
+            el.innerHTML = '업로드된 이미지 없음';
+            el.onclick = null;
+            return;
+        }
+
+        if (weeklyScheduleImageData[sv]) {
+            const data = weeklyScheduleImageData[sv];
+            el.innerHTML = `<img src="${data.imageBase64}" style="max-width:100%; max-height:140px; border-radius:6px;" alt="${sv}">`;
+            el.onclick = () => openScheduleImageModal(data.imageBase64);
+            return;
+        }
+
+        el.innerHTML = '불러오는 중...';
+        db.ref(getScheduleImagePath(weekStartStr, sv)).once('value').then(snap => {
+            const data = snap.val();
+            weeklyScheduleImageData[sv] = data;
+            if (data && data.imageBase64) {
+                el.innerHTML = `<img src="${data.imageBase64}" style="max-width:100%; max-height:140px; border-radius:6px;" alt="${sv}">`;
+                el.onclick = () => openScheduleImageModal(data.imageBase64);
+            } else {
+                el.innerHTML = '업로드된 이미지 없음';
+            }
+        });
+    });
+}
+
+function openScheduleImageModal(base64) {
+    const modal = document.getElementById('schedule-image-modal');
+    const img = document.getElementById('schedule-image-modal-img');
+    if (!modal || !img) return;
+    img.src = base64;
+    modal.style.display = 'flex';
+}
+
+function closeScheduleImageModal() {
+    const modal = document.getElementById('schedule-image-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+// 이미지 업로드 (리사이즈 + 압축 후 Base64 저장) - 서버별
+function uploadWeeklyScheduleImage(inputEl, serverKey) {
+    const file = inputEl.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+            const maxWidth = 1000;
+            const scale = Math.min(1, maxWidth / img.width);
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+            const base64 = canvas.toDataURL('image/jpeg', 0.7);
+            const weekStartStr = formatLocalDate(getWeekStart());
+
+            const updates = {};
+            updates[getScheduleImagePath(weekStartStr, serverKey)] = {
+                imageBase64: base64,
+                uploadedAt: new Date().toISOString()
+            };
+            updates[getScheduleMetaPath(weekStartStr, serverKey)] = true;
+
+            db.ref().update(updates).then(() => {
+                alert(`✅ ${serverKey} 서버 스케줄 이미지가 업로드되었습니다!`);
+                inputEl.value = '';
+                weeklyScheduleImageMeta[serverKey] = true;
+                weeklyScheduleImageData[serverKey] = updates[getScheduleImagePath(weekStartStr, serverKey)];
+                renderScheduleImageTabs();
+                if (currentScheduleImageServer === serverKey) renderWeeklyScheduleImage();
+                renderAdminScheduleImagePreviews();
+            }).catch(err => {
+                alert('⚠️ 업로드 실패: ' + err.message);
+            });
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+function deleteWeeklyScheduleImage(serverKey) {
+    if (!confirm(`${serverKey} 서버 스케줄 이미지를 삭제하시겠습니까?`)) return;
+    const weekStartStr = formatLocalDate(getWeekStart());
+    const updates = {};
+    updates[getScheduleImagePath(weekStartStr, serverKey)] = null;
+    updates[getScheduleMetaPath(weekStartStr, serverKey)] = null;
+    db.ref().update(updates).then(() => {
+        weeklyScheduleImageMeta[serverKey] = false;
+        weeklyScheduleImageData[serverKey] = null;
+        renderScheduleImageTabs();
+        if (currentScheduleImageServer === serverKey) renderWeeklyScheduleImage();
+        renderAdminScheduleImagePreviews();
+    });
+}
+
 
 // 이번 주 배정 데이터 로드 (오늘 스케줄 표시용)
 function loadWeekAssignment() {
