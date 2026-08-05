@@ -53,7 +53,7 @@ let _sitePwHash = null; // Firebase에서 로드된 해시 (null이면 DEFAULT �
 
 // Firebase에서 사이트 비밀번호 해시 로드
 function loadSitePassword() {
-    db.ref('hunter_config/sitePwHash').once('value').then(snap => {
+    db.ref('hunter_config/sitePwHash_test').once('value').then(snap => {
         _sitePwHash = snap.val() || null;
     }).catch(() => {
         _sitePwHash = null; // 오류 시 기본값 폴백
@@ -106,7 +106,7 @@ async function changeSitePassword() {
     }
 
     const newHash = await getHash(newPw);
-    db.ref('hunter_config/sitePwHash').set(newHash).then(() => {
+    db.ref('hunter_config/sitePwHash_test').set(newHash).then(() => {
         _sitePwHash = newHash; // 현재 세션 즉시 반영
         showMsg('✅ 사이트 비밀번호가 변경되었습니다!', '#27ae60');
         document.getElementById('site-pw-admin').value = '';
