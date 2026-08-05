@@ -43,16 +43,12 @@ function toggleAccordion(id) {
     const card = document.getElementById(id);
     if (card) card.classList.toggle('open');
 }
-// 단방향 해시 (소스 노출 방지)
-function getHash(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        hash = Math.imul(31, hash) + str.charCodeAt(i) | 0;
-    }
-    return (hash >>> 0).toString(16);
+// 🔒 비밀번호 해시 (SHA-256, 브라우저 표준 crypto API 사용)
+async function getHash(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
-// 기본 사이트 비밀번호: eka2026 (관리 페이지에서 변경 가능)
-const DEFAULT_SITE_PW_HASH = '9ada47fd';
+// 사이트 비밀번호 기본값은 config.js의 DEFAULT_SITE_PW_HASH 사용
 let _sitePwHash = null; // Firebase에서 로드된 해시 (null이면 DEFAULT 사용)
 
 // Firebase에서 사이트 비밀번호 해시 로드
@@ -65,11 +61,11 @@ function loadSitePassword() {
 }
 
 // 잠금 화면 비밀번호 확인
-function checkSitePassword() {
+async function checkSitePassword() {
     const input = document.getElementById('lock-password').value;
     const errEl  = document.getElementById('lock-error');
     const validHash = _sitePwHash || DEFAULT_SITE_PW_HASH;
-    if (getHash(input) === validHash) {
+    if (await getHash(input) === validHash) {
         document.getElementById('lock-screen').style.display = 'none';
         errEl.style.display = 'none';
         _initAudio(); // 사용자 인터랙션 시점에 AudioContext 활성화
@@ -81,7 +77,7 @@ function checkSitePassword() {
 }
 
 // 관리 페이지에서 사이트 비밀번호 변경
-function changeSitePassword() {
+async function changeSitePassword() {
     const adminPw  = document.getElementById('site-pw-admin').value;
     const newPw    = document.getElementById('site-pw-new').value;
     const confirm  = document.getElementById('site-pw-confirm').value;
@@ -94,7 +90,7 @@ function changeSitePassword() {
         setTimeout(() => { msgEl.style.display = 'none'; }, 4000);
     };
 
-    if (getHash(adminPw) !== ADMIN_PW_HASH) {
+    if (await getHash(adminPw) !== ADMIN_PW_HASH) {
         showMsg('❌ 관리자 비밀번호가 틀렸습니다.', '#e74c3c');
         document.getElementById('site-pw-admin').value = '';
         return;
@@ -109,7 +105,7 @@ function changeSitePassword() {
         return;
     }
 
-    const newHash = getHash(newPw);
+    const newHash = await getHash(newPw);
     db.ref('hunter_config/sitePwHash').set(newHash).then(() => {
         _sitePwHash = newHash; // 현재 세션 즉시 반영
         showMsg('✅ 사이트 비밀번호가 변경되었습니다!', '#27ae60');
@@ -201,7 +197,7 @@ function applyMode() {
     loadWeeklyScheduleImage();
 }
 
-function toggleAdminMode() {
+async function toggleAdminMode() {
     if (isAdmin) {
         if (confirm('관리자 모드를 종료하고 사용자 모드로 전환하시겠습니까?')) {
             isAdmin = false;
@@ -212,7 +208,7 @@ function toggleAdminMode() {
     } else {
         const pw = prompt('🔐 관리자 비밀번호를 입력하세요:');
         if (pw === null) return;
-        if (getHash(pw) === ADMIN_PW_HASH) {
+        if (await getHash(pw) === ADMIN_PW_HASH) {
             isAdmin = true;
             localStorage.setItem('hunterIsAdmin', 'true');
             applyMode();
@@ -4685,7 +4681,7 @@ async function analyzeScheduleImage() {
     // 관리자 확인
     if (!isAdmin) {
         const pw = prompt('관리자 비밀번호를 입력하세요:');
-        if (getHash(pw) !== ADMIN_PW_HASH) { alert('❌ 비밀번호가 틀렸습니다.'); return; }
+        if (await getHash(pw) !== ADMIN_PW_HASH) { alert('❌ 비밀번호가 틀렸습니다.'); return; }
     }
 
     const btnAnalyze = document.getElementById('btn-analyze-img');
@@ -5201,7 +5197,7 @@ async function applyServerAssignment() {
     if (!currentAssignServer) return;
     if (!isAdmin) {
         const pw = prompt('관리자 비밀번호를 입력하세요:');
-        if (getHash(pw) !== ADMIN_PW_HASH) { alert('❌ 비밀번호가 틀렸습니다.'); return; }
+        if (await getHash(pw) !== ADMIN_PW_HASH) { alert('❌ 비밀번호가 틀렸습니다.'); return; }
     }
 
     const serverName = SERVER_NAMES[currentAssignServer];

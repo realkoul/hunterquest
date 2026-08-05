@@ -13,6 +13,7 @@ const firebaseConfig = {
     measurementId: "G-13WEG56NZR"
 };
 
-// 관리자 비밀번호는 평문 대신 해시로 저장 (소스 열람 시 즉시 노출 방지)
-// 비밀번호 변경 시: 브라우저 콘솔에서 getHash('새비밀번호') 실행 후 결과값으로 교체
-const ADMIN_PW_HASH = 'b7f21c0e'; // ht2026
+// 비밀번호는 평문 대신 SHA-256 해시로 저장 (소스 열람 시 즉시 노출 방지)
+// 비밀번호 변경 시: 브라우저 콘솔에서 `await getHash('새비밀번호')` 실행 후 결과값으로 교체
+const ADMIN_PW_HASH = '8cc60874ca4956002e8dd407ac7ea3349600cc8f694c30d8109e1c237e0e5ad0'; // ht2026
+const DEFAULT_SITE_PW_HASH = 'd6e8580375bf8746488b362f90a43d7434278a8285d1c361bac932556507cfbd'; // eka2026 (관리 페이지에서 변경 가능)
