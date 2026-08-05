@@ -6,13 +6,10 @@ import { getDatabase, ref, set, onValue, runTransaction, query, orderByKey, limi
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 import { CONSTANTS, firebaseConfig } from "./config.js";
 
-    // 🚨 비밀번호 암호화 함수 (단방향 해시 알고리즘)
-    const getHash = (str) => {
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-            hash = Math.imul(31, hash) + str.charCodeAt(i) | 0;
-        }
-        return (hash >>> 0).toString(16);
+    // 🔒 비밀번호 암호화 함수 (SHA-256, 브라우저 표준 crypto API 사용)
+    const getHash = async (str) => {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
     };
 
     // 🚨 XSS 방지: HTML 특수문자 이스케이프
@@ -164,11 +161,11 @@ import { CONSTANTS, firebaseConfig } from "./config.js";
         }
     };
 
-    // 🚨 로그인 입력값을 해시 함수로 변환하여 비교
-    window.checkPassword = () => {
+    // 🔒 로그인 입력값을 SHA-256 해시로 변환하여 비교
+    window.checkPassword = async () => {
         const input = document.getElementById('password-input').value;
         const errorMsg = document.getElementById('password-error');
-        if (getHash(input) === CONSTANTS.SITE_PASSWORD_HASH) {
+        if (await getHash(input) === CONSTANTS.SITE_PASSWORD_HASH) {
             // 비밀번호 성공 → 서버 선택 화면으로
             document.getElementById('lock-screen').style.display = 'none';
             document.getElementById('server-selection-screen').style.display = 'flex';
@@ -609,8 +606,8 @@ import { CONSTANTS, firebaseConfig } from "./config.js";
         });
     }
 
-    // 🚨 관리자 비밀번호 검사부 해시값 비교 적용 1
-    window.updateCompletedCount = (id, newVal, inputEl) => {
+    // 🔒 관리자 비밀번호 검사부 SHA-256 해시값 비교 적용 1
+    window.updateCompletedCount = async (id, newVal, inputEl) => {
         const validUsers = getValidUsers(window.users);
         const user = validUsers.find(u => u.id === id);
         if (!user || user.completedCount == newVal) return;
@@ -623,7 +620,7 @@ import { CONSTANTS, firebaseConfig } from "./config.js";
             inputEl.value = originalVal; return;
         }
 
-        if (getHash(prompt("관리자 비밀번호를 입력하세요:") || "") === CONSTANTS.EDIT_PASSWORD_HASH) {
+        if (await getHash(prompt("관리자 비밀번호를 입력하세요:") || "") === CONSTANTS.EDIT_PASSWORD_HASH) {
             window.saveData((currentData) => {
                 const validData = getValidUsers(currentData);
                 const currentUser = validData.find(u => u.id === id);
@@ -952,11 +949,11 @@ import { CONSTANTS, firebaseConfig } from "./config.js";
         window.saveData((currentData) => { const validData = getValidUsers(currentData); const u = validData.find(u => u.id === id); if (u) u.name = trimmed; return validData; });
     };
     
-    // 🚨 관리자 비밀번호 검사부 해시값 비교 적용 2
-    window.resetCompletedCounts = () => {
+    // 🔒 관리자 비밀번호 검사부 SHA-256 해시값 비교 적용 2
+    window.resetCompletedCounts = async () => {
         if (!confirm('모든 참여자의 완료 횟수를 0으로 초기화하시겠습니까?\n(참여자 목록과 상태는 유지됩니다)')) return;
         const pw = prompt("관리자 비밀번호를 입력하세요:");
-        if (getHash(pw || "") === CONSTANTS.EDIT_PASSWORD_HASH) {
+        if (await getHash(pw || "") === CONSTANTS.EDIT_PASSWORD_HASH) {
             window.saveData((currentData) => {
                 const validData = getValidUsers(currentData);
                 // Bug A fix: completedCount와 무관하게 waiting 중인 사람의 isYielded도 초기화
@@ -977,11 +974,11 @@ import { CONSTANTS, firebaseConfig } from "./config.js";
         }
     };
 
-    // 🚨 관리자 비밀번호 검사부 해시값 비교 적용 3
-    window.clearAllData = () => { 
+    // 🔒 관리자 비밀번호 검사부 SHA-256 해시값 비교 적용 3
+    window.clearAllData = async () => { 
         if (confirm('모든 데이터를 삭제하시겠습니까?')) { 
             const pw = prompt("초기화 비밀번호:");
-            if (getHash(pw || "") === CONSTANTS.RESET_PASSWORD_HASH) {
+            if (await getHash(pw || "") === CONSTANTS.RESET_PASSWORD_HASH) {
                 window.saveData(() => []).then(() => alert("초기화되었습니다."));
             } else if (pw !== null) {
                 alert("비밀번호가 틀렸습니다.");
@@ -989,10 +986,10 @@ import { CONSTANTS, firebaseConfig } from "./config.js";
         } 
     };
 
-    // 🚨 관리자 비밀번호 검사부 해시값 비교 적용 4
-    window.openLogModal = () => {
+    // 🔒 관리자 비밀번호 검사부 SHA-256 해시값 비교 적용 4
+    window.openLogModal = async () => {
         const pw = prompt('관리자 비밀번호:');
-        if (getHash(pw || "") === CONSTANTS.EDIT_PASSWORD_HASH) {
+        if (await getHash(pw || "") === CONSTANTS.EDIT_PASSWORD_HASH) {
             document.getElementById('logModal').style.display = 'flex'; window.refreshLogsInModal();
         } else if (pw !== null) {
             alert('비밀번호 불일치');
