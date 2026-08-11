@@ -3166,8 +3166,8 @@ function renderUserList() {
     tbody.innerHTML = filteredUsers.map(u => {
         const serverName = servers[u.server] || '미지정';
         const statusBadge = u.isActive !== false 
-            ? '<span style="color: #16a085; font-weight: bold;">✅ 활성</span>' 
-            : '<span style="color: #95a5a6; font-weight: bold;">⏸ 비활성</span>';
+            ? '<span style="color: #16a085; font-weight: bold; white-space: nowrap;">✅ 활성</span>' 
+            : '<span style="color: #95a5a6; font-weight: bold; white-space: nowrap;">⏸ 비활성</span>';
         
         // 성물 표시
         const missingRelics = u.missingRelics || [];
@@ -3187,15 +3187,17 @@ function renderUserList() {
                 <td data-label="성물">${relicDisplay}</td>
                 <td data-label="상태">${statusBadge}</td>
                 <td data-label="관리">
-                    <button class="btn btn-primary" onclick="showEditUserModal(${u.id})" style="padding: 6px 12px; font-size: 0.9rem;">
-                        ✏️ 수정
-                    </button>
-                    <button class="btn btn-warning" onclick="showRelicModal(${u.id})" style="padding: 6px 12px; font-size: 0.9rem; margin-left: 5px;">
-                        📖 성물
-                    </button>
-                    <button class="btn btn-danger" onclick="deleteUser(${u.id}, '${u.name}')" style="padding: 6px 12px; font-size: 0.9rem; margin-left: 5px;">
-                        🗑️ 삭제
-                    </button>
+                    <div style="display:flex; flex-wrap:wrap; gap:5px;">
+                        <button class="btn btn-primary" onclick="showEditUserModal(${u.id})" style="padding: 6px 12px; font-size: 0.9rem; white-space:nowrap;">
+                            ✏️ 수정
+                        </button>
+                        <button class="btn btn-warning" onclick="showRelicModal(${u.id})" style="padding: 6px 12px; font-size: 0.9rem; white-space:nowrap;">
+                            📖 성물
+                        </button>
+                        <button class="btn btn-danger" onclick="deleteUser(${u.id}, '${u.name}')" style="padding: 6px 12px; font-size: 0.9rem; white-space:nowrap;">
+                            🗑️ 삭제
+                        </button>
+                    </div>
                 </td>
             </tr>
         `;

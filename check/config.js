@@ -15,5 +15,5 @@ const firebaseConfig = {
 
 // 비밀번호는 평문 대신 SHA-256 해시로 저장 (소스 열람 시 즉시 노출 방지)
 // 비밀번호 변경 시: 브라우저 콘솔에서 `await getHash('새비밀번호')` 실행 후 결과값으로 교체
-const ADMIN_PW_HASH = '158a323a7ba44870f23d96f1516dd70aa48e9a72db4ebb026b0a89e212a208ab';
-const DEFAULT_SITE_PW_HASH = '8cc60874ca4956002e8dd407ac7ea3349600cc8f694c30d8109e1c237e0e5ad0'; // 관리 페이지에서 변경 가능
+const ADMIN_PW_HASH = '8cc60874ca4956002e8dd407ac7ea3349600cc8f694c30d8109e1c237e0e5ad0';
+const DEFAULT_SITE_PW_HASH = 'b280279a0ef279d0b9f0bdc4162591dbbc6312abac67120527b20d65c7de5dbf'; // 관리 페이지에서 변경 가능
