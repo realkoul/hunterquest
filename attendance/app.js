@@ -4444,12 +4444,16 @@ function getOmanTeamForSchedule(schedule, serverKey) {
     // 일요일 텍스트 항목(암살/마령/마수/명법/성혈레열쇠) — 요일 무관, 이름으로 매칭
     // ⚠️ daySlots(요일별 오만타워 데이터) 체크보다 먼저 와야 함 — 일요일은 daySlots 자체가 없어서
     //    아래쪽에 두면 그 전에 return null로 빠져버려 절대 매칭이 안 됨
+    // ⚠️ 한 스케줄에 항목이 2개씩 같이 들어있고(예: "암살 / 마령") 각기 팀이 다를 수 있어서,
+    //    첫 번째만 찾는 find가 아니라 전부 찾는 filter로 처리
     const SUNDAY_TEXT_NAMES = ['암살', '마령', '마수', '명법', '기란성혈레열쇠', '아덴성혈레열쇠', '켄성혈레열쇠'];
-    const matchedSunday = SUNDAY_TEXT_NAMES.find(n => name.includes(n));
-    if (matchedSunday) {
-        const sundaySlots = omanTeamAssignmentCache['일요일텍스트'];
-        const team = sundaySlots ? (sundaySlots[matchedSunday] || null) : null;
-        return team ? [{ floor: null, team }] : null;
+    const matchedSundayNames = SUNDAY_TEXT_NAMES.filter(n => name.includes(n));
+    if (matchedSundayNames.length > 0) {
+        const sundaySlots = omanTeamAssignmentCache['일요일텍스트'] || {};
+        const results = matchedSundayNames.map(n => ({ floor: null, team: sundaySlots[n] || null, label: n }))
+            .filter(r => r.team);
+        results.sort((a, b) => (a.team === OUR_TEAM_NAME ? -1 : 0) - (b.team === OUR_TEAM_NAME ? -1 : 0));
+        return results.length > 0 ? results : null;
     }
 
     const dayKorean = ['일', '월', '화', '수', '목', '금', '토'][schedule.dayOfWeek];
@@ -4492,17 +4496,18 @@ function getOmanTeamForSchedule(schedule, serverKey) {
 // compact: 오늘 스케줄 목록용 작은 배지 / standalone: 보스명과 별도 줄에 단독으로 표시할 때 (앞에 '-' 안 붙임)
 function buildOmanTeamBadgeHtml(omanResults, compact, standalone) {
     if (!omanResults || omanResults.length === 0) return '';
-    const items = omanResults.map(({ floor, team }) => {
+    const items = omanResults.map(({ floor, team, label }) => {
         const isOurTeam = team === OUR_TEAM_NAME;
-        const label = floor ? `${floor}층:${team}팀` : `${team}팀`;
+        const tag = floor ? `${floor}층` : (label || '');
+        const text = tag ? `${tag}:${team}팀` : `${team}팀`;
         if (compact) {
             return isOurTeam
-                ? `<span style="font-size:0.75rem;color:#fff;background:#2980b9;padding:1px 6px;border-radius:9px;font-weight:bold;">★${label}</span>`
-                : `<span style="font-size:0.72rem;color:#95a5a6;">(${label})</span>`;
+                ? `<span style="font-size:0.75rem;color:#fff;background:#2980b9;padding:1px 6px;border-radius:9px;font-weight:bold;">★${text}</span>`
+                : `<span style="font-size:0.72rem;color:#95a5a6;">(${text})</span>`;
         } else {
             return isOurTeam
-                ? `<span style="color:#2980b9;font-weight:bold;">${label}★</span>`
-                : `<span style="color:#95a5a6;">${label}</span>`;
+                ? `<span style="color:#2980b9;font-weight:bold;">${text}★</span>`
+                : `<span style="color:#95a5a6;">${text}</span>`;
         }
     });
     if (compact) return ' ' + items.join(' ');
