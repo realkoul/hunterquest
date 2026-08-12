@@ -3945,6 +3945,32 @@ const OMAN_ROW_SLOTS = [
     [482, 543, '오만5층', '오만10층'],
 ];
 
+// 에스카로스(금요일 전용, 우측 사이드 패널) — x=1220~1432, 요일 구분 없이 고정 5칸
+const ESCA_X = 1300;
+const ESCA_ROW_SLOTS = [
+    [223, 288, '웨링'],
+    [289, 355, '듀페'],
+    [356, 422, '욤니'],
+    [423, 483, '살라'],
+    [484, 543, '그라'],
+];
+
+// 토요일 칸(x=1054~1220) — 요일별 오만타워 구조와 다른 별도 보스 목록 6개
+const SAT_X = 1130;
+const SAT_ROW_SLOTS = [
+    [156, 221, '하피퀸'],
+    [222, 288, '코카킹'],
+    [289, 355, '오거킹'],
+    [356, 422, '드레킹'],
+    [423, 483, '그미노'],
+    [484, 543, '타이탄'],
+];
+
+// 신념1층/2층 — 요일별(월~금) 칸 하단, 오만타워와 같은 x좌표 사용
+// 신념1층은 세로로 긴 병합 칸(왼쪽), 신념2층은 그 우측 상단 일부만 (신념3/4층은 색상 없어 미지원)
+const SHINNYEOM_LEFT_Y = [546, 667];   // 신념1층 (병합, 세로 전체)
+const SHINNYEOM_RIGHT_TOP_Y = [546, 612]; // 신념2층 (우측 상단부만)
+
 // 가장 가까운 팀 색상 판별 (유클리드 거리)
 function classifyOmanTeamColor(r, g, b) {
     let best = null, bestDist = Infinity;
@@ -3969,10 +3995,24 @@ function extractOmanTeamAssignments(imgEl) {
     const scaleY = canvas.height / 671;
 
     const sampleAt = (x, y) => {
-        const sx = Math.round(x * scaleX);
-        const sy = Math.round(y * scaleY);
-        const [r, g, b] = ctx.getImageData(sx, sy, 1, 1).data;
-        return classifyOmanTeamColor(r, g, b);
+        // 텍스트와 겹쳐서 색이 오염될 위험을 줄이기 위해, 한 점이 아니라 주변 3x3 지점을 찍어서 다수결로 판단
+        const offsets = [-8, 0, 8];
+        const votes = {};
+        offsets.forEach(dx => {
+            offsets.forEach(dy => {
+                const sx = Math.round((x + dx) * scaleX);
+                const sy = Math.round((y + dy) * scaleY);
+                const [r, g, b] = ctx.getImageData(sx, sy, 1, 1).data;
+                const team = classifyOmanTeamColor(r, g, b);
+                if (team) votes[team] = (votes[team] || 0) + 1;
+            });
+        });
+        let best = null, bestCount = 0;
+        Object.entries(votes).forEach(([team, count]) => {
+            if (count > bestCount) { bestCount = count; best = team; }
+        });
+        // 9개 중 과반(5개) 이상 동의해야 신뢰 (애매하면 null)
+        return bestCount >= 5 ? best : null;
     };
 
     const result = {};
@@ -3981,14 +4021,34 @@ function extractOmanTeamAssignments(imgEl) {
         OMAN_ROW_SLOTS.forEach(([yTop, yBottom, leftSlot, rightSlot]) => {
             const yMid = (yTop + yBottom) / 2;
             if (rightSlot) {
-                daySlots[leftSlot] = sampleAt(colX + 45, yMid);
-                daySlots[rightSlot] = sampleAt(colX + 141, yMid);
+                daySlots[leftSlot] = sampleAt(colX + 15, yMid);
+                daySlots[rightSlot] = sampleAt(colX + 105, yMid);
             } else {
                 daySlots[leftSlot] = sampleAt(colX + OMAN_COLUMN_WIDTH / 2, yMid);
             }
         });
+        // 신념1층(좌측 병합) / 신념2층(우측 상단부) — 신념3/4층은 색상 없어 미지원
+        daySlots['신념1층'] = sampleAt(colX + 15, (SHINNYEOM_LEFT_Y[0] + SHINNYEOM_LEFT_Y[1]) / 2);
+        daySlots['신념2층'] = sampleAt(colX + 105, (SHINNYEOM_RIGHT_TOP_Y[0] + SHINNYEOM_RIGHT_TOP_Y[1]) / 2);
         result[day] = daySlots;
     }
+
+    // 에스카로스(금요일 전용, 요일 구분 없는 고정 패널)
+    const escaSlots = {};
+    ESCA_ROW_SLOTS.forEach(([yTop, yBottom, name]) => {
+        const yMid = (yTop + yBottom) / 2;
+        escaSlots[name] = sampleAt(ESCA_X, yMid);
+    });
+    result['에스카로스'] = escaSlots;
+
+    // 토요일 전용 보스 목록(요일별 오만타워 구조와 다름)
+    const satSlots = {};
+    SAT_ROW_SLOTS.forEach(([yTop, yBottom, name]) => {
+        const yMid = (yTop + yBottom) / 2;
+        satSlots[name] = sampleAt(SAT_X, yMid);
+    });
+    result['토요일'] = satSlots;
+
     return result;
 }
 
@@ -4109,11 +4169,29 @@ function loadWeekAssignment() {
 function getOmanTeamForSchedule(schedule, serverKey) {
     if (serverKey !== 'jingir') return null; // 현재는 진기르 이미지만 지원
 
+    const name = schedule.name || '';
+
+    // 에스카로스(금요일 전용 사이드 패널) — 요일과 무관하게 이름으로 매칭
+    const ESCA_BOSS_NAMES = ['웨링', '듀페', '욤니', '살라', '그라'];
+    const matchedEsca = ESCA_BOSS_NAMES.find(n => name.includes(n));
+    if (matchedEsca) {
+        const escaSlots = omanTeamAssignmentCache['에스카로스'];
+        const team = escaSlots ? (escaSlots[matchedEsca] || null) : null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
+    // 토요일 전용 보스 목록 — 요일과 무관하게 이름으로 매칭
+    const SAT_BOSS_NAMES = ['하피퀸', '코카킹', '오거킹', '드레킹', '그미노', '타이탄'];
+    const matchedSat = SAT_BOSS_NAMES.find(n => name.includes(n));
+    if (matchedSat) {
+        const satSlots = omanTeamAssignmentCache['토요일'];
+        const team = satSlots ? (satSlots[matchedSat] || null) : null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
     const dayKorean = ['일', '월', '화', '수', '목', '금', '토'][schedule.dayOfWeek];
     const daySlots = omanTeamAssignmentCache[dayKorean];
     if (!daySlots) return null;
-
-    const name = schedule.name || '';
 
     if (name.includes('오만') && name.includes('/')) {
         // "오만 1층 / 6층" → 두 층 다 진기르 담당(병렬 진행) → 둘 다 반환
@@ -4133,7 +4211,18 @@ function getOmanTeamForSchedule(schedule, serverKey) {
         return team ? [{ floor: null, team }] : null;
     }
 
-    return null; // 신념 등 아직 지원 안 하는 구간
+    if (name.includes('신념') && name.includes('/')) {
+        // "신념 1층 / 2층 / 3층 / 4층" 등 — 색상 인식 되는 1층/2층만 반영, 3층/4층은 daySlots에 없어 자동 제외
+        const parts = name.split('/').map(p => p.trim());
+        const results = parts.map(p => {
+            const floorNum = p.replace(/[^0-9]/g, '');
+            return { floor: floorNum, team: daySlots['신념' + floorNum + '층'] || null };
+        }).filter(r => r.team);
+        results.sort((a, b) => (a.team === OUR_TEAM_NAME ? -1 : 0) - (b.team === OUR_TEAM_NAME ? -1 : 0));
+        return results.length > 0 ? results : null;
+    }
+
+    return null; // 개미(산란장) 등 텍스트 기반 구간은 아직 미지원 (OCR 필요)
 }
 
 // getOmanTeamForSchedule 결과를 화면용 배지 HTML로 변환
