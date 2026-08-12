@@ -771,12 +771,15 @@ async function renderTodaySchedules() {
                         ? ' <span style="font-size:0.75rem;color:#e67e22;font-weight:400;">(미배정)</span>'
                         : '';
             }
-            const displayName = getBossDisplayName(s, viewServer) + labelHtml;
+            const displayName = getBossDisplayName(s, viewServer);
 
             return `<div style="border-radius:8px;padding:12px 16px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;${cardStyle}">
-                <div style="display:flex;align-items:center;gap:12px;flex:1;">
-                    <span style="font-size:0.9rem;font-weight:500;color:${timeColor};white-space:nowrap;">${s.time}</span>
-                    <span style="font-size:${isCur ? '1.25rem' : '0.9rem'};font-weight:${isCur ? '700' : '500'};color:#2c3e50;">${displayName}</span>
+                <div style="display:flex;align-items:flex-start;gap:12px;flex:1;">
+                    <span style="font-size:0.9rem;font-weight:500;color:${timeColor};white-space:nowrap;padding-top:2px;">${s.time}</span>
+                    <div style="display:flex;flex-direction:column;gap:3px;">
+                        <span style="font-size:${isCur ? '1.25rem' : '0.9rem'};font-weight:${isCur ? '700' : '500'};color:#2c3e50;">${displayName}</span>
+                        ${labelHtml ? `<div>${labelHtml.trim()}</div>` : ''}
+                    </div>
                 </div>
                 <div>${statusBadge}</div>
             </div>`;
