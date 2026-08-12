@@ -689,11 +689,22 @@ async function renderTodaySchedules() {
             const isUnassignedBoss = !cacheEntry; // 이번 주 배정 자체 없음
             const assignedServers = cacheEntry ? (cacheEntry.assignedServers || []) : [];
             const isNotMyServer = !isUnassignedBoss && assignedServers.length > 0 && !assignedServers.includes(viewServer);
-            const labelHtml = isUnassignedBoss
-                ? ' <span style="font-size:0.75rem;color:#aaa;font-weight:400;">(미배정)</span>'
-                : isNotMyServer
-                    ? ' <span style="font-size:0.75rem;color:#e67e22;font-weight:400;">(미배정)</span>'
-                    : '';
+
+            // 🎨 오만타워 자동 인식 팀 배정 우선 표시 (인식된 경우에만)
+            const omanTeam = getOmanTeamForSchedule(s, viewServer);
+            let labelHtml;
+            if (omanTeam) {
+                const isOurTeam = omanTeam === OUR_TEAM_NAME;
+                labelHtml = isOurTeam
+                    ? ` <span style="font-size:0.78rem;color:#fff;background:#2980b9;padding:1px 7px;border-radius:10px;font-weight:bold;">★ ${omanTeam}팀</span>`
+                    : ` <span style="font-size:0.75rem;color:#7f8c8d;font-weight:400;">(${omanTeam}팀)</span>`;
+            } else {
+                labelHtml = isUnassignedBoss
+                    ? ' <span style="font-size:0.75rem;color:#aaa;font-weight:400;">(미배정)</span>'
+                    : isNotMyServer
+                        ? ' <span style="font-size:0.75rem;color:#e67e22;font-weight:400;">(미배정)</span>'
+                        : '';
+            }
             const displayName = getBossDisplayName(s, viewServer) + labelHtml;
 
             return `<div style="border-radius:8px;padding:12px 16px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;${cardStyle}">
@@ -754,7 +765,12 @@ async function renderTodaySchedules() {
     }
 
     // 현재 보스 표시명 → 내 서버 기준으로 계산
-    const currentBossDisplayName = getBossDisplayName(currentBoss, myServer);
+    const currentBossOmanTeam = getOmanTeamForSchedule(currentBoss, myServer);
+    const isOurTeamBoss = currentBossOmanTeam === OUR_TEAM_NAME;
+    const currentBossDisplayName = getBossDisplayName(currentBoss, myServer)
+        + (currentBossOmanTeam
+            ? ` <span style="color:${isOurTeamBoss ? '#2980b9' : '#95a5a6'};">- ${currentBossOmanTeam}팀${isOurTeamBoss ? ' ★' : ''}</span>`
+            : '');
 
     // 스케줄 표
     container.innerHTML = scheduleTableHtml;
@@ -3748,6 +3764,7 @@ function getMyNames() {
 // 현재 주차 배정 데이터 캐시 (Firebase에서 로드)
 let weekAssignCache = {};  // { scheduleId: { assignedServers, serverFloors } }
 let weekAssignCacheKey = '';  // 캐시된 주차
+let omanTeamAssignmentCache = {};  // { 월: { 오만1층: '고은', ... }, 화: {...}, ... } — 이미지에서 자동 인식된 팀 배정
 
 // ========== 🗓️ 이번 주 서버 스케줄 이미지 (서버별) ==========
 // 경로: weekly_schedule_image/{weekStartDate}/{serverKey} — 실제 이미지(용량 큼)
@@ -3906,6 +3923,89 @@ function closeScheduleImageModal() {
     if (modal) modal.style.display = 'none';
 }
 
+// ============================================================
+// 🎨 오만타워 담당 팀 자동 인식 (색상 기반, OCR 불필요)
+// 이미지 크기/레이아웃이 매주 고정이라는 전제 하에, 정해진 픽셀 위치의 색상만 읽어서
+// 어느 팀(고은/꼬장/정훈)이 담당인지 판별함. "기르&진기르" 서버 이미지 전용.
+// ============================================================
+
+// 팀 이름 ↔ 기준 색상 (실제 샘플 이미지에서 추출한 값)
+const OMAN_TEAM_COLORS = {
+    '고은': [182, 215, 168],  // 초록
+    '꼬장': [234, 153, 153],  // 핑크
+    '정훈': [159, 197, 232],  // 파랑
+};
+
+// 요일별(월~금) 칸의 왼쪽 좌표(px) — 원본 이미지 기준(1432x671 가정)
+const OMAN_DAY_COLUMN_X = { '월': 122, '화': 308, '수': 494, '목': 680, '금': 866 };
+const OMAN_COLUMN_WIDTH = 186;
+
+// 행(y) 범위와 슬롯 이름 — [시작y, 끝y, 왼쪽슬롯명, 오른쪽슬롯명] (오른쪽 없으면 병합된 한 칸)
+const OMAN_ROW_SLOTS = [
+    [153, 221, '오만1층', '오만6층'],
+    [221, 288, '오만2층', '오만7층'],
+    [288, 355, '오만3층', '오만8층'],
+    [355, 421, '오만4층', '오만9층'],
+    [421, 482, '테베류', null],       // 병합된 단일 칸
+    [482, 543, '오만5층', '오만10층'],
+];
+
+// 가장 가까운 팀 색상 판별 (유클리드 거리)
+function classifyOmanTeamColor(r, g, b) {
+    let best = null, bestDist = Infinity;
+    for (const [team, [tr, tg, tb]] of Object.entries(OMAN_TEAM_COLORS)) {
+        const dist = (r-tr)**2 + (g-tg)**2 + (b-tb)**2;
+        if (dist < bestDist) { bestDist = dist; best = team; }
+    }
+    // 너무 멀면(그리드선/텍스트 등 오염) 신뢰 못 함 처리
+    return bestDist < 4000 ? best : null;
+}
+
+// img 엘리먼트(원본 해상도)를 받아 요일별 슬롯의 담당 팀을 추출
+function extractOmanTeamAssignments(imgEl) {
+    const canvas = document.createElement('canvas');
+    canvas.width = imgEl.naturalWidth || imgEl.width;
+    canvas.height = imgEl.naturalHeight || imgEl.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(imgEl, 0, 0);
+
+    // 캘리브레이션 기준 해상도(1432x671)와 실제 이미지 크기가 다르면 좌표를 비례 조정
+    const scaleX = canvas.width / 1432;
+    const scaleY = canvas.height / 671;
+
+    const sampleAt = (x, y) => {
+        const sx = Math.round(x * scaleX);
+        const sy = Math.round(y * scaleY);
+        const [r, g, b] = ctx.getImageData(sx, sy, 1, 1).data;
+        return classifyOmanTeamColor(r, g, b);
+    };
+
+    const result = {};
+    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
+        const daySlots = {};
+        OMAN_ROW_SLOTS.forEach(([yTop, yBottom, leftSlot, rightSlot]) => {
+            const yMid = (yTop + yBottom) / 2;
+            if (rightSlot) {
+                daySlots[leftSlot] = sampleAt(colX + 45, yMid);
+                daySlots[rightSlot] = sampleAt(colX + 141, yMid);
+            } else {
+                daySlots[leftSlot] = sampleAt(colX + OMAN_COLUMN_WIDTH / 2, yMid);
+            }
+        });
+        result[day] = daySlots;
+    }
+    return result;
+}
+
+// 인식 결과를 관리자에게 보여주는 확인 다이얼로그(간단 텍스트 버전)
+function buildOmanAssignmentPreviewText(assignments) {
+    const lines = [];
+    Object.entries(assignments).forEach(([day, slots]) => {
+        const parts = Object.entries(slots).map(([slot, team]) => `${slot}=${team || '❓인식실패'}`);
+        lines.push(`${day}: ${parts.join(', ')}`);
+    });
+    return lines.join('\n');
+}
 // 이미지 업로드 (리사이즈 + 압축 후 Base64 저장) - 서버별
 function uploadWeeklyScheduleImage(inputEl, serverKey) {
     const file = inputEl.files[0];
@@ -3933,8 +4033,24 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
             };
             updates[getScheduleMetaPath(weekStartStr, serverKey)] = true;
 
+            // 🎨 진기르("기르&진기르") 서버 이미지는 원본 해상도 기준으로 오만타워 담당 팀 자동 인식
+            let omanAssignments = null;
+            if (serverKey === 'jingir') {
+                try {
+                    omanAssignments = extractOmanTeamAssignments(img); // 리사이즈 전 원본 img 사용
+                    updates[`oman_team_assignments/${weekStartStr}`] = omanAssignments;
+                } catch (err) {
+                    console.error('오만타워 팀 인식 실패:', err);
+                }
+            }
+
             db.ref().update(updates).then(() => {
-                alert(`✅ ${serverKey} 서버 스케줄 이미지가 업로드되었습니다!`);
+                let msg = `✅ ${serverKey} 서버 스케줄 이미지가 업로드되었습니다!`;
+                if (omanAssignments) {
+                    msg += `\n\n🎨 오만타워 담당 팀 자동 인식 결과:\n` + buildOmanAssignmentPreviewText(omanAssignments);
+                    msg += `\n\n(인식이 잘못됐다면 관리자에게 알려주세요)`;
+                }
+                alert(msg);
                 inputEl.value = '';
                 weeklyScheduleImageMeta[serverKey] = true;
                 weeklyScheduleImageData[serverKey] = updates[getScheduleImagePath(weekStartStr, serverKey)];
@@ -3972,8 +4088,12 @@ function loadWeekAssignment() {
     const weekStart = formatDate2(getWeekStartSun(today));
     if (weekAssignCacheKey === weekStart) return Promise.resolve(); // 이미 로드됨
 
-    return db.ref(getAssignPath(weekStart)).once('value').then(snap => {
-        weekAssignCache = snap.val() || {};
+    return Promise.all([
+        db.ref(getAssignPath(weekStart)).once('value'),
+        db.ref(`oman_team_assignments/${weekStart}`).once('value')
+    ]).then(([assignSnap, omanSnap]) => {
+        weekAssignCache = assignSnap.val() || {};
+        omanTeamAssignmentCache = omanSnap.val() || {};
         weekAssignCacheKey = weekStart;
         renderTodaySchedules();
         renderAttendanceTable();
@@ -3985,6 +4105,32 @@ function loadWeekAssignment() {
             checkAllDataLoaded();
         }
     });
+}
+
+// 스케줄+서버 기준으로 오만타워 자동 인식 담당 팀(고은/꼬장/정훈) 조회
+// 인식 안 된 경우(신념 등 미지원 구간, 서버별 층 배정 자체가 없는 경우 등) null 반환
+function getOmanTeamForSchedule(schedule, serverKey) {
+    const dayKorean = ['일', '월', '화', '수', '목', '금', '토'][schedule.dayOfWeek];
+    const daySlots = omanTeamAssignmentCache[dayKorean];
+    if (!daySlots) return null;
+
+    const name = schedule.name || '';
+
+    if (name.includes('오만') && name.includes('/')) {
+        // 오만N층/M층 쌍 — 서버별로 배정된 층 번호를 찾아 그 층의 담당 팀 조회
+        const entry = getScheduleAssignment(schedule);
+        const floorVal = (entry.serverFloors || {})[serverKey] || '';
+        const floorNum = floorVal.replace(/[^0-9]/g, '');
+        if (!floorNum) return null; // 서버별 층 배정이 안 되어 있으면 알 수 없음
+        return daySlots['오만' + floorNum + '층'] || null;
+    }
+
+    if (!name.includes('/') && schedule.time === '22:00') {
+        // 테베/티칼/아틀란티스/무섭/에카 등 로테이션 — 병합된 단일 슬롯
+        return daySlots['테베류'] || null;
+    }
+
+    return null; // 신념 등 아직 지원 안 하는 구간
 }
 
 // 스케줄의 이번 주 배정 데이터 가져오기
