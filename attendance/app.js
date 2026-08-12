@@ -15,6 +15,7 @@ const authReadyPromise = firebase.auth().signInAnonymously().catch(err => {
 // 전역 변수
 let users = [];
 let schedules = [];
+let testModeOverride = null; // { dayOfWeek, time } — 설정되면 실제 시간 대신 이 값을 "현재 시간"으로 취급
 
 // 데이터 로드 상태 추적
 const dataLoadState = { users: false, schedules: false, weekAssign: false };
@@ -469,6 +470,7 @@ function loadSchedules() {
         renderTodaySchedules();
         loadTodayAttendance();
         populateBossSelector();
+        populateTestModeSelect();
 
         // 최초 1회만 로드 완료 처리
         if (!dataLoadState.schedules) {
@@ -557,7 +559,7 @@ function normalizeStatus(data) {
 //   allowed: 지금 출석 체크가 가능한지
 //   status: 'present' (±10분 내) | null
 //   message: 사용자 안내 문구
-function getAttendanceTimeStatus(bossTimeStr) {
+function getAttendanceTimeStatus(bossTimeStr, nowOverride) {
     if (!bossTimeStr || typeof bossTimeStr !== 'string') {
         return { allowed: false, status: null, message: '보스 시간 정보 없음' };
     }
@@ -571,7 +573,7 @@ function getAttendanceTimeStatus(bossTimeStr) {
         return { allowed: false, status: null, message: '시간 형식 오류' };
     }
     
-    const now = new Date();
+    const now = nowOverride || new Date();
     const bossTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
     const diffMs = now.getTime() - bossTime.getTime(); // 양수: 보스 시간 지남
     const diffMin = diffMs / 60000;
@@ -593,9 +595,56 @@ function getAttendanceTimeStatus(bossTimeStr) {
 };
 
 // 현재 시간대에 맞는 보스 찾기 (±10분 윈도우)
+// 🧪 테스트 모드 — 실제 시간 대신 testModeOverride를 "지금"으로 취급 (화면 표시 전용, 출석 기록엔 영향 없음)
+function getEffectiveNow() {
+    if (!testModeOverride) return new Date();
+    const real = new Date();
+    const simulated = new Date(real);
+    const dayDiff = testModeOverride.dayOfWeek - real.getDay();
+    simulated.setDate(real.getDate() + dayDiff);
+    const [h, m] = testModeOverride.time.split(':').map(Number);
+    simulated.setHours(h, m, 0, 0);
+    return simulated;
+}
+
+// 관리자 패널의 스케줄 선택 드롭다운 채우기 (요일 무관 전체 스케줄)
+function populateTestModeSelect() {
+    const sel = document.getElementById('test-mode-select');
+    if (!sel) return;
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const sorted = [...schedules].sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
+    sel.innerHTML = '<option value="">-- 스케줄 선택 --</option>' + sorted.map(s =>
+        `<option value="${s.dayOfWeek}|${s.time}">${dayNames[s.dayOfWeek]} ${s.time} ${s.name}</option>`
+    ).join('');
+}
+
+function applyTestMode() {
+    const sel = document.getElementById('test-mode-select');
+    if (!sel || !sel.value) { alert('스케줄을 선택해주세요.'); return; }
+    const [dayOfWeek, time] = sel.value.split('|');
+    testModeOverride = { dayOfWeek: Number(dayOfWeek), time };
+    updateTestModeStatusUI();
+    renderTodaySchedules();
+}
+
+function clearTestMode() {
+    testModeOverride = null;
+    updateTestModeStatusUI();
+    renderTodaySchedules();
+}
+
+function updateTestModeStatusUI() {
+    const statusEl = document.getElementById('test-mode-status');
+    if (!statusEl) return;
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    statusEl.innerHTML = testModeOverride
+        ? `<span style="color:#9b59b6;">🧪 테스트 모드 켜짐 — ${dayNames[testModeOverride.dayOfWeek]} ${testModeOverride.time} 기준으로 표시 중</span>`
+        : '<span style="color:#95a5a6;">테스트 모드 꺼짐 (실제 시간 기준)</span>';
+}
+
 function getCurrentBoss() {
-    // 실제 시간 기반 보스 선택
-    const now = new Date();
+    // 실제 시간 기반 보스 선택 (테스트 모드가 켜져 있으면 그 시간 기준)
+    const now = getEffectiveNow();
     const today = now.getDay();
     const currentTime = now.getHours() * 60 + now.getMinutes();
     
@@ -648,7 +697,7 @@ async function renderTodaySchedules() {
     const serverColors = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
 
     // ── 오늘 전체 스케줄 표 ──
-    const now = new Date();
+    const now = getEffectiveNow();
     const todayDow = now.getDay();
     const todaySchedules = schedules
         .filter(s => s.dayOfWeek === todayDow)
@@ -758,7 +807,7 @@ async function renderTodaySchedules() {
         return;
     }
 
-    const timeStatus = getAttendanceTimeStatus(currentBoss.time);
+    const timeStatus = getAttendanceTimeStatus(currentBoss.time, getEffectiveNow());
     const isMyBoss = isMyServerSchedule(currentBoss);
 
     // 담당 서버 배지 — weekAssignCache 기준 (구 assignedServers 폴백)
@@ -834,7 +883,8 @@ function buildEscaMultiBossHtml() {
 // 출석 종료 시 자동 불참 처리
 function autoMarkAbsent(boss) {
     if (!boss) return;
-    
+    if (testModeOverride) return; // 🧪 테스트 모드에서는 실제 출석 데이터를 건드리지 않음
+
     const timeStatus = getAttendanceTimeStatus(boss.time);
     
     // 출석 시간이 아직 종료되지 않았으면 리턴
