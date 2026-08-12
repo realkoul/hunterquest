@@ -763,8 +763,8 @@ async function renderTodaySchedules() {
 
     // 현재 보스 표시명 → 내 서버 기준으로 계산
     const currentBossOmanResults = getOmanTeamForSchedule(currentBoss, myServer);
-    const currentBossDisplayName = getBossDisplayName(currentBoss, myServer)
-        + buildOmanTeamBadgeHtml(currentBossOmanResults, false);
+    const currentBossDisplayName = getBossDisplayName(currentBoss, myServer);
+    const currentBossTeamBadgeHtml = buildOmanTeamBadgeHtml(currentBossOmanResults, false, true);
 
     // 스케줄 표
     container.innerHTML = scheduleTableHtml;
@@ -775,6 +775,7 @@ async function renderTodaySchedules() {
             <div>
                 <div style="font-size:0.78rem; color:${timeStatus.status === 'present' ? '#16a085' : '#95a5a6'}; font-weight:bold; margin-bottom:4px;">${timeStatus.status === 'present' ? '⭕ 진행 중' : '⏸ 대기 중'}</div>
                 <div style="font-size:1.3rem; font-weight:bold; color:#2c3e50;">${currentBossDisplayName}</div>
+                ${currentBossTeamBadgeHtml ? `<div style="margin-top:3px;">${currentBossTeamBadgeHtml}</div>` : ''}
                 <div style="font-size:0.8rem; color:#7f8c8d; margin-top:2px;">${currentBoss.time}</div>
             </div>
             <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${serverBadgesHtml}</div>
@@ -4121,6 +4122,8 @@ function getOmanTeamForSchedule(schedule, serverKey) {
             const floorNum = p.replace(/[^0-9]/g, '');
             return { floor: floorNum, team: daySlots['오만' + floorNum + '층'] || null };
         }).filter(r => r.team); // 인식 안 된 층은 제외
+        // 우리 팀(OUR_TEAM_NAME) 배지가 항상 먼저 나오도록 순서 고정 → 목록 스캔할 때 시선이 안 흔들림
+        results.sort((a, b) => (a.team === OUR_TEAM_NAME ? -1 : 0) - (b.team === OUR_TEAM_NAME ? -1 : 0));
         return results.length > 0 ? results : null;
     }
 
@@ -4134,7 +4137,8 @@ function getOmanTeamForSchedule(schedule, serverKey) {
 }
 
 // getOmanTeamForSchedule 결과를 화면용 배지 HTML로 변환
-function buildOmanTeamBadgeHtml(omanResults, compact) {
+// compact: 오늘 스케줄 목록용 작은 배지 / standalone: 보스명과 별도 줄에 단독으로 표시할 때 (앞에 '-' 안 붙임)
+function buildOmanTeamBadgeHtml(omanResults, compact, standalone) {
     if (!omanResults || omanResults.length === 0) return '';
     const items = omanResults.map(({ floor, team }) => {
         const isOurTeam = team === OUR_TEAM_NAME;
@@ -4150,6 +4154,7 @@ function buildOmanTeamBadgeHtml(omanResults, compact) {
         }
     });
     if (compact) return ' ' + items.join(' ');
+    if (standalone) return '<span style="font-size:0.85rem;">' + items.join(' / ') + '</span>';
     return ' <span style="font-size:0.85rem;">- ' + items.join(' / ') + '</span>';
 }
 
