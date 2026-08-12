@@ -781,7 +781,25 @@ async function renderTodaySchedules() {
         statusBadge = `<span style="display:inline-block; padding:4px 10px; background:#f8f9fa; color:#95a5a6; border-radius:4px; font-size:0.85rem;">${timeStatus.message}</span>`;
     }
 
+// 에스카로스 — 출석체크는 한 번만 하지만 실제로는 5개 보스가 순서대로 진행되므로,
+// "진행 중인 보스" 카드에 5개를 한 번에 나열해서 보여줌 (출석 로직은 그대로, 표시만 다르게)
+function buildEscaMultiBossHtml() {
+    const ESCA_BOSS_NAMES = ['웨링', '듀페', '욤니', '살라', '그라'];
+    const escaSlots = omanTeamAssignmentCache['에스카로스'] || {};
+    return ESCA_BOSS_NAMES.map((name, i) => {
+        const team = escaSlots[name] || null;
+        const isOurTeam = team === OUR_TEAM_NAME;
+        const teamText = team ? (isOurTeam ? `★ ${team}팀` : `${team}팀`) : '❓미인식';
+        return `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; ${isOurTeam ? 'font-weight:bold;' : ''}">
+                <span style="color:${isOurTeam ? '#2980b9' : '#2c3e50'};">${i + 1}구 ${name}</span>
+                <span style="color:${isOurTeam ? '#2980b9' : '#7f8c8d'};">${teamText}</span>
+            </div>`;
+    }).join('');
+}
+
     // 현재 보스 표시명 → 내 서버 기준으로 계산
+    const isEsca = (currentBoss.name || '').includes('에스카');
     const currentBossOmanResults = getOmanTeamForSchedule(currentBoss, myServer);
     const currentBossDisplayName = getBossDisplayName(currentBoss, myServer);
     const currentBossTeamBadgeHtml = buildOmanTeamBadgeHtml(currentBossOmanResults, false, true);
@@ -795,7 +813,9 @@ async function renderTodaySchedules() {
             <div>
                 <div style="font-size:0.78rem; color:${timeStatus.status === 'present' ? '#16a085' : '#95a5a6'}; font-weight:bold; margin-bottom:4px;">${timeStatus.status === 'present' ? '⭕ 진행 중' : '⏸ 대기 중'}</div>
                 <div style="font-size:1.3rem; font-weight:bold; color:#2c3e50;">${currentBossDisplayName}</div>
-                ${currentBossTeamBadgeHtml ? `<div style="margin-top:3px;">${currentBossTeamBadgeHtml}</div>` : ''}
+                ${isEsca
+                    ? `<div style="margin-top:6px; padding-top:6px; border-top:1px solid #ddd; font-size:0.85rem;">${buildEscaMultiBossHtml()}</div>`
+                    : (currentBossTeamBadgeHtml ? `<div style="margin-top:3px;">${currentBossTeamBadgeHtml}</div>` : '')}
                 <div style="font-size:0.8rem; color:#7f8c8d; margin-top:2px;">${currentBoss.time}</div>
             </div>
             <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${serverBadgesHtml}</div>
@@ -4127,9 +4147,7 @@ function bestTeamNameMatch(text) {
 
 // 이미지의 특정 영역만 잘라 OCR 실행 → 팀명 반환 (실패 시 null)
 // 이진화 여부에 따라 결과가 흔들려서, 두 방식 다 시도해 더 확신도 높은(자모거리 낮은) 쪽을 채택
-async function ocrTeamInRegion(imgEl, x0, y0, x1, y1) {
-    const scale = 6;
-
+async function ocrTeamInRegion(imgEl, x0, y0, x1, y1, scale = 6) {
     const makeCanvas = (binarize) => {
         const c = document.createElement('canvas');
         c.width = (x1 - x0) * scale;
@@ -4155,8 +4173,16 @@ async function ocrTeamInRegion(imgEl, x0, y0, x1, y1) {
             Tesseract.recognize(makeCanvas(true), 'kor').then(r => r.data.text),
             Tesseract.recognize(makeCanvas(false), 'kor').then(r => r.data.text),
         ]);
-        const scoreA = scoreTeamNameMatch(textA);
-        const scoreB = scoreTeamNameMatch(textB);
+        const scoreA = scoreTeamNameMatch(textA); // 이진화
+        const scoreB = scoreTeamNameMatch(textB); // 원문
+
+        // 원문(비이진화)에 한글이 전혀 안 잡히면 "실제 텍스트가 없다"는 강한 신호 →
+        // 이진화 쪽에서만 애매하게 나온 결과(화살표 등 노이즈 오독)는 신뢰하지 않음 (정확히 일치할 때만 예외)
+        const rawCleaned = (textB || '').replace(/\s+/g, '').replace(/[^가-힣]/g, '');
+        if (!rawCleaned && !(scoreA && scoreA.dist === 0)) {
+            return null;
+        }
+
         const best = [scoreA, scoreB].filter(Boolean).sort((a, b) => a.dist - b.dist)[0];
         return best && best.dist <= 3 ? best.name : null;
     } catch (err) {
@@ -4187,6 +4213,14 @@ const SUNDAY_TEXT_REGIONS = [
 // 오만타워/에스카로스/토요일(색상) + 개미/신념3·4층(OCR)을 모두 포함해서 인식
 async function extractAllTeamAssignments(imgEl) {
     const result = extractOmanTeamAssignments(imgEl); // 색상 기반 인식 먼저 (동기, 빠름)
+
+    // 🔤 테베류(22:00) 슬롯 — 요일에 따라 색칠 대신 텍스트만 있는 경우(예: 무섭/에카)가 있어서,
+    // 색상 인식이 실패(null)한 요일만 같은 위치를 OCR로 재시도 (팀명이 있는 하단 줄만 좁게 크롭해 노이즈 최소화)
+    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
+        if (!result[day]['테베류']) {
+            result[day]['테베류'] = await ocrTeamInRegion(imgEl, colX + 35, 455, colX + 151, 478, 10);
+        }
+    }
 
     // 개미(산란장) — OCR
     const [ax0, ay0, ax1, ay1] = ANT_TEAM_REGION;
