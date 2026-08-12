@@ -4441,6 +4441,17 @@ function getOmanTeamForSchedule(schedule, serverKey) {
         return team ? [{ floor: null, team }] : null;
     }
 
+    // 일요일 텍스트 항목(암살/마령/마수/명법/성혈레열쇠) — 요일 무관, 이름으로 매칭
+    // ⚠️ daySlots(요일별 오만타워 데이터) 체크보다 먼저 와야 함 — 일요일은 daySlots 자체가 없어서
+    //    아래쪽에 두면 그 전에 return null로 빠져버려 절대 매칭이 안 됨
+    const SUNDAY_TEXT_NAMES = ['암살', '마령', '마수', '명법', '기란성혈레열쇠', '아덴성혈레열쇠', '켄성혈레열쇠'];
+    const matchedSunday = SUNDAY_TEXT_NAMES.find(n => name.includes(n));
+    if (matchedSunday) {
+        const sundaySlots = omanTeamAssignmentCache['일요일텍스트'];
+        const team = sundaySlots ? (sundaySlots[matchedSunday] || null) : null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
     const dayKorean = ['일', '월', '화', '수', '목', '금', '토'][schedule.dayOfWeek];
     const daySlots = omanTeamAssignmentCache[dayKorean];
     if (!daySlots) return null;
@@ -4472,15 +4483,6 @@ function getOmanTeamForSchedule(schedule, serverKey) {
         }).filter(r => r.team);
         results.sort((a, b) => (a.team === OUR_TEAM_NAME ? -1 : 0) - (b.team === OUR_TEAM_NAME ? -1 : 0));
         return results.length > 0 ? results : null;
-    }
-
-    // 일요일 텍스트 항목(암살/마령/마수/명법/성혈레열쇠) — 요일 무관, 이름으로 매칭
-    const SUNDAY_TEXT_NAMES = ['암살', '마령', '마수', '명법', '기란성혈레열쇠', '아덴성혈레열쇠', '켄성혈레열쇠'];
-    const matchedSunday = SUNDAY_TEXT_NAMES.find(n => name.includes(n));
-    if (matchedSunday) {
-        const sundaySlots = omanTeamAssignmentCache['일요일텍스트'];
-        const team = sundaySlots ? (sundaySlots[matchedSunday] || null) : null;
-        return team ? [{ floor: null, team }] : null;
     }
 
     return null; // 그 외 구간은 아직 미지원
