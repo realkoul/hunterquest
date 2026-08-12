@@ -690,14 +690,11 @@ async function renderTodaySchedules() {
             const assignedServers = cacheEntry ? (cacheEntry.assignedServers || []) : [];
             const isNotMyServer = !isUnassignedBoss && assignedServers.length > 0 && !assignedServers.includes(viewServer);
 
-            // 🎨 오만타워 자동 인식 팀 배정 우선 표시 (인식된 경우에만)
-            const omanTeam = getOmanTeamForSchedule(s, viewServer);
+            // 🎨 오만타워 자동 인식 팀 배정 우선 표시 (인식된 경우에만, 진기르만 지원)
+            const omanResults = getOmanTeamForSchedule(s, viewServer);
             let labelHtml;
-            if (omanTeam) {
-                const isOurTeam = omanTeam === OUR_TEAM_NAME;
-                labelHtml = isOurTeam
-                    ? ` <span style="font-size:0.78rem;color:#fff;background:#2980b9;padding:1px 7px;border-radius:10px;font-weight:bold;">★ ${omanTeam}팀</span>`
-                    : ` <span style="font-size:0.75rem;color:#7f8c8d;font-weight:400;">(${omanTeam}팀)</span>`;
+            if (omanResults) {
+                labelHtml = buildOmanTeamBadgeHtml(omanResults, true);
             } else {
                 labelHtml = isUnassignedBoss
                     ? ' <span style="font-size:0.75rem;color:#aaa;font-weight:400;">(미배정)</span>'
@@ -765,12 +762,9 @@ async function renderTodaySchedules() {
     }
 
     // 현재 보스 표시명 → 내 서버 기준으로 계산
-    const currentBossOmanTeam = getOmanTeamForSchedule(currentBoss, myServer);
-    const isOurTeamBoss = currentBossOmanTeam === OUR_TEAM_NAME;
+    const currentBossOmanResults = getOmanTeamForSchedule(currentBoss, myServer);
     const currentBossDisplayName = getBossDisplayName(currentBoss, myServer)
-        + (currentBossOmanTeam
-            ? ` <span style="color:${isOurTeamBoss ? '#2980b9' : '#95a5a6'};">- ${currentBossOmanTeam}팀${isOurTeamBoss ? ' ★' : ''}</span>`
-            : '');
+        + buildOmanTeamBadgeHtml(currentBossOmanResults, false);
 
     // 스케줄 표
     container.innerHTML = scheduleTableHtml;
@@ -4108,8 +4102,12 @@ function loadWeekAssignment() {
 }
 
 // 스케줄+서버 기준으로 오만타워 자동 인식 담당 팀(고은/꼬장/정훈) 조회
-// 인식 안 된 경우(신념 등 미지원 구간, 서버별 층 배정 자체가 없는 경우 등) null 반환
+// 진기르는 한 이미지 안에서 두 층(예: 1층/6층)을 동시에 병렬로 진행하므로 배열로 반환
+// [{floor:'1', team:'정훈'}, {floor:'6', team:'고은'}] 형태. 인식 불가하면 null.
+// 판도라/지원은 아직 이 형식의 이미지가 캘리브레이션되어 있지 않아 null 반환.
 function getOmanTeamForSchedule(schedule, serverKey) {
+    if (serverKey !== 'jingir') return null; // 현재는 진기르 이미지만 지원
+
     const dayKorean = ['일', '월', '화', '수', '목', '금', '토'][schedule.dayOfWeek];
     const daySlots = omanTeamAssignmentCache[dayKorean];
     if (!daySlots) return null;
@@ -4117,20 +4115,42 @@ function getOmanTeamForSchedule(schedule, serverKey) {
     const name = schedule.name || '';
 
     if (name.includes('오만') && name.includes('/')) {
-        // 오만N층/M층 쌍 — 서버별로 배정된 층 번호를 찾아 그 층의 담당 팀 조회
-        const entry = getScheduleAssignment(schedule);
-        const floorVal = (entry.serverFloors || {})[serverKey] || '';
-        const floorNum = floorVal.replace(/[^0-9]/g, '');
-        if (!floorNum) return null; // 서버별 층 배정이 안 되어 있으면 알 수 없음
-        return daySlots['오만' + floorNum + '층'] || null;
+        // "오만 1층 / 6층" → 두 층 다 진기르 담당(병렬 진행) → 둘 다 반환
+        const parts = name.split('/').map(p => p.trim());
+        const results = parts.map(p => {
+            const floorNum = p.replace(/[^0-9]/g, '');
+            return { floor: floorNum, team: daySlots['오만' + floorNum + '층'] || null };
+        }).filter(r => r.team); // 인식 안 된 층은 제외
+        return results.length > 0 ? results : null;
     }
 
     if (!name.includes('/') && schedule.time === '22:00') {
         // 테베/티칼/아틀란티스/무섭/에카 등 로테이션 — 병합된 단일 슬롯
-        return daySlots['테베류'] || null;
+        const team = daySlots['테베류'] || null;
+        return team ? [{ floor: null, team }] : null;
     }
 
     return null; // 신념 등 아직 지원 안 하는 구간
+}
+
+// getOmanTeamForSchedule 결과를 화면용 배지 HTML로 변환
+function buildOmanTeamBadgeHtml(omanResults, compact) {
+    if (!omanResults || omanResults.length === 0) return '';
+    const items = omanResults.map(({ floor, team }) => {
+        const isOurTeam = team === OUR_TEAM_NAME;
+        const label = floor ? `${floor}층:${team}팀` : `${team}팀`;
+        if (compact) {
+            return isOurTeam
+                ? `<span style="font-size:0.75rem;color:#fff;background:#2980b9;padding:1px 6px;border-radius:9px;font-weight:bold;">★${label}</span>`
+                : `<span style="font-size:0.72rem;color:#95a5a6;">(${label})</span>`;
+        } else {
+            return isOurTeam
+                ? `<span style="color:#2980b9;font-weight:bold;">${label}★</span>`
+                : `<span style="color:#95a5a6;">${label}</span>`;
+        }
+    });
+    if (compact) return ' ' + items.join(' ');
+    return ' <span style="font-size:0.85rem;">- ' + items.join(' / ') + '</span>';
 }
 
 // 스케줄의 이번 주 배정 데이터 가져오기
