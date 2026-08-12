@@ -619,6 +619,25 @@ function getCurrentBoss() {
     return closestBoss;
 };
 
+// 개미(산란장) — 일주일에 한 번 바뀌는 담당자 배너 (오늘 스케줄 위에 표시)
+function buildAntNestBannerHtml(viewServer) {
+    if (viewServer !== 'jingir') return ''; // 현재는 진기르 이미지만 지원
+    const antSlots = omanTeamAssignmentCache['개미산란장'];
+    const team = antSlots ? (antSlots['담당'] || null) : null;
+    if (!team) return '';
+
+    const isOurTeam = team === OUR_TEAM_NAME;
+    return `
+        <div style="margin-bottom:12px; padding:10px 16px; border-radius:8px; display:flex; align-items:center; gap:10px;
+                    background:${isOurTeam ? '#e8f2fc' : '#f8f9fa'}; border:1px solid ${isOurTeam ? '#2980b9' : '#e0e0e0'};">
+            <span style="font-size:1.3rem;">🐜</span>
+            <span style="font-weight:bold; color:#2c3e50; font-size:0.9rem;">이번 주 개미(산란장) 담당</span>
+            <span style="font-size:0.9rem; font-weight:bold; color:${isOurTeam ? '#2980b9' : '#7f8c8d'};">
+                ${isOurTeam ? `★ ${team}팀` : `${team}팀`}
+            </span>
+        </div>`;
+}
+
 // 오늘 스케줄 렌더링
 async function renderTodaySchedules() {
     const container = document.getElementById('today-schedules');
@@ -637,6 +656,7 @@ async function renderTodaySchedules() {
 
     // 보기 서버 상태 (기본: 내 서버, 다른 서버 탭 클릭으로 변경)
     const viewServer = window._viewServer || myServer || '';
+    const antBannerHtml = buildAntNestBannerHtml(viewServer);
 
     // 주차 배정 캐시 로드 여부 확인
     const weekCacheLoaded = Object.keys(weekAssignCache).length > 0;
@@ -729,7 +749,7 @@ async function renderTodaySchedules() {
 
     // ── 현재 보스 없음 ──
     if (!currentBoss) {
-        container.innerHTML = scheduleTableHtml;
+        container.innerHTML = antBannerHtml + scheduleTableHtml;
         if (bossCard) bossCard.innerHTML = `
             <div style="background:#f8f9fa; border-radius:10px; border:1px solid #e0e0e0; padding:12px; height:100%; display:flex; flex-direction:column; justify-content:center;">
                 <p style="color:#7f8c8d; margin:0; font-size:0.85rem; font-weight:bold;">진행 중인 보스 없음</p>
@@ -767,7 +787,7 @@ async function renderTodaySchedules() {
     const currentBossTeamBadgeHtml = buildOmanTeamBadgeHtml(currentBossOmanResults, false, true);
 
     // 스케줄 표
-    container.innerHTML = scheduleTableHtml;
+    container.innerHTML = antBannerHtml + scheduleTableHtml;
 
     // 현재 보스 카드 (상단 그리드 우측)
     if (bossCard) bossCard.innerHTML = `
@@ -4052,7 +4072,144 @@ function extractOmanTeamAssignments(imgEl) {
     return result;
 }
 
-// 인식 결과를 관리자에게 보여주는 확인 다이얼로그(간단 텍스트 버전)
+// ============================================================
+// 🔤 텍스트 기반 담당 팀 인식 (OCR, Tesseract.js 사용)
+// 색상 채움이 없는 구간(개미산란장, 신념3/4층 등)은 색상 샘플링이 불가능해서
+// 작은 텍스트 영역만 잘라내 OCR로 "고은/꼬장/정훈" 중 무엇인지 판별함.
+// ============================================================
+
+const TEAM_NAME_CANDIDATES = ['고은', '꼬장', '정훈'];
+
+// 한글 음절 하나를 (초성,중성,종성) 자모 인덱스로 분해 — 한글 아니면 그대로 반환
+function decomposeHangul(ch) {
+    const code = ch.charCodeAt(0) - 0xAC00;
+    if (code < 0 || code > 11171) return [ch, ch, ch];
+    return [Math.floor(code / (21 * 28)), Math.floor((code % (21 * 28)) / 28), code % 28];
+}
+
+// 자모 단위 거리 — OCR이 비슷하게 생긴 글자(전↔정, 호↔훈 등)로 착각한 경우를
+// 완전히 다른 글자보다 훨씬 "가깝다"고 정확히 구분해줌 (음절 단위 비교보다 정밀함)
+function jamoDistance(str1, str2) {
+    const len = Math.min(str1.length, str2.length);
+    let dist = Math.abs(str1.length - str2.length) * 3;
+    for (let i = 0; i < len; i++) {
+        const a = decomposeHangul(str1[i]);
+        const b = decomposeHangul(str2[i]);
+        for (let j = 0; j < 3; j++) if (a[j] !== b[j]) dist++;
+    }
+    return dist;
+}
+
+// OCR로 읽은 텍스트에서 가장 가까운 팀명 후보와 그 거리(확신도)를 함께 반환
+function scoreTeamNameMatch(text) {
+    if (!text) return null;
+    const cleaned = text.replace(/\s+/g, '').replace(/[^가-힣]/g, '');
+    if (!cleaned) return null;
+
+    for (const name of TEAM_NAME_CANDIDATES) {
+        if (cleaned.includes(name)) return { name, dist: 0 };
+    }
+    let best = null, bestDist = Infinity;
+    TEAM_NAME_CANDIDATES.forEach(name => {
+        for (let i = 0; i <= Math.max(0, cleaned.length - name.length); i++) {
+            const chunk = cleaned.slice(i, i + name.length);
+            const d = jamoDistance(chunk, name);
+            if (d < bestDist) { bestDist = d; best = name; }
+        }
+    });
+    return best ? { name: best, dist: bestDist } : null;
+}
+
+function bestTeamNameMatch(text) {
+    const r = scoreTeamNameMatch(text);
+    return r && r.dist <= 3 ? r.name : null; // 자모 절반 이상 다르면 인식 실패로 처리
+}
+
+// 이미지의 특정 영역만 잘라 OCR 실행 → 팀명 반환 (실패 시 null)
+// 이진화 여부에 따라 결과가 흔들려서, 두 방식 다 시도해 더 확신도 높은(자모거리 낮은) 쪽을 채택
+async function ocrTeamInRegion(imgEl, x0, y0, x1, y1) {
+    const scale = 6;
+
+    const makeCanvas = (binarize) => {
+        const c = document.createElement('canvas');
+        c.width = (x1 - x0) * scale;
+        c.height = (y1 - y0) * scale;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(imgEl, x0, y0, x1 - x0, y1 - y0, 0, 0, c.width, c.height);
+        if (binarize) {
+            const imgData = ctx.getImageData(0, 0, c.width, c.height);
+            const d = imgData.data;
+            for (let i = 0; i < d.length; i += 4) {
+                const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                const v = lum < 180 ? 0 : 255;
+                d[i] = d[i + 1] = d[i + 2] = v;
+            }
+            ctx.putImageData(imgData, 0, 0);
+        }
+        return c;
+    };
+
+    try {
+        const [textA, textB] = await Promise.all([
+            Tesseract.recognize(makeCanvas(true), 'kor').then(r => r.data.text),
+            Tesseract.recognize(makeCanvas(false), 'kor').then(r => r.data.text),
+        ]);
+        const scoreA = scoreTeamNameMatch(textA);
+        const scoreB = scoreTeamNameMatch(textB);
+        const best = [scoreA, scoreB].filter(Boolean).sort((a, b) => a.dist - b.dist)[0];
+        return best && best.dist <= 3 ? best.name : null;
+    } catch (err) {
+        console.error('OCR 인식 실패:', err);
+        return null;
+    }
+}
+
+// 개미(산란장) 담당자 텍스트 영역 (원본 1432x671 기준, 요일 무관 고정 1곳)
+const ANT_TEAM_REGION = [980, 38, 1100, 58];
+
+// 신념3층/4층 담당자 텍스트 영역 — 요일별(월~금) x좌표만 다르고 y는 공통
+const SHINNYEOM_34_Y = { '신념3층': [610, 635], '신념4층': [638, 663] };
+const SHINNYEOM_NAME_X_OFFSET = [136, 186]; // colX 기준 상대 x범위 (팀명 텍스트 부분만)
+
+// 일요일 칸 전용 텍스트 항목들 (색상 없음, 요일 구분 없이 고정 위치 7곳)
+// x=2~122 (일요일 칸), 팀명 텍스트만 좁게 잘라낸 좌표
+const SUNDAY_TEXT_REGIONS = [
+    ['암살', 15, 208, 105, 230],
+    ['마령', 15, 248, 105, 270],
+    ['마수', 15, 338, 105, 360],
+    ['명법', 15, 378, 105, 400],
+    ['기란성혈레열쇠', 15, 441, 105, 465],
+    ['아덴성혈레열쇠', 15, 476, 105, 500],
+    ['켄성혈레열쇠', 15, 511, 105, 538],
+];
+
+// 오만타워/에스카로스/토요일(색상) + 개미/신념3·4층(OCR)을 모두 포함해서 인식
+async function extractAllTeamAssignments(imgEl) {
+    const result = extractOmanTeamAssignments(imgEl); // 색상 기반 인식 먼저 (동기, 빠름)
+
+    // 개미(산란장) — OCR
+    const [ax0, ay0, ax1, ay1] = ANT_TEAM_REGION;
+    result['개미산란장'] = { '담당': await ocrTeamInRegion(imgEl, ax0, ay0, ax1, ay1) };
+
+    // 신념3층/4층 — 요일별 OCR
+    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
+        for (const [slot, [yTop, yBottom]] of Object.entries(SHINNYEOM_34_Y)) {
+            const x0 = colX + SHINNYEOM_NAME_X_OFFSET[0];
+            const x1 = colX + SHINNYEOM_NAME_X_OFFSET[1];
+            result[day][slot] = await ocrTeamInRegion(imgEl, x0, yTop, x1, yBottom);
+        }
+    }
+
+    // 일요일 칸 전용 텍스트 항목들 — OCR
+    const sundaySlots = {};
+    for (const [name, x0, y0, x1, y1] of SUNDAY_TEXT_REGIONS) {
+        sundaySlots[name] = await ocrTeamInRegion(imgEl, x0, y0, x1, y1);
+    }
+    result['일요일텍스트'] = sundaySlots;
+
+    return result;
+}
 function buildOmanAssignmentPreviewText(assignments) {
     const lines = [];
     Object.entries(assignments).forEach(([day, slots]) => {
@@ -4069,7 +4226,7 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
     const reader = new FileReader();
     reader.onload = (e) => {
         const img = new Image();
-        img.onload = () => {
+        img.onload = async () => {
             const maxWidth = 1000;
             const scale = Math.min(1, maxWidth / img.width);
             const canvas = document.createElement('canvas');
@@ -4088,21 +4245,25 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
             };
             updates[getScheduleMetaPath(weekStartStr, serverKey)] = true;
 
-            // 🎨 진기르("기르&진기르") 서버 이미지는 원본 해상도 기준으로 오만타워 담당 팀 자동 인식
+            // 🎨🔤 진기르("기르&진기르") 서버 이미지는 원본 해상도 기준으로 담당 팀 자동 인식
+            // (오만타워/에스카로스/토요일=색상 즉시 인식, 개미산란장/신념3·4층=OCR라 몇 초 걸릴 수 있음)
             let omanAssignments = null;
             if (serverKey === 'jingir') {
                 try {
-                    omanAssignments = extractOmanTeamAssignments(img); // 리사이즈 전 원본 img 사용
+                    inputEl.disabled = true;
+                    omanAssignments = await extractAllTeamAssignments(img); // 리사이즈 전 원본 img 사용
                     updates[`oman_team_assignments/${weekStartStr}`] = omanAssignments;
                 } catch (err) {
-                    console.error('오만타워 팀 인식 실패:', err);
+                    console.error('담당 팀 인식 실패:', err);
+                } finally {
+                    inputEl.disabled = false;
                 }
             }
 
             db.ref().update(updates).then(() => {
                 let msg = `✅ ${serverKey} 서버 스케줄 이미지가 업로드되었습니다!`;
                 if (omanAssignments) {
-                    msg += `\n\n🎨 오만타워 담당 팀 자동 인식 결과:\n` + buildOmanAssignmentPreviewText(omanAssignments);
+                    msg += `\n\n🎨🔤 담당 팀 자동 인식 결과:\n` + buildOmanAssignmentPreviewText(omanAssignments);
                     msg += `\n\n(인식이 잘못됐다면 관리자에게 알려주세요)`;
                 }
                 alert(msg);
@@ -4189,6 +4350,13 @@ function getOmanTeamForSchedule(schedule, serverKey) {
         return team ? [{ floor: null, team }] : null;
     }
 
+    // 개미(산란장) — 요일 무관, OCR로 인식된 단일 담당자 (일주일에 한 번 표기)
+    if (name.includes('개미')) {
+        const antSlots = omanTeamAssignmentCache['개미산란장'];
+        const team = antSlots ? (antSlots['담당'] || null) : null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
     const dayKorean = ['일', '월', '화', '수', '목', '금', '토'][schedule.dayOfWeek];
     const daySlots = omanTeamAssignmentCache[dayKorean];
     if (!daySlots) return null;
@@ -4222,7 +4390,16 @@ function getOmanTeamForSchedule(schedule, serverKey) {
         return results.length > 0 ? results : null;
     }
 
-    return null; // 개미(산란장) 등 텍스트 기반 구간은 아직 미지원 (OCR 필요)
+    // 일요일 텍스트 항목(암살/마령/마수/명법/성혈레열쇠) — 요일 무관, 이름으로 매칭
+    const SUNDAY_TEXT_NAMES = ['암살', '마령', '마수', '명법', '기란성혈레열쇠', '아덴성혈레열쇠', '켄성혈레열쇠'];
+    const matchedSunday = SUNDAY_TEXT_NAMES.find(n => name.includes(n));
+    if (matchedSunday) {
+        const sundaySlots = omanTeamAssignmentCache['일요일텍스트'];
+        const team = sundaySlots ? (sundaySlots[matchedSunday] || null) : null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
+    return null; // 그 외 구간은 아직 미지원
 }
 
 // getOmanTeamForSchedule 결과를 화면용 배지 HTML로 변환
