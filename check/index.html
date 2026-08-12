@@ -488,6 +488,28 @@
             </div>
         </div>
 
+        <!-- 🧪 테스트 모드 -->
+        <div class="accordion-card" id="acc-testmode" style="border:2px solid #9b59b6;">
+            <div class="accordion-header" onclick="toggleAccordion('acc-testmode')">
+                <h2>🧪 테스트 모드</h2>
+                <span class="accordion-arrow">▼</span>
+            </div>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">
+                    실제 시간과 무관하게, 원하는 요일/시간의 스케줄을 "진행 중"인 것처럼 미리 볼 수 있습니다.
+                    화면 표시만 바뀌고 실제 출석 기록에는 영향이 없습니다.
+                </p>
+                <div id="test-mode-status" style="margin-bottom:12px; font-weight:bold;"></div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                    <select id="test-mode-select" class="input-text" style="flex:1; min-width:220px;">
+                        <option value="">-- 스케줄 선택 --</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="applyTestMode()" style="padding:10px 16px;">▶ 이 시간으로 미리보기</button>
+                    <button class="btn btn-danger" onclick="clearTestMode()" style="padding:10px 16px;">■ 테스트 모드 종료</button>
+                </div>
+            </div>
+        </div>
+
         <!-- 🗑️ 데이터 관리 -->
         <div class="accordion-card" id="acc-data">
             <div class="accordion-header" onclick="toggleAccordion('acc-data')">
@@ -790,6 +812,7 @@
     </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.2/firebase-auth-compat.js"></script>

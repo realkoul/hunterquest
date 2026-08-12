@@ -15,6 +15,7 @@ const authReadyPromise = firebase.auth().signInAnonymously().catch(err => {
 // 전역 변수
 let users = [];
 let schedules = [];
+let testModeOverride = null; // { dayOfWeek, time } — 설정되면 실제 시간 대신 이 값을 "현재 시간"으로 취급
 
 // 데이터 로드 상태 추적
 const dataLoadState = { users: false, schedules: false, weekAssign: false };
@@ -469,6 +470,7 @@ function loadSchedules() {
         renderTodaySchedules();
         loadTodayAttendance();
         populateBossSelector();
+        populateTestModeSelect();
 
         // 최초 1회만 로드 완료 처리
         if (!dataLoadState.schedules) {
@@ -557,7 +559,7 @@ function normalizeStatus(data) {
 //   allowed: 지금 출석 체크가 가능한지
 //   status: 'present' (±10분 내) | null
 //   message: 사용자 안내 문구
-function getAttendanceTimeStatus(bossTimeStr) {
+function getAttendanceTimeStatus(bossTimeStr, nowOverride) {
     if (!bossTimeStr || typeof bossTimeStr !== 'string') {
         return { allowed: false, status: null, message: '보스 시간 정보 없음' };
     }
@@ -571,7 +573,7 @@ function getAttendanceTimeStatus(bossTimeStr) {
         return { allowed: false, status: null, message: '시간 형식 오류' };
     }
     
-    const now = new Date();
+    const now = nowOverride || new Date();
     const bossTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
     const diffMs = now.getTime() - bossTime.getTime(); // 양수: 보스 시간 지남
     const diffMin = diffMs / 60000;
@@ -593,9 +595,56 @@ function getAttendanceTimeStatus(bossTimeStr) {
 };
 
 // 현재 시간대에 맞는 보스 찾기 (±10분 윈도우)
+// 🧪 테스트 모드 — 실제 시간 대신 testModeOverride를 "지금"으로 취급 (화면 표시 전용, 출석 기록엔 영향 없음)
+function getEffectiveNow() {
+    if (!testModeOverride) return new Date();
+    const real = new Date();
+    const simulated = new Date(real);
+    const dayDiff = testModeOverride.dayOfWeek - real.getDay();
+    simulated.setDate(real.getDate() + dayDiff);
+    const [h, m] = testModeOverride.time.split(':').map(Number);
+    simulated.setHours(h, m, 0, 0);
+    return simulated;
+}
+
+// 관리자 패널의 스케줄 선택 드롭다운 채우기 (요일 무관 전체 스케줄)
+function populateTestModeSelect() {
+    const sel = document.getElementById('test-mode-select');
+    if (!sel) return;
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const sorted = [...schedules].sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
+    sel.innerHTML = '<option value="">-- 스케줄 선택 --</option>' + sorted.map(s =>
+        `<option value="${s.dayOfWeek}|${s.time}">${dayNames[s.dayOfWeek]} ${s.time} ${s.name}</option>`
+    ).join('');
+}
+
+function applyTestMode() {
+    const sel = document.getElementById('test-mode-select');
+    if (!sel || !sel.value) { alert('스케줄을 선택해주세요.'); return; }
+    const [dayOfWeek, time] = sel.value.split('|');
+    testModeOverride = { dayOfWeek: Number(dayOfWeek), time };
+    updateTestModeStatusUI();
+    renderTodaySchedules();
+}
+
+function clearTestMode() {
+    testModeOverride = null;
+    updateTestModeStatusUI();
+    renderTodaySchedules();
+}
+
+function updateTestModeStatusUI() {
+    const statusEl = document.getElementById('test-mode-status');
+    if (!statusEl) return;
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    statusEl.innerHTML = testModeOverride
+        ? `<span style="color:#9b59b6;">🧪 테스트 모드 켜짐 — ${dayNames[testModeOverride.dayOfWeek]} ${testModeOverride.time} 기준으로 표시 중</span>`
+        : '<span style="color:#95a5a6;">테스트 모드 꺼짐 (실제 시간 기준)</span>';
+}
+
 function getCurrentBoss() {
-    // 실제 시간 기반 보스 선택
-    const now = new Date();
+    // 실제 시간 기반 보스 선택 (테스트 모드가 켜져 있으면 그 시간 기준)
+    const now = getEffectiveNow();
     const today = now.getDay();
     const currentTime = now.getHours() * 60 + now.getMinutes();
     
@@ -619,6 +668,25 @@ function getCurrentBoss() {
     return closestBoss;
 };
 
+// 개미(산란장) — 일주일에 한 번 바뀌는 담당자 배너 (오늘 스케줄 위에 표시)
+function buildAntNestBannerHtml(viewServer) {
+    if (viewServer !== 'jingir') return ''; // 현재는 진기르 이미지만 지원
+    const antSlots = omanTeamAssignmentCache['개미산란장'];
+    const team = antSlots ? (antSlots['담당'] || null) : null;
+    if (!team) return '';
+
+    const isOurTeam = team === OUR_TEAM_NAME;
+    return `
+        <div style="margin-bottom:12px; padding:10px 16px; border-radius:8px; display:flex; align-items:center; gap:10px;
+                    background:${isOurTeam ? '#e8f2fc' : '#f8f9fa'}; border:1px solid ${isOurTeam ? '#2980b9' : '#e0e0e0'};">
+            <span style="font-size:1.3rem;">🐜</span>
+            <span style="font-weight:bold; color:#2c3e50; font-size:0.9rem;">이번 주 개미(산란장) 담당</span>
+            <span style="font-size:0.9rem; font-weight:bold; color:${isOurTeam ? '#2980b9' : '#7f8c8d'};">
+                ${isOurTeam ? `★ ${team}팀` : `${team}팀`}
+            </span>
+        </div>`;
+}
+
 // 오늘 스케줄 렌더링
 async function renderTodaySchedules() {
     const container = document.getElementById('today-schedules');
@@ -629,7 +697,7 @@ async function renderTodaySchedules() {
     const serverColors = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
 
     // ── 오늘 전체 스케줄 표 ──
-    const now = new Date();
+    const now = getEffectiveNow();
     const todayDow = now.getDay();
     const todaySchedules = schedules
         .filter(s => s.dayOfWeek === todayDow)
@@ -637,6 +705,7 @@ async function renderTodaySchedules() {
 
     // 보기 서버 상태 (기본: 내 서버, 다른 서버 탭 클릭으로 변경)
     const viewServer = window._viewServer || myServer || '';
+    const antBannerHtml = buildAntNestBannerHtml(viewServer);
 
     // 주차 배정 캐시 로드 여부 확인
     const weekCacheLoaded = Object.keys(weekAssignCache).length > 0;
@@ -689,11 +758,19 @@ async function renderTodaySchedules() {
             const isUnassignedBoss = !cacheEntry; // 이번 주 배정 자체 없음
             const assignedServers = cacheEntry ? (cacheEntry.assignedServers || []) : [];
             const isNotMyServer = !isUnassignedBoss && assignedServers.length > 0 && !assignedServers.includes(viewServer);
-            const labelHtml = isUnassignedBoss
-                ? ' <span style="font-size:0.75rem;color:#aaa;font-weight:400;">(미배정)</span>'
-                : isNotMyServer
-                    ? ' <span style="font-size:0.75rem;color:#e67e22;font-weight:400;">(미배정)</span>'
-                    : '';
+
+            // 🎨 오만타워 자동 인식 팀 배정 우선 표시 (인식된 경우에만, 진기르만 지원)
+            const omanResults = getOmanTeamForSchedule(s, viewServer);
+            let labelHtml;
+            if (omanResults) {
+                labelHtml = buildOmanTeamBadgeHtml(omanResults, true);
+            } else {
+                labelHtml = isUnassignedBoss
+                    ? ' <span style="font-size:0.75rem;color:#aaa;font-weight:400;">(미배정)</span>'
+                    : isNotMyServer
+                        ? ' <span style="font-size:0.75rem;color:#e67e22;font-weight:400;">(미배정)</span>'
+                        : '';
+            }
             const displayName = getBossDisplayName(s, viewServer) + labelHtml;
 
             return `<div style="border-radius:8px;padding:12px 16px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;${cardStyle}">
@@ -721,7 +798,7 @@ async function renderTodaySchedules() {
 
     // ── 현재 보스 없음 ──
     if (!currentBoss) {
-        container.innerHTML = scheduleTableHtml;
+        container.innerHTML = antBannerHtml + scheduleTableHtml;
         if (bossCard) bossCard.innerHTML = `
             <div style="background:#f8f9fa; border-radius:10px; border:1px solid #e0e0e0; padding:12px; height:100%; display:flex; flex-direction:column; justify-content:center;">
                 <p style="color:#7f8c8d; margin:0; font-size:0.85rem; font-weight:bold;">진행 중인 보스 없음</p>
@@ -730,7 +807,7 @@ async function renderTodaySchedules() {
         return;
     }
 
-    const timeStatus = getAttendanceTimeStatus(currentBoss.time);
+    const timeStatus = getAttendanceTimeStatus(currentBoss.time, getEffectiveNow());
     const isMyBoss = isMyServerSchedule(currentBoss);
 
     // 담당 서버 배지 — weekAssignCache 기준 (구 assignedServers 폴백)
@@ -753,11 +830,31 @@ async function renderTodaySchedules() {
         statusBadge = `<span style="display:inline-block; padding:4px 10px; background:#f8f9fa; color:#95a5a6; border-radius:4px; font-size:0.85rem;">${timeStatus.message}</span>`;
     }
 
+// 에스카로스 — 출석체크는 한 번만 하지만 실제로는 5개 보스가 순서대로 진행되므로,
+// "진행 중인 보스" 카드에 5개를 한 번에 나열해서 보여줌 (출석 로직은 그대로, 표시만 다르게)
+function buildEscaMultiBossHtml() {
+    const ESCA_BOSS_NAMES = ['웨링', '듀페', '욤니', '살라', '그라'];
+    const escaSlots = omanTeamAssignmentCache['에스카로스'] || {};
+    return ESCA_BOSS_NAMES.map((name, i) => {
+        const team = escaSlots[name] || null;
+        const isOurTeam = team === OUR_TEAM_NAME;
+        const teamText = team ? (isOurTeam ? `★ ${team}팀` : `${team}팀`) : '❓미인식';
+        return `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; ${isOurTeam ? 'font-weight:bold;' : ''}">
+                <span style="color:${isOurTeam ? '#2980b9' : '#2c3e50'};">${i + 1}구 ${name}</span>
+                <span style="color:${isOurTeam ? '#2980b9' : '#7f8c8d'};">${teamText}</span>
+            </div>`;
+    }).join('');
+}
+
     // 현재 보스 표시명 → 내 서버 기준으로 계산
+    const isEsca = (currentBoss.name || '').includes('에스카');
+    const currentBossOmanResults = getOmanTeamForSchedule(currentBoss, myServer);
     const currentBossDisplayName = getBossDisplayName(currentBoss, myServer);
+    const currentBossTeamBadgeHtml = buildOmanTeamBadgeHtml(currentBossOmanResults, false, true);
 
     // 스케줄 표
-    container.innerHTML = scheduleTableHtml;
+    container.innerHTML = antBannerHtml + scheduleTableHtml;
 
     // 현재 보스 카드 (상단 그리드 우측)
     if (bossCard) bossCard.innerHTML = `
@@ -765,6 +862,9 @@ async function renderTodaySchedules() {
             <div>
                 <div style="font-size:0.78rem; color:${timeStatus.status === 'present' ? '#16a085' : '#95a5a6'}; font-weight:bold; margin-bottom:4px;">${timeStatus.status === 'present' ? '⭕ 진행 중' : '⏸ 대기 중'}</div>
                 <div style="font-size:1.3rem; font-weight:bold; color:#2c3e50;">${currentBossDisplayName}</div>
+                ${isEsca
+                    ? `<div style="margin-top:6px; padding-top:6px; border-top:1px solid #ddd; font-size:0.85rem;">${buildEscaMultiBossHtml()}</div>`
+                    : (currentBossTeamBadgeHtml ? `<div style="margin-top:3px;">${currentBossTeamBadgeHtml}</div>` : '')}
                 <div style="font-size:0.8rem; color:#7f8c8d; margin-top:2px;">${currentBoss.time}</div>
             </div>
             <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${serverBadgesHtml}</div>
@@ -783,7 +883,8 @@ async function renderTodaySchedules() {
 // 출석 종료 시 자동 불참 처리
 function autoMarkAbsent(boss) {
     if (!boss) return;
-    
+    if (testModeOverride) return; // 🧪 테스트 모드에서는 실제 출석 데이터를 건드리지 않음
+
     const timeStatus = getAttendanceTimeStatus(boss.time);
     
     // 출석 시간이 아직 종료되지 않았으면 리턴
@@ -3748,6 +3849,7 @@ function getMyNames() {
 // 현재 주차 배정 데이터 캐시 (Firebase에서 로드)
 let weekAssignCache = {};  // { scheduleId: { assignedServers, serverFloors } }
 let weekAssignCacheKey = '';  // 캐시된 주차
+let omanTeamAssignmentCache = {};  // { 월: { 오만1층: '고은', ... }, 화: {...}, ... } — 이미지에서 자동 인식된 팀 배정
 
 // ========== 🗓️ 이번 주 서버 스케줄 이미지 (서버별) ==========
 // 경로: weekly_schedule_image/{weekStartDate}/{serverKey} — 실제 이미지(용량 큼)
@@ -3906,6 +4008,300 @@ function closeScheduleImageModal() {
     if (modal) modal.style.display = 'none';
 }
 
+// ============================================================
+// 🎨 오만타워 담당 팀 자동 인식 (색상 기반, OCR 불필요)
+// 이미지 크기/레이아웃이 매주 고정이라는 전제 하에, 정해진 픽셀 위치의 색상만 읽어서
+// 어느 팀(고은/꼬장/정훈)이 담당인지 판별함. "기르&진기르" 서버 이미지 전용.
+// ============================================================
+
+// 팀 이름 ↔ 기준 색상 (실제 샘플 이미지에서 추출한 값)
+const OMAN_TEAM_COLORS = {
+    '고은': [182, 215, 168],  // 초록
+    '꼬장': [234, 153, 153],  // 핑크
+    '정훈': [159, 197, 232],  // 파랑
+};
+
+// 요일별(월~금) 칸의 왼쪽 좌표(px) — 원본 이미지 기준(1432x671 가정)
+const OMAN_DAY_COLUMN_X = { '월': 122, '화': 308, '수': 494, '목': 680, '금': 866 };
+const OMAN_COLUMN_WIDTH = 186;
+
+// 행(y) 범위와 슬롯 이름 — [시작y, 끝y, 왼쪽슬롯명, 오른쪽슬롯명] (오른쪽 없으면 병합된 한 칸)
+const OMAN_ROW_SLOTS = [
+    [153, 221, '오만1층', '오만6층'],
+    [221, 288, '오만2층', '오만7층'],
+    [288, 355, '오만3층', '오만8층'],
+    [355, 421, '오만4층', '오만9층'],
+    [421, 482, '테베류', null],       // 병합된 단일 칸
+    [482, 543, '오만5층', '오만10층'],
+];
+
+// 에스카로스(금요일 전용, 우측 사이드 패널) — x=1220~1432, 요일 구분 없이 고정 5칸
+const ESCA_X = 1300;
+const ESCA_ROW_SLOTS = [
+    [223, 288, '웨링'],
+    [289, 355, '듀페'],
+    [356, 422, '욤니'],
+    [423, 483, '살라'],
+    [484, 543, '그라'],
+];
+
+// 토요일 칸(x=1054~1220) — 요일별 오만타워 구조와 다른 별도 보스 목록 6개
+const SAT_X = 1130;
+const SAT_ROW_SLOTS = [
+    [156, 221, '하피퀸'],
+    [222, 288, '코카킹'],
+    [289, 355, '오거킹'],
+    [356, 422, '드레킹'],
+    [423, 483, '그미노'],
+    [484, 543, '타이탄'],
+];
+
+// 신념1층/2층 — 요일별(월~금) 칸 하단, 오만타워와 같은 x좌표 사용
+// 신념1층은 세로로 긴 병합 칸(왼쪽), 신념2층은 그 우측 상단 일부만 (신념3/4층은 색상 없어 미지원)
+const SHINNYEOM_LEFT_Y = [546, 667];   // 신념1층 (병합, 세로 전체)
+const SHINNYEOM_RIGHT_TOP_Y = [546, 612]; // 신념2층 (우측 상단부만)
+
+// 가장 가까운 팀 색상 판별 (유클리드 거리)
+function classifyOmanTeamColor(r, g, b) {
+    let best = null, bestDist = Infinity;
+    for (const [team, [tr, tg, tb]] of Object.entries(OMAN_TEAM_COLORS)) {
+        const dist = (r-tr)**2 + (g-tg)**2 + (b-tb)**2;
+        if (dist < bestDist) { bestDist = dist; best = team; }
+    }
+    // 너무 멀면(그리드선/텍스트 등 오염) 신뢰 못 함 처리
+    return bestDist < 4000 ? best : null;
+}
+
+// img 엘리먼트(원본 해상도)를 받아 요일별 슬롯의 담당 팀을 추출
+function extractOmanTeamAssignments(imgEl) {
+    const canvas = document.createElement('canvas');
+    canvas.width = imgEl.naturalWidth || imgEl.width;
+    canvas.height = imgEl.naturalHeight || imgEl.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(imgEl, 0, 0);
+
+    // 캘리브레이션 기준 해상도(1432x671)와 실제 이미지 크기가 다르면 좌표를 비례 조정
+    const scaleX = canvas.width / 1432;
+    const scaleY = canvas.height / 671;
+
+    const sampleAt = (x, y) => {
+        // 텍스트와 겹쳐서 색이 오염될 위험을 줄이기 위해, 한 점이 아니라 주변 3x3 지점을 찍어서 다수결로 판단
+        const offsets = [-8, 0, 8];
+        const votes = {};
+        offsets.forEach(dx => {
+            offsets.forEach(dy => {
+                const sx = Math.round((x + dx) * scaleX);
+                const sy = Math.round((y + dy) * scaleY);
+                const [r, g, b] = ctx.getImageData(sx, sy, 1, 1).data;
+                const team = classifyOmanTeamColor(r, g, b);
+                if (team) votes[team] = (votes[team] || 0) + 1;
+            });
+        });
+        let best = null, bestCount = 0;
+        Object.entries(votes).forEach(([team, count]) => {
+            if (count > bestCount) { bestCount = count; best = team; }
+        });
+        // 9개 중 과반(5개) 이상 동의해야 신뢰 (애매하면 null)
+        return bestCount >= 5 ? best : null;
+    };
+
+    const result = {};
+    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
+        const daySlots = {};
+        OMAN_ROW_SLOTS.forEach(([yTop, yBottom, leftSlot, rightSlot]) => {
+            const yMid = (yTop + yBottom) / 2;
+            if (rightSlot) {
+                daySlots[leftSlot] = sampleAt(colX + 15, yMid);
+                daySlots[rightSlot] = sampleAt(colX + 105, yMid);
+            } else {
+                daySlots[leftSlot] = sampleAt(colX + OMAN_COLUMN_WIDTH / 2, yMid);
+            }
+        });
+        // 신념1층(좌측 병합) / 신념2층(우측 상단부) — 신념3/4층은 색상 없어 미지원
+        daySlots['신념1층'] = sampleAt(colX + 15, (SHINNYEOM_LEFT_Y[0] + SHINNYEOM_LEFT_Y[1]) / 2);
+        daySlots['신념2층'] = sampleAt(colX + 105, (SHINNYEOM_RIGHT_TOP_Y[0] + SHINNYEOM_RIGHT_TOP_Y[1]) / 2);
+        result[day] = daySlots;
+    }
+
+    // 에스카로스(금요일 전용, 요일 구분 없는 고정 패널)
+    const escaSlots = {};
+    ESCA_ROW_SLOTS.forEach(([yTop, yBottom, name]) => {
+        const yMid = (yTop + yBottom) / 2;
+        escaSlots[name] = sampleAt(ESCA_X, yMid);
+    });
+    result['에스카로스'] = escaSlots;
+
+    // 토요일 전용 보스 목록(요일별 오만타워 구조와 다름)
+    const satSlots = {};
+    SAT_ROW_SLOTS.forEach(([yTop, yBottom, name]) => {
+        const yMid = (yTop + yBottom) / 2;
+        satSlots[name] = sampleAt(SAT_X, yMid);
+    });
+    result['토요일'] = satSlots;
+
+    return result;
+}
+
+// ============================================================
+// 🔤 텍스트 기반 담당 팀 인식 (OCR, Tesseract.js 사용)
+// 색상 채움이 없는 구간(개미산란장, 신념3/4층 등)은 색상 샘플링이 불가능해서
+// 작은 텍스트 영역만 잘라내 OCR로 "고은/꼬장/정훈" 중 무엇인지 판별함.
+// ============================================================
+
+const TEAM_NAME_CANDIDATES = ['고은', '꼬장', '정훈'];
+
+// 한글 음절 하나를 (초성,중성,종성) 자모 인덱스로 분해 — 한글 아니면 그대로 반환
+function decomposeHangul(ch) {
+    const code = ch.charCodeAt(0) - 0xAC00;
+    if (code < 0 || code > 11171) return [ch, ch, ch];
+    return [Math.floor(code / (21 * 28)), Math.floor((code % (21 * 28)) / 28), code % 28];
+}
+
+// 자모 단위 거리 — OCR이 비슷하게 생긴 글자(전↔정, 호↔훈 등)로 착각한 경우를
+// 완전히 다른 글자보다 훨씬 "가깝다"고 정확히 구분해줌 (음절 단위 비교보다 정밀함)
+function jamoDistance(str1, str2) {
+    const len = Math.min(str1.length, str2.length);
+    let dist = Math.abs(str1.length - str2.length) * 3;
+    for (let i = 0; i < len; i++) {
+        const a = decomposeHangul(str1[i]);
+        const b = decomposeHangul(str2[i]);
+        for (let j = 0; j < 3; j++) if (a[j] !== b[j]) dist++;
+    }
+    return dist;
+}
+
+// OCR로 읽은 텍스트에서 가장 가까운 팀명 후보와 그 거리(확신도)를 함께 반환
+function scoreTeamNameMatch(text) {
+    if (!text) return null;
+    const cleaned = text.replace(/\s+/g, '').replace(/[^가-힣]/g, '');
+    if (!cleaned) return null;
+
+    for (const name of TEAM_NAME_CANDIDATES) {
+        if (cleaned.includes(name)) return { name, dist: 0 };
+    }
+    let best = null, bestDist = Infinity;
+    TEAM_NAME_CANDIDATES.forEach(name => {
+        for (let i = 0; i <= Math.max(0, cleaned.length - name.length); i++) {
+            const chunk = cleaned.slice(i, i + name.length);
+            const d = jamoDistance(chunk, name);
+            if (d < bestDist) { bestDist = d; best = name; }
+        }
+    });
+    return best ? { name: best, dist: bestDist } : null;
+}
+
+function bestTeamNameMatch(text) {
+    const r = scoreTeamNameMatch(text);
+    return r && r.dist <= 3 ? r.name : null; // 자모 절반 이상 다르면 인식 실패로 처리
+}
+
+// 이미지의 특정 영역만 잘라 OCR 실행 → 팀명 반환 (실패 시 null)
+// 이진화 여부에 따라 결과가 흔들려서, 두 방식 다 시도해 더 확신도 높은(자모거리 낮은) 쪽을 채택
+async function ocrTeamInRegion(imgEl, x0, y0, x1, y1, scale = 6) {
+    const makeCanvas = (binarize) => {
+        const c = document.createElement('canvas');
+        c.width = (x1 - x0) * scale;
+        c.height = (y1 - y0) * scale;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(imgEl, x0, y0, x1 - x0, y1 - y0, 0, 0, c.width, c.height);
+        if (binarize) {
+            const imgData = ctx.getImageData(0, 0, c.width, c.height);
+            const d = imgData.data;
+            for (let i = 0; i < d.length; i += 4) {
+                const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                const v = lum < 180 ? 0 : 255;
+                d[i] = d[i + 1] = d[i + 2] = v;
+            }
+            ctx.putImageData(imgData, 0, 0);
+        }
+        return c;
+    };
+
+    try {
+        const [textA, textB] = await Promise.all([
+            Tesseract.recognize(makeCanvas(true), 'kor').then(r => r.data.text),
+            Tesseract.recognize(makeCanvas(false), 'kor').then(r => r.data.text),
+        ]);
+        const scoreA = scoreTeamNameMatch(textA); // 이진화
+        const scoreB = scoreTeamNameMatch(textB); // 원문
+
+        // 원문(비이진화)에 한글이 전혀 안 잡히면 "실제 텍스트가 없다"는 강한 신호 →
+        // 이진화 쪽에서만 애매하게 나온 결과(화살표 등 노이즈 오독)는 신뢰하지 않음 (정확히 일치할 때만 예외)
+        const rawCleaned = (textB || '').replace(/\s+/g, '').replace(/[^가-힣]/g, '');
+        if (!rawCleaned && !(scoreA && scoreA.dist === 0)) {
+            return null;
+        }
+
+        const best = [scoreA, scoreB].filter(Boolean).sort((a, b) => a.dist - b.dist)[0];
+        return best && best.dist <= 3 ? best.name : null;
+    } catch (err) {
+        console.error('OCR 인식 실패:', err);
+        return null;
+    }
+}
+
+// 개미(산란장) 담당자 텍스트 영역 (원본 1432x671 기준, 요일 무관 고정 1곳)
+const ANT_TEAM_REGION = [980, 38, 1100, 58];
+
+// 신념3층/4층 담당자 텍스트 영역 — 요일별(월~금) x좌표만 다르고 y는 공통
+const SHINNYEOM_34_Y = { '신념3층': [610, 635], '신념4층': [638, 663] };
+const SHINNYEOM_NAME_X_OFFSET = [136, 186]; // colX 기준 상대 x범위 (팀명 텍스트 부분만)
+
+// 일요일 칸 전용 텍스트 항목들 (색상 없음, 요일 구분 없이 고정 위치 7곳)
+// x=2~122 (일요일 칸), 팀명 텍스트만 좁게 잘라낸 좌표
+const SUNDAY_TEXT_REGIONS = [
+    ['암살', 15, 208, 105, 230],
+    ['마령', 15, 248, 105, 270],
+    ['마수', 15, 338, 105, 360],
+    ['명법', 15, 378, 105, 400],
+    ['기란성혈레열쇠', 15, 441, 105, 465],
+    ['아덴성혈레열쇠', 15, 476, 105, 500],
+    ['켄성혈레열쇠', 15, 511, 105, 538],
+];
+
+// 오만타워/에스카로스/토요일(색상) + 개미/신념3·4층(OCR)을 모두 포함해서 인식
+async function extractAllTeamAssignments(imgEl) {
+    const result = extractOmanTeamAssignments(imgEl); // 색상 기반 인식 먼저 (동기, 빠름)
+
+    // 🔤 테베류(22:00) 슬롯 — 요일에 따라 색칠 대신 텍스트만 있는 경우(예: 무섭/에카)가 있어서,
+    // 색상 인식이 실패(null)한 요일만 같은 위치를 OCR로 재시도 (팀명이 있는 하단 줄만 좁게 크롭해 노이즈 최소화)
+    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
+        if (!result[day]['테베류']) {
+            result[day]['테베류'] = await ocrTeamInRegion(imgEl, colX + 35, 455, colX + 151, 478, 10);
+        }
+    }
+
+    // 개미(산란장) — OCR
+    const [ax0, ay0, ax1, ay1] = ANT_TEAM_REGION;
+    result['개미산란장'] = { '담당': await ocrTeamInRegion(imgEl, ax0, ay0, ax1, ay1) };
+
+    // 신념3층/4층 — 요일별 OCR
+    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
+        for (const [slot, [yTop, yBottom]] of Object.entries(SHINNYEOM_34_Y)) {
+            const x0 = colX + SHINNYEOM_NAME_X_OFFSET[0];
+            const x1 = colX + SHINNYEOM_NAME_X_OFFSET[1];
+            result[day][slot] = await ocrTeamInRegion(imgEl, x0, yTop, x1, yBottom);
+        }
+    }
+
+    // 일요일 칸 전용 텍스트 항목들 — OCR
+    const sundaySlots = {};
+    for (const [name, x0, y0, x1, y1] of SUNDAY_TEXT_REGIONS) {
+        sundaySlots[name] = await ocrTeamInRegion(imgEl, x0, y0, x1, y1);
+    }
+    result['일요일텍스트'] = sundaySlots;
+
+    return result;
+}
+function buildOmanAssignmentPreviewText(assignments) {
+    const lines = [];
+    Object.entries(assignments).forEach(([day, slots]) => {
+        const parts = Object.entries(slots).map(([slot, team]) => `${slot}=${team || '❓인식실패'}`);
+        lines.push(`${day}: ${parts.join(', ')}`);
+    });
+    return lines.join('\n');
+}
 // 이미지 업로드 (리사이즈 + 압축 후 Base64 저장) - 서버별
 function uploadWeeklyScheduleImage(inputEl, serverKey) {
     const file = inputEl.files[0];
@@ -3914,7 +4310,7 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
     const reader = new FileReader();
     reader.onload = (e) => {
         const img = new Image();
-        img.onload = () => {
+        img.onload = async () => {
             const maxWidth = 1000;
             const scale = Math.min(1, maxWidth / img.width);
             const canvas = document.createElement('canvas');
@@ -3933,8 +4329,28 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
             };
             updates[getScheduleMetaPath(weekStartStr, serverKey)] = true;
 
+            // 🎨🔤 진기르("기르&진기르") 서버 이미지는 원본 해상도 기준으로 담당 팀 자동 인식
+            // (오만타워/에스카로스/토요일=색상 즉시 인식, 개미산란장/신념3·4층=OCR라 몇 초 걸릴 수 있음)
+            let omanAssignments = null;
+            if (serverKey === 'jingir') {
+                try {
+                    inputEl.disabled = true;
+                    omanAssignments = await extractAllTeamAssignments(img); // 리사이즈 전 원본 img 사용
+                    updates[`oman_team_assignments/${weekStartStr}`] = omanAssignments;
+                } catch (err) {
+                    console.error('담당 팀 인식 실패:', err);
+                } finally {
+                    inputEl.disabled = false;
+                }
+            }
+
             db.ref().update(updates).then(() => {
-                alert(`✅ ${serverKey} 서버 스케줄 이미지가 업로드되었습니다!`);
+                let msg = `✅ ${serverKey} 서버 스케줄 이미지가 업로드되었습니다!`;
+                if (omanAssignments) {
+                    msg += `\n\n🎨🔤 담당 팀 자동 인식 결과:\n` + buildOmanAssignmentPreviewText(omanAssignments);
+                    msg += `\n\n(인식이 잘못됐다면 관리자에게 알려주세요)`;
+                }
+                alert(msg);
                 inputEl.value = '';
                 weeklyScheduleImageMeta[serverKey] = true;
                 weeklyScheduleImageData[serverKey] = updates[getScheduleImagePath(weekStartStr, serverKey)];
@@ -3972,8 +4388,12 @@ function loadWeekAssignment() {
     const weekStart = formatDate2(getWeekStartSun(today));
     if (weekAssignCacheKey === weekStart) return Promise.resolve(); // 이미 로드됨
 
-    return db.ref(getAssignPath(weekStart)).once('value').then(snap => {
-        weekAssignCache = snap.val() || {};
+    return Promise.all([
+        db.ref(getAssignPath(weekStart)).once('value'),
+        db.ref(`oman_team_assignments/${weekStart}`).once('value')
+    ]).then(([assignSnap, omanSnap]) => {
+        weekAssignCache = assignSnap.val() || {};
+        omanTeamAssignmentCache = omanSnap.val() || {};
         weekAssignCacheKey = weekStart;
         renderTodaySchedules();
         renderAttendanceTable();
@@ -3985,6 +4405,114 @@ function loadWeekAssignment() {
             checkAllDataLoaded();
         }
     });
+}
+
+// 스케줄+서버 기준으로 오만타워 자동 인식 담당 팀(고은/꼬장/정훈) 조회
+// 진기르는 한 이미지 안에서 두 층(예: 1층/6층)을 동시에 병렬로 진행하므로 배열로 반환
+// [{floor:'1', team:'정훈'}, {floor:'6', team:'고은'}] 형태. 인식 불가하면 null.
+// 판도라/지원은 아직 이 형식의 이미지가 캘리브레이션되어 있지 않아 null 반환.
+function getOmanTeamForSchedule(schedule, serverKey) {
+    if (serverKey !== 'jingir') return null; // 현재는 진기르 이미지만 지원
+
+    const name = schedule.name || '';
+
+    // 에스카로스(금요일 전용 사이드 패널) — 요일과 무관하게 이름으로 매칭
+    const ESCA_BOSS_NAMES = ['웨링', '듀페', '욤니', '살라', '그라'];
+    const matchedEsca = ESCA_BOSS_NAMES.find(n => name.includes(n));
+    if (matchedEsca) {
+        const escaSlots = omanTeamAssignmentCache['에스카로스'];
+        const team = escaSlots ? (escaSlots[matchedEsca] || null) : null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
+    // 토요일 전용 보스 목록 — 요일과 무관하게 이름으로 매칭
+    const SAT_BOSS_NAMES = ['하피퀸', '코카킹', '오거킹', '드레킹', '그미노', '타이탄'];
+    const matchedSat = SAT_BOSS_NAMES.find(n => name.includes(n));
+    if (matchedSat) {
+        const satSlots = omanTeamAssignmentCache['토요일'];
+        const team = satSlots ? (satSlots[matchedSat] || null) : null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
+    // 개미(산란장) — 요일 무관, OCR로 인식된 단일 담당자 (일주일에 한 번 표기)
+    if (name.includes('개미')) {
+        const antSlots = omanTeamAssignmentCache['개미산란장'];
+        const team = antSlots ? (antSlots['담당'] || null) : null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
+    // 일요일 텍스트 항목(암살/마령/마수/명법/성혈레열쇠) — 요일 무관, 이름으로 매칭
+    // ⚠️ daySlots(요일별 오만타워 데이터) 체크보다 먼저 와야 함 — 일요일은 daySlots 자체가 없어서
+    //    아래쪽에 두면 그 전에 return null로 빠져버려 절대 매칭이 안 됨
+    // ⚠️ 한 스케줄에 항목이 2개씩 같이 들어있고(예: "암살 / 마령") 각기 팀이 다를 수 있어서,
+    //    첫 번째만 찾는 find가 아니라 전부 찾는 filter로 처리
+    const SUNDAY_TEXT_NAMES = ['암살', '마령', '마수', '명법', '기란성혈레열쇠', '아덴성혈레열쇠', '켄성혈레열쇠'];
+    const matchedSundayNames = SUNDAY_TEXT_NAMES.filter(n => name.includes(n));
+    if (matchedSundayNames.length > 0) {
+        const sundaySlots = omanTeamAssignmentCache['일요일텍스트'] || {};
+        const results = matchedSundayNames.map(n => ({ floor: null, team: sundaySlots[n] || null, label: n }))
+            .filter(r => r.team);
+        results.sort((a, b) => (a.team === OUR_TEAM_NAME ? -1 : 0) - (b.team === OUR_TEAM_NAME ? -1 : 0));
+        return results.length > 0 ? results : null;
+    }
+
+    const dayKorean = ['일', '월', '화', '수', '목', '금', '토'][schedule.dayOfWeek];
+    const daySlots = omanTeamAssignmentCache[dayKorean];
+    if (!daySlots) return null;
+
+    if (name.includes('오만') && name.includes('/')) {
+        // "오만 1층 / 6층" → 두 층 다 진기르 담당(병렬 진행) → 둘 다 반환
+        const parts = name.split('/').map(p => p.trim());
+        const results = parts.map(p => {
+            const floorNum = p.replace(/[^0-9]/g, '');
+            return { floor: floorNum, team: daySlots['오만' + floorNum + '층'] || null };
+        }).filter(r => r.team); // 인식 안 된 층은 제외
+        // 우리 팀(OUR_TEAM_NAME) 배지가 항상 먼저 나오도록 순서 고정 → 목록 스캔할 때 시선이 안 흔들림
+        results.sort((a, b) => (a.team === OUR_TEAM_NAME ? -1 : 0) - (b.team === OUR_TEAM_NAME ? -1 : 0));
+        return results.length > 0 ? results : null;
+    }
+
+    if (!name.includes('/') && schedule.time === '22:00') {
+        // 테베/티칼/아틀란티스/무섭/에카 등 로테이션 — 병합된 단일 슬롯
+        const team = daySlots['테베류'] || null;
+        return team ? [{ floor: null, team }] : null;
+    }
+
+    if (name.includes('신념') && name.includes('/')) {
+        // "신념 1층 / 2층 / 3층 / 4층" 등 — 색상 인식 되는 1층/2층만 반영, 3층/4층은 daySlots에 없어 자동 제외
+        const parts = name.split('/').map(p => p.trim());
+        const results = parts.map(p => {
+            const floorNum = p.replace(/[^0-9]/g, '');
+            return { floor: floorNum, team: daySlots['신념' + floorNum + '층'] || null };
+        }).filter(r => r.team);
+        results.sort((a, b) => (a.team === OUR_TEAM_NAME ? -1 : 0) - (b.team === OUR_TEAM_NAME ? -1 : 0));
+        return results.length > 0 ? results : null;
+    }
+
+    return null; // 그 외 구간은 아직 미지원
+}
+
+// getOmanTeamForSchedule 결과를 화면용 배지 HTML로 변환
+// compact: 오늘 스케줄 목록용 작은 배지 / standalone: 보스명과 별도 줄에 단독으로 표시할 때 (앞에 '-' 안 붙임)
+function buildOmanTeamBadgeHtml(omanResults, compact, standalone) {
+    if (!omanResults || omanResults.length === 0) return '';
+    const items = omanResults.map(({ floor, team, label }) => {
+        const isOurTeam = team === OUR_TEAM_NAME;
+        const tag = floor ? `${floor}층` : (label || '');
+        const text = tag ? `${tag}:${team}팀` : `${team}팀`;
+        if (compact) {
+            return isOurTeam
+                ? `<span style="font-size:0.75rem;color:#fff;background:#2980b9;padding:1px 6px;border-radius:9px;font-weight:bold;">★${text}</span>`
+                : `<span style="font-size:0.72rem;color:#95a5a6;">(${text})</span>`;
+        } else {
+            return isOurTeam
+                ? `<span style="color:#2980b9;font-weight:bold;">${text}★</span>`
+                : `<span style="color:#95a5a6;">${text}</span>`;
+        }
+    });
+    if (compact) return ' ' + items.join(' ');
+    if (standalone) return '<span style="font-size:0.85rem;">' + items.join(' / ') + '</span>';
+    return ' <span style="font-size:0.85rem;">- ' + items.join(' / ') + '</span>';
 }
 
 // 스케줄의 이번 주 배정 데이터 가져오기
