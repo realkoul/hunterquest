@@ -4012,136 +4012,204 @@ function closeScheduleImageModal() {
 }
 
 // ============================================================
-// 🎨 오만타워 담당 팀 자동 인식 (색상 기반, OCR 불필요)
-// 이미지 크기/레이아웃이 매주 고정이라는 전제 하에, 정해진 픽셀 위치의 색상만 읽어서
-// 어느 팀(고은/꼬장/정훈)이 담당인지 판별함. "기르&진기르" 서버 이미지 전용.
+// 🔤 오만타워 담당 팀 자동 인식 (텍스트 인식, Tesseract OCR)
+// 셀 배경색은 매주 사람-색 매칭이 달라질 수 있어 신뢰할 수 없어서, 셀에 실제로 적힌
+// 팀명 글자를 직접 읽어서 판별함. "기르&진기르" 서버 이미지 전용.
 // ============================================================
 
-// 팀 이름 ↔ 기준 색상 (실제 샘플 이미지에서 추출한 값)
-const OMAN_TEAM_COLORS = {
-    '고은': [182, 215, 168],  // 초록
-    '꼬장': [234, 153, 153],  // 핑크
-    '정훈': [159, 197, 232],  // 파랑
-};
+// ── 기준 이미지(최초 캘리브레이션, 1432x671) 좌표값 ──
+// 매주 올라오는 이미지는 크기/칸 비율이 조금씩 달라질 수 있어서, 아래 값들은
+// "고정 좌표"가 아니라 실제 이미지에서 감지한 격자에 맞춰 비례 변환하는 기준값으로만 사용함.
+const REF_DAY_BOUNDARIES = [2, 122, 308, 494, 680, 866, 1054, 1220]; // 일/월/화/수/목/금/토 경계 8개
+const REF_ANCHOR_TOP = 153;    // 오만1층 행 시작
+const REF_ANCHOR_BOTTOM = 543; // 오만5/10층 행 끝(신념 구간 시작 직전)
+const REF_ESCA_LEFT = 1260;    // 에스카로스 패널 좌측 경계
+const REF_SUN_ANCHOR_TOP = 219;    // 일요일 칸 전용 기준점(암살 행 부근)
+const REF_SUN_ANCHOR_BOTTOM = 421; // 일요일 칸 전용 기준점(기란성혈레열쇠 행 부근)
 
-// 요일별(월~금) 칸의 왼쪽 좌표(px) — 원본 이미지 기준(1432x671 가정)
-const OMAN_DAY_COLUMN_X = { '월': 122, '화': 308, '수': 494, '목': 680, '금': 866 };
-const OMAN_COLUMN_WIDTH = 186;
-
-// 행(y) 범위와 슬롯 이름 — [시작y, 끝y, 왼쪽슬롯명, 오른쪽슬롯명] (오른쪽 없으면 병합된 한 칸)
 const OMAN_ROW_SLOTS = [
     [153, 221, '오만1층', '오만6층'],
     [221, 288, '오만2층', '오만7층'],
     [288, 355, '오만3층', '오만8층'],
     [355, 421, '오만4층', '오만9층'],
-    [421, 482, '테베류', null],       // 병합된 단일 칸
+    [421, 482, '테베류', null],
     [482, 543, '오만5층', '오만10층'],
 ];
-
-// 에스카로스(금요일 전용, 우측 사이드 패널) — x=1220~1432, 요일 구분 없이 고정 5칸
-const ESCA_X = 1300;
 const ESCA_ROW_SLOTS = [
-    [223, 288, '웨링'],
-    [289, 355, '듀페'],
-    [356, 422, '욤니'],
-    [423, 483, '살라'],
-    [484, 543, '그라'],
+    [223, 288, '웨링'], [289, 355, '듀페'], [356, 422, '욤니'], [423, 483, '살라'], [484, 543, '그라'],
 ];
-
-// 토요일 칸(x=1054~1220) — 요일별 오만타워 구조와 다른 별도 보스 목록 6개
-const SAT_X = 1130;
 const SAT_ROW_SLOTS = [
-    [156, 221, '하피퀸'],
-    [222, 288, '코카킹'],
-    [289, 355, '오거킹'],
-    [356, 422, '드레킹'],
-    [423, 483, '그미노'],
-    [484, 543, '타이탄'],
+    [156, 221, '하피퀸'], [222, 288, '코카킹'], [289, 355, '오거킹'], [356, 422, '드레킹'], [423, 483, '그미노'], [484, 543, '타이탄'],
 ];
 
-// 신념1층/2층 — 요일별(월~금) 칸 하단, 오만타워와 같은 x좌표 사용
-// 신념1층은 세로로 긴 병합 칸(왼쪽), 신념2층은 그 우측 상단 일부만 (신념3/4층은 색상 없어 미지원)
-const SHINNYEOM_LEFT_Y = [546, 667];   // 신념1층 (병합, 세로 전체)
-const SHINNYEOM_RIGHT_TOP_Y = [546, 612]; // 신념2층 (우측 상단부만)
+// 실제 이미지에서 격자(요일 칸 경계 8개 + 행 기준점 2개 + 에스카로스 좌측 경계)를 실시간으로 감지.
+// 매주 이미지 레이아웃 비율이 조금씩 달라질 수 있어서, 고정 좌표 대신 매번 이렇게 다시 잡음.
+function detectGridCalibration(ctx, width, height) {
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const d = imgData.data;
+    const isDark = (x, y) => {
+        const i = (Math.round(y) * width + Math.round(x)) * 4;
+        return d[i] < 50 && d[i+1] < 50 && d[i+2] < 50;
+    };
 
-// 가장 가까운 팀 색상 판별 (유클리드 거리)
-function classifyOmanTeamColor(r, g, b) {
-    let best = null, bestDist = Infinity;
-    for (const [team, [tr, tg, tb]] of Object.entries(OMAN_TEAM_COLORS)) {
-        const dist = (r-tr)**2 + (g-tg)**2 + (b-tb)**2;
-        if (dist < bestDist) { bestDist = dist; best = team; }
+    // 1) 요일별 세로 경계 8개 — 요일 라벨 행(전체 높이의 9~17%) 여러 지점에서 공통으로 나오는 세로선만 채택
+    const colCounts = {};
+    const yTop = Math.floor(height * 0.09), yBottom = Math.floor(height * 0.17);
+    let ySamples = 0;
+    for (let y = yTop; y < yBottom; y += 2) {
+        ySamples++;
+        let prev = false;
+        for (let x = 0; x < width; x++) {
+            const dark = isDark(x, y);
+            if (dark && !prev) {
+                const key = Math.round(x / 3) * 3;
+                colCounts[key] = (colCounts[key] || 0) + 1;
+            }
+            prev = dark;
+        }
     }
-    // 너무 멀면(그리드선/텍스트 등 오염) 신뢰 못 함 처리
-    return bestDist < 4000 ? best : null;
+    const colCandidates = Object.entries(colCounts)
+        .filter(([, c]) => c >= ySamples * 0.5)
+        .map(([k]) => Number(k))
+        .sort((a, b) => a - b);
+    const dayBoundaries = [];
+    colCandidates.forEach(x => {
+        if (dayBoundaries.length === 0 || x - dayBoundaries[dayBoundaries.length - 1] > 5) dayBoundaries.push(x);
+    });
+
+    // 2) 행 기준점 2개(오만1층 시작 / 오만5,10층 끝) — 월요일 칸 좌우 여러 x지점에서 가장 뚜렷한 가로선 탐색
+    const detectRowAnchor = (fracRange) => {
+        if (dayBoundaries.length < 3) return null;
+        const x0 = dayBoundaries[1], x1 = dayBoundaries[2];
+        const xs = [0.1, 0.2, 0.3, 0.7, 0.8, 0.9].map(f => Math.round(x0 + (x1 - x0) * f));
+        const y0 = Math.floor(height * fracRange[0]), y1 = Math.floor(height * fracRange[1]);
+        const counts = {};
+        xs.forEach(x => {
+            for (let y = y0; y < y1; y++) {
+                if (isDark(x, y)) counts[y] = (counts[y] || 0) + 1;
+            }
+        });
+        let best = null, bestCount = 0;
+        Object.entries(counts).forEach(([y, c]) => { if (c > bestCount) { bestCount = c; best = Number(y); } });
+        return best;
+    };
+    const anchorTop = detectRowAnchor([0.20, 0.26]) ?? REF_ANCHOR_TOP;
+    const anchorBottom = detectRowAnchor([0.74, 0.84]) ?? REF_ANCHOR_BOTTOM;
+    // 신념 섹션 내부 분할선 — 예전엔 신념2층 하단 경계, 요즘은 신념1/2행과 3/4행 사이 경계 (레이아웃에 따라 위치 다름)
+    const shinSplit = detectRowAnchor([0.86, 0.92]) ?? (anchorBottom + 69 * ((anchorBottom - anchorTop) / (REF_ANCHOR_BOTTOM - REF_ANCHOR_TOP)));
+
+    // 일요일 칸은 요일 칸들과 내부 스케일이 달라서, 일요일 칸 안에서 별도로 기준점 2개를 감지
+    const detectSunAnchor = (fracRange) => {
+        if (dayBoundaries.length < 2) return null;
+        const x0 = dayBoundaries[0], x1 = dayBoundaries[1];
+        const xs = [0.15, 0.3, 0.45, 0.55, 0.7, 0.85].map(f => Math.round(x0 + (x1 - x0) * f));
+        const y0 = Math.floor(height * fracRange[0]), y1 = Math.floor(height * fracRange[1]);
+        const counts = {};
+        xs.forEach(x => { for (let y = y0; y < y1; y++) if (isDark(x, y)) counts[y] = (counts[y] || 0) + 1; });
+        let best = null, bestCount = 0;
+        Object.entries(counts).forEach(([y, c]) => { if (c > bestCount) { bestCount = c; best = Number(y); } });
+        return best;
+    };
+    const sunAnchorTop = detectSunAnchor([0.27, 0.33]) ?? REF_SUN_ANCHOR_TOP;
+    const sunAnchorBottom = detectSunAnchor([0.60, 0.66]) ?? REF_SUN_ANCHOR_BOTTOM;
+
+    // 3) 에스카로스 패널 좌측 경계 — 토요일 칸 오른쪽, 20~42% 높이 구간에서 세로선 탐색
+    let escaLeft = REF_ESCA_LEFT;
+    if (dayBoundaries.length >= 8) {
+        const rightBound = dayBoundaries[7];
+        const ey0 = Math.floor(height * 0.22), ey1 = Math.floor(height * 0.42);
+        const counts = {};
+        let samples = 0;
+        for (let y = ey0; y < ey1; y += 3) {
+            samples++;
+            let prev = false;
+            for (let x = rightBound + 10; x < width; x++) {
+                const dark = isDark(x, y);
+                if (dark && !prev) {
+                    const key = Math.round(x / 3) * 3;
+                    counts[key] = (counts[key] || 0) + 1;
+                }
+                prev = dark;
+            }
+        }
+        const candidates = Object.entries(counts).filter(([, c]) => c >= samples * 0.5).map(([k]) => Number(k)).sort((a, b) => a - b);
+        if (candidates.length > 0) escaLeft = candidates[0];
+    }
+
+    return { dayBoundaries, anchorTop, anchorBottom, shinSplit, sunAnchorTop, sunAnchorBottom, escaLeft, width, height };
 }
 
-// img 엘리먼트(원본 해상도)를 받아 요일별 슬롯의 담당 팀을 추출
-function extractOmanTeamAssignments(imgEl) {
+// 기준 이미지의 y좌표를, 실제 감지된 행 기준점에 맞춰 비례 변환
+function scaleRefY(calib, refY) {
+    const scale = (calib.anchorBottom - calib.anchorTop) / (REF_ANCHOR_BOTTOM - REF_ANCHOR_TOP);
+    return calib.anchorTop + (refY - REF_ANCHOR_TOP) * scale;
+}
+
+// 일요일 칸 전용 y좌표 변환 (요일 칸들과 내부 스케일이 달라서 별도 기준점 사용)
+function scaleSunY(calib, refY) {
+    const scale = (calib.sunAnchorBottom - calib.sunAnchorTop) / (REF_SUN_ANCHOR_BOTTOM - REF_SUN_ANCHOR_TOP);
+    return calib.sunAnchorTop + (refY - REF_SUN_ANCHOR_TOP) * scale;
+}
+
+// img 엘리먼트(원본 해상도)를 받아 요일별 슬롯의 담당 팀을 텍스트(OCR)로 추출
+// (예전엔 셀 배경색으로 판별했으나, 매주 사람-색 매칭이 바뀔 수 있어 실제 적힌 글자를 읽는 방식으로 전환)
+async function extractOmanTeamAssignments(imgEl) {
     const canvas = document.createElement('canvas');
     canvas.width = imgEl.naturalWidth || imgEl.width;
     canvas.height = imgEl.naturalHeight || imgEl.height;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(imgEl, 0, 0);
 
-    // 캘리브레이션 기준 해상도(1432x671)와 실제 이미지 크기가 다르면 좌표를 비례 조정
-    const scaleX = canvas.width / 1432;
-    const scaleY = canvas.height / 671;
-
-    const sampleAt = (x, y) => {
-        // 텍스트와 겹쳐서 색이 오염될 위험을 줄이기 위해, 한 점이 아니라 주변 3x3 지점을 찍어서 다수결로 판단
-        const offsets = [-8, 0, 8];
-        const votes = {};
-        offsets.forEach(dx => {
-            offsets.forEach(dy => {
-                const sx = Math.round((x + dx) * scaleX);
-                const sy = Math.round((y + dy) * scaleY);
-                const [r, g, b] = ctx.getImageData(sx, sy, 1, 1).data;
-                const team = classifyOmanTeamColor(r, g, b);
-                if (team) votes[team] = (votes[team] || 0) + 1;
-            });
-        });
-        let best = null, bestCount = 0;
-        Object.entries(votes).forEach(([team, count]) => {
-            if (count > bestCount) { bestCount = count; best = team; }
-        });
-        // 9개 중 과반(5개) 이상 동의해야 신뢰 (애매하면 null)
-        return bestCount >= 5 ? best : null;
-    };
+    const calib = detectGridCalibration(ctx, canvas.width, canvas.height);
 
     const result = {};
-    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
+    const dayNames = ['월', '화', '수', '목', '금'];
+    for (let i = 0; i < dayNames.length; i++) {
+        const day = dayNames[i];
+        if (calib.dayBoundaries.length < i + 3) { result[day] = {}; continue; } // 감지 실패 시 안전하게 빈 값
+        const colLeft = calib.dayBoundaries[i + 1];
+        const colRight = calib.dayBoundaries[i + 2];
+        const colMid = (colLeft + colRight) / 2;
+
         const daySlots = {};
-        OMAN_ROW_SLOTS.forEach(([yTop, yBottom, leftSlot, rightSlot]) => {
-            const yMid = (yTop + yBottom) / 2;
+        for (const [yTopRef, yBottomRef, leftSlot, rightSlot] of OMAN_ROW_SLOTS) {
+            const yTop = scaleRefY(calib, yTopRef);
+            const yBottom = scaleRefY(calib, yBottomRef);
             if (rightSlot) {
-                daySlots[leftSlot] = sampleAt(colX + 15, yMid);
-                daySlots[rightSlot] = sampleAt(colX + 105, yMid);
+                daySlots[leftSlot] = await ocrTeamInRegion(imgEl, colLeft, yTop, colMid, yBottom);
+                daySlots[rightSlot] = await ocrTeamInRegion(imgEl, colMid, yTop, colRight, yBottom);
             } else {
-                daySlots[leftSlot] = sampleAt(colX + OMAN_COLUMN_WIDTH / 2, yMid);
+                daySlots[leftSlot] = await ocrTeamInRegion(imgEl, colLeft, yTop, colRight, yBottom);
             }
-        });
-        // 신념1층(좌측 병합) / 신념2층(우측 상단부) — 신념3/4층은 색상 없어 미지원
-        daySlots['신념1층'] = sampleAt(colX + 15, (SHINNYEOM_LEFT_Y[0] + SHINNYEOM_LEFT_Y[1]) / 2);
-        daySlots['신념2층'] = sampleAt(colX + 105, (SHINNYEOM_RIGHT_TOP_Y[0] + SHINNYEOM_RIGHT_TOP_Y[1]) / 2);
+        }
+        // 신념1층/2층 — 신념 섹션 상단 행 (anchorBottom~shinSplit). 2x2 레이아웃에서 3/4층(하단 행)과 안 겹치게 분리
+        daySlots['신념1층'] = await ocrTeamInRegion(imgEl, colLeft, calib.anchorBottom, colMid, calib.shinSplit);
+        daySlots['신념2층'] = await ocrTeamInRegion(imgEl, colMid, calib.anchorBottom, colRight, calib.shinSplit);
         result[day] = daySlots;
     }
 
-    // 에스카로스(금요일 전용, 요일 구분 없는 고정 패널)
+    // 에스카로스 (금요일 전용, 요일 구분 없는 고정 패널)
     const escaSlots = {};
-    ESCA_ROW_SLOTS.forEach(([yTop, yBottom, name]) => {
-        const yMid = (yTop + yBottom) / 2;
-        escaSlots[name] = sampleAt(ESCA_X, yMid);
-    });
+    if (calib.escaLeft) {
+        const escaWidthRatio = (calib.dayBoundaries.length >= 8 ? (calib.dayBoundaries[7] - calib.dayBoundaries[6]) : 168) / 168;
+        const escaRight = calib.escaLeft + 168 * escaWidthRatio + 40; // 패널 우측까지 넉넉히 포함(전체 셀 OCR)
+        for (const [yTopRef, yBottomRef, name] of ESCA_ROW_SLOTS) {
+            escaSlots[name] = await ocrTeamInRegion(imgEl, calib.escaLeft, scaleRefY(calib, yTopRef), escaRight, scaleRefY(calib, yBottomRef));
+        }
+    }
     result['에스카로스'] = escaSlots;
 
     // 토요일 전용 보스 목록(요일별 오만타워 구조와 다름)
     const satSlots = {};
-    SAT_ROW_SLOTS.forEach(([yTop, yBottom, name]) => {
-        const yMid = (yTop + yBottom) / 2;
-        satSlots[name] = sampleAt(SAT_X, yMid);
-    });
+    if (calib.dayBoundaries.length >= 8) {
+        const satLeft = calib.dayBoundaries[6], satRight = calib.dayBoundaries[7];
+        for (const [yTopRef, yBottomRef, name] of SAT_ROW_SLOTS) {
+            satSlots[name] = await ocrTeamInRegion(imgEl, satLeft, scaleRefY(calib, yTopRef), satRight, scaleRefY(calib, yBottomRef));
+        }
+    }
     result['토요일'] = satSlots;
 
+    result._calib = calib; // 디버깅/이어지는 OCR 단계에서 재사용
     return result;
 }
 
@@ -4222,19 +4290,17 @@ async function ocrTeamInRegion(imgEl, x0, y0, x1, y1, scale = 6) {
     };
 
     try {
-        const [textA, textB] = await Promise.all([
-            Tesseract.recognize(makeCanvas(true), 'kor').then(r => r.data.text),
-            Tesseract.recognize(makeCanvas(false), 'kor').then(r => r.data.text),
-        ]);
-        const scoreA = scoreTeamNameMatch(textA); // 이진화
-        const scoreB = scoreTeamNameMatch(textB); // 원문
+        // 먼저 원문(비이진화)만 시도 — 정확히 일치하면 이진화 패스는 생략해서 속도 절약
+        const textB = await Tesseract.recognize(makeCanvas(false), 'kor').then(r => r.data.text);
+        const scoreB = scoreTeamNameMatch(textB);
+        if (scoreB && scoreB.dist === 0) return scoreB.name;
 
-        // 원문(비이진화)에 한글이 전혀 안 잡히면 "실제 텍스트가 없다"는 강한 신호 →
-        // 이진화 쪽에서만 애매하게 나온 결과(화살표 등 노이즈 오독)는 신뢰하지 않음 (정확히 일치할 때만 예외)
         const rawCleaned = (textB || '').replace(/\s+/g, '').replace(/[^가-힣]/g, '');
-        if (!rawCleaned && !(scoreA && scoreA.dist === 0)) {
-            return null;
-        }
+        // 원문에 한글이 전혀 안 잡히면(화살표 등 노이즈뿐) 이진화도 애매하면 신뢰하지 않을 것이므로 바로 포기
+        if (!rawCleaned) return null;
+
+        const textA = await Tesseract.recognize(makeCanvas(true), 'kor').then(r => r.data.text);
+        const scoreA = scoreTeamNameMatch(textA);
 
         const best = [scoreA, scoreB].filter(Boolean).sort((a, b) => a.dist - b.dist)[0];
         return best && best.dist <= 3 ? best.name : null;
@@ -4244,59 +4310,172 @@ async function ocrTeamInRegion(imgEl, x0, y0, x1, y1, scale = 6) {
     }
 }
 
-// 개미(산란장) 담당자 텍스트 영역 (원본 1432x671 기준, 요일 무관 고정 1곳)
-const ANT_TEAM_REGION = [980, 38, 1100, 58];
+// 개미(산란장) 담당자 텍스트 영역 — "금요일+토요일 통합헤더" 폭 대비 비율(기준 이미지에서 측정)
+const ANT_TEAM_REGION_FRAC = [0.2893, 0.594]; // [시작비율, 끝비율] — y좌표(38~58)는 제목행이라 스케일 없이 고정
+const ANT_TEAM_REGION_Y = [38, 58];
 
-// 신념3층/4층 담당자 텍스트 영역 — 요일별(월~금) x좌표만 다르고 y는 공통
-const SHINNYEOM_34_Y = { '신념3층': [610, 635], '신념4층': [638, 663] };
-const SHINNYEOM_NAME_X_OFFSET = [136, 186]; // colX 기준 상대 x범위 (팀명 텍스트 부분만)
+// 신념3층/4층 담당자 텍스트 영역 — 칸 폭 대비 비율 (기준값 136~186 / 186폭)
+const SHINNYEOM_34_Y_REF = { '신념3층': [610, 635], '신념4층': [638, 663] };
+const SHINNYEOM_NAME_X_FRAC = [136 / 186, 1.0];
 
-// 일요일 칸 전용 텍스트 항목들 (색상 없음, 요일 구분 없이 고정 위치 7곳)
-// x=2~122 (일요일 칸), 팀명 텍스트만 좁게 잘라낸 좌표
-const SUNDAY_TEXT_REGIONS = [
-    ['암살', 15, 208, 105, 230],
-    ['마령', 15, 248, 105, 270],
-    ['마수', 15, 338, 105, 360],
-    ['명법', 15, 378, 105, 400],
-    ['기란성혈레열쇠', 15, 441, 105, 465],
-    ['아덴성혈레열쇠', 15, 476, 105, 500],
-    ['켄성혈레열쇠', 15, 511, 105, 538],
+// 일요일 칸 전용 텍스트 항목들 — 일요일 칸 폭 대비 비율(기준 15~105 / 120폭)
+const SUNDAY_TEXT_REGIONS_REF = [
+    ['암살', 208, 230], ['마령', 248, 270], ['마수', 338, 360], ['명법', 378, 400],
+    ['기란성혈레열쇠', 441, 465], ['아덴성혈레열쇠', 476, 500], ['켄성혈레열쇠', 511, 538],
 ];
+const SUNDAY_X_FRAC = [15 / 120, 105 / 120];
+
+// 테베류(22:00) OCR 폴백 텍스트 위치 — 칸 폭 대비 비율(기준 35~151 / 186폭)
+const TEBE_TEXT_X_FRAC = [35 / 186, 151 / 186];
+const TEBE_TEXT_Y_REF = [455, 478];
 
 // 오만타워/에스카로스/토요일(색상) + 개미/신념3·4층(OCR)을 모두 포함해서 인식
 async function extractAllTeamAssignments(imgEl) {
-    const result = extractOmanTeamAssignments(imgEl); // 색상 기반 인식 먼저 (동기, 빠름)
+    const result = await extractOmanTeamAssignments(imgEl); // 오만타워/에스카로스/토요일/신념1,2 — result._calib에 감지된 격자 포함
+    const calib = result._calib;
+    delete result._calib;
 
-    // 🔤 테베류(22:00) 슬롯 — 요일에 따라 색칠 대신 텍스트만 있는 경우(예: 무섭/에카)가 있어서,
-    // 색상 인식이 실패(null)한 요일만 같은 위치를 OCR로 재시도 (팀명이 있는 하단 줄만 좁게 크롭해 노이즈 최소화)
-    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
+    const dayNames = ['월', '화', '수', '목', '금'];
+    const getDayColRange = (i) => {
+        if (calib.dayBoundaries.length < i + 3) return null;
+        return [calib.dayBoundaries[i + 1], calib.dayBoundaries[i + 2]];
+    };
+
+    // 🔤 테베류(22:00) 슬롯 — 전체 셀 OCR(위에서 이미 시도)이 실패한 요일만, 팀명 줄만 좁게 잘라 재시도(노이즈 최소화)
+    for (let i = 0; i < dayNames.length; i++) {
+        const day = dayNames[i];
+        const range = getDayColRange(i);
+        if (!range) continue;
         if (!result[day]['테베류']) {
-            result[day]['테베류'] = await ocrTeamInRegion(imgEl, colX + 35, 455, colX + 151, 478, 10);
+            const [colLeft, colRight] = range;
+            const w = colRight - colLeft;
+            const x0 = colLeft + w * TEBE_TEXT_X_FRAC[0];
+            const x1 = colLeft + w * TEBE_TEXT_X_FRAC[1];
+            const y0 = scaleRefY(calib, TEBE_TEXT_Y_REF[0]);
+            const y1 = scaleRefY(calib, TEBE_TEXT_Y_REF[1]);
+            result[day]['테베류'] = await ocrTeamInRegion(imgEl, x0, y0, x1, y1, 10);
         }
     }
 
-    // 개미(산란장) — OCR
-    const [ax0, ay0, ax1, ay1] = ANT_TEAM_REGION;
-    result['개미산란장'] = { '담당': await ocrTeamInRegion(imgEl, ax0, ay0, ax1, ay1) };
+    // 개미(산란장) — OCR (금요일 칸 시작 ~ 에스카로스 좌측 경계 구간의 비율 위치)
+    if (calib.dayBoundaries.length >= 6) {
+        const headerLeft = calib.dayBoundaries[5];
+        const headerRight = calib.escaLeft;
+        const headerWidth = headerRight - headerLeft;
+        const ax0 = headerLeft + headerWidth * ANT_TEAM_REGION_FRAC[0];
+        const ax1 = headerLeft + headerWidth * ANT_TEAM_REGION_FRAC[1];
+        result['개미산란장'] = { '담당': await ocrTeamInRegion(imgEl, ax0, ANT_TEAM_REGION_Y[0], ax1, ANT_TEAM_REGION_Y[1]) };
+    } else {
+        result['개미산란장'] = { '담당': null };
+    }
 
-    // 신념3층/4층 — 요일별 OCR
-    for (const [day, colX] of Object.entries(OMAN_DAY_COLUMN_X)) {
-        for (const [slot, [yTop, yBottom]] of Object.entries(SHINNYEOM_34_Y)) {
-            const x0 = colX + SHINNYEOM_NAME_X_OFFSET[0];
-            const x1 = colX + SHINNYEOM_NAME_X_OFFSET[1];
-            result[day][slot] = await ocrTeamInRegion(imgEl, x0, yTop, x1, yBottom);
+    // 신념3층/4층 — 요일별 OCR (레이아웃이 두 가지: ①2x2 격자 - 3층 좌측/4층 우측, 같은 y band
+    //                        ②구형 우측 3단 - 2층 아래 우측에 3층/4층이 세로로 쌓임. 둘 다 시도해서 되는 쪽 채택)
+    for (let i = 0; i < dayNames.length; i++) {
+        const day = dayNames[i];
+        const range = getDayColRange(i);
+        if (!range) continue;
+        const [colLeft, colRight] = range;
+        const w = colRight - colLeft;
+        const bottomY = calib.anchorBottom + 124 * ((calib.anchorBottom - calib.anchorTop) / (REF_ANCHOR_BOTTOM - REF_ANCHOR_TOP));
+
+        // ① 2x2 격자 스타일: 3층=좌측 절반, 4층=우측 절반, 같은 y band(shinSplit~bottomY)
+        const t3New = await ocrTeamInRegion(imgEl, colLeft + w * 0.05, calib.shinSplit, colLeft + w * 0.48, bottomY);
+        const t4New = await ocrTeamInRegion(imgEl, colLeft + w * 0.52, calib.shinSplit, colLeft + w * 0.95, bottomY);
+
+        if (t3New) result[day]['신념3층'] = t3New;
+        if (t4New) result[day]['신념4층'] = t4New;
+
+        // ② 구형 우측 3단 스타일 — ①에서 못 찾은 것만 시도
+        if (!result[day]['신념3층'] || !result[day]['신념4층']) {
+            const x0 = colLeft + w * SHINNYEOM_NAME_X_FRAC[0];
+            const x1 = colLeft + w * SHINNYEOM_NAME_X_FRAC[1];
+            for (const [slot, [yTopRef, yBottomRef]] of Object.entries(SHINNYEOM_34_Y_REF)) {
+                if (result[day][slot]) continue;
+                const y0 = scaleRefY(calib, yTopRef);
+                const y1 = scaleRefY(calib, yBottomRef);
+                result[day][slot] = await ocrTeamInRegion(imgEl, x0, y0, x1, y1);
+            }
         }
     }
 
     // 일요일 칸 전용 텍스트 항목들 — OCR
     const sundaySlots = {};
-    for (const [name, x0, y0, x1, y1] of SUNDAY_TEXT_REGIONS) {
-        sundaySlots[name] = await ocrTeamInRegion(imgEl, x0, y0, x1, y1);
+    if (calib.dayBoundaries.length >= 2) {
+        const [sunLeft, sunRight] = [calib.dayBoundaries[0], calib.dayBoundaries[1]];
+        const w = sunRight - sunLeft;
+        const sx0 = sunLeft + w * SUNDAY_X_FRAC[0];
+        const sx1 = sunLeft + w * SUNDAY_X_FRAC[1];
+        for (const [name, yTopRef, yBottomRef] of SUNDAY_TEXT_REGIONS_REF) {
+            const y0 = scaleSunY(calib, yTopRef) - 8;
+            const y1 = scaleSunY(calib, yBottomRef) + 8;
+            sundaySlots[name] = await ocrTeamInRegion(imgEl, sx0, y0, sx1, y1);
+        }
     }
     result['일요일텍스트'] = sundaySlots;
 
     return result;
 }
+// 인식 결과에서 실패(null)한 항목만 평평한 목록으로 추출
+function findNullSlots(assignments) {
+    const list = [];
+    Object.entries(assignments).forEach(([day, slots]) => {
+        if (day === '_calib' || !slots || typeof slots !== 'object') return;
+        Object.entries(slots).forEach(([slot, team]) => {
+            if (!team) list.push({ day, slot });
+        });
+    });
+    return list;
+}
+
+let _ocrReviewResolve = null;
+
+// 인식 실패 항목을 관리자가 직접 고를 수 있는 모달을 띄우고, 최종(보정된) 인식 결과를 반환하는 Promise
+function showOcrReviewModal(assignments) {
+    const nullSlots = findNullSlots(assignments);
+    if (nullSlots.length === 0) return Promise.resolve(assignments); // 인식 실패 없으면 바로 통과
+
+    const modal = document.getElementById('ocr-review-modal');
+    const listEl = document.getElementById('ocr-review-list');
+    listEl.innerHTML = nullSlots.map((item, i) => `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; background:#fff8e6; border-radius:6px;">
+            <span style="font-size:0.9rem; color:#2c3e50;">${item.day} · ${item.slot}</span>
+            <select id="ocr-review-select-${i}" class="input-text" style="width:auto; margin-bottom:0; padding:6px 10px;">
+                <option value="">미배정</option>
+                <option value="고은">고은</option>
+                <option value="꼬장">꼬장</option>
+                <option value="정훈">정훈</option>
+            </select>
+        </div>
+    `).join('');
+
+    modal.style.display = 'flex';
+    return new Promise(resolve => {
+        _ocrReviewResolve = () => {
+            nullSlots.forEach((item, i) => {
+                const sel = document.getElementById(`ocr-review-select-${i}`);
+                const picked = sel ? sel.value : '';
+                if (picked) assignments[item.day][item.slot] = picked;
+            });
+            modal.style.display = 'none';
+            resolve(assignments);
+        };
+    });
+}
+
+function confirmOcrReview() {
+    if (_ocrReviewResolve) { _ocrReviewResolve(); _ocrReviewResolve = null; }
+}
+
+function cancelOcrReview() {
+    document.getElementById('ocr-review-modal').style.display = 'none';
+    if (_ocrReviewResolve) {
+        // 취소 시 미배정 그대로 두고 진행 (선택 안 한 항목은 null 유지)
+        _ocrReviewResolve();
+        _ocrReviewResolve = null;
+    }
+}
+
 function buildOmanAssignmentPreviewText(assignments) {
     const lines = [];
     Object.entries(assignments).forEach(([day, slots]) => {
@@ -4332,13 +4511,15 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
             };
             updates[getScheduleMetaPath(weekStartStr, serverKey)] = true;
 
-            // 🎨🔤 진기르("기르&진기르") 서버 이미지는 원본 해상도 기준으로 담당 팀 자동 인식
-            // (오만타워/에스카로스/토요일=색상 즉시 인식, 개미산란장/신념3·4층=OCR라 몇 초 걸릴 수 있음)
+            // 🔤 진기르("기르&진기르") 서버 이미지는 원본 해상도 기준으로 담당 팀 자동 인식
+            // (텍스트 인식이라 몇 초~1분 정도 걸릴 수 있음. 인식 실패 항목은 이어서 관리자가 직접 확인)
             let omanAssignments = null;
             if (serverKey === 'jingir') {
                 try {
                     inputEl.disabled = true;
                     omanAssignments = await extractAllTeamAssignments(img); // 리사이즈 전 원본 img 사용
+                    delete omanAssignments._calib;
+                    omanAssignments = await showOcrReviewModal(omanAssignments); // 인식 실패 항목 관리자 확인/보정
                     updates[`oman_team_assignments/${weekStartStr}`] = omanAssignments;
                 } catch (err) {
                     console.error('담당 팀 인식 실패:', err);
