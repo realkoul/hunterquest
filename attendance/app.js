@@ -4153,7 +4153,7 @@ function scaleSunY(calib, refY) {
 
 // img 엘리먼트(원본 해상도)를 받아 요일별 슬롯의 담당 팀을 텍스트(OCR)로 추출
 // (예전엔 셀 배경색으로 판별했으나, 매주 사람-색 매칭이 바뀔 수 있어 실제 적힌 글자를 읽는 방식으로 전환)
-async function extractOmanTeamAssignments(imgEl) {
+async function extractOmanTeamAssignments(imgEl, worker) {
     const canvas = document.createElement('canvas');
     canvas.width = imgEl.naturalWidth || imgEl.width;
     canvas.height = imgEl.naturalHeight || imgEl.height;
@@ -4176,15 +4176,15 @@ async function extractOmanTeamAssignments(imgEl) {
             const yTop = scaleRefY(calib, yTopRef);
             const yBottom = scaleRefY(calib, yBottomRef);
             if (rightSlot) {
-                daySlots[leftSlot] = await ocrTeamInRegion(imgEl, colLeft, yTop, colMid, yBottom);
-                daySlots[rightSlot] = await ocrTeamInRegion(imgEl, colMid, yTop, colRight, yBottom);
+                daySlots[leftSlot] = await ocrTeamInRegion(worker, imgEl, colLeft, yTop, colMid, yBottom);
+                daySlots[rightSlot] = await ocrTeamInRegion(worker, imgEl, colMid, yTop, colRight, yBottom);
             } else {
-                daySlots[leftSlot] = await ocrTeamInRegion(imgEl, colLeft, yTop, colRight, yBottom);
+                daySlots[leftSlot] = await ocrTeamInRegion(worker, imgEl, colLeft, yTop, colRight, yBottom);
             }
         }
         // 신념1층/2층 — 신념 섹션 상단 행 (anchorBottom~shinSplit). 2x2 레이아웃에서 3/4층(하단 행)과 안 겹치게 분리
-        daySlots['신념1층'] = await ocrTeamInRegion(imgEl, colLeft, calib.anchorBottom, colMid, calib.shinSplit);
-        daySlots['신념2층'] = await ocrTeamInRegion(imgEl, colMid, calib.anchorBottom, colRight, calib.shinSplit);
+        daySlots['신념1층'] = await ocrTeamInRegion(worker, imgEl, colLeft, calib.anchorBottom, colMid, calib.shinSplit);
+        daySlots['신념2층'] = await ocrTeamInRegion(worker, imgEl, colMid, calib.anchorBottom, colRight, calib.shinSplit);
         result[day] = daySlots;
     }
 
@@ -4194,7 +4194,7 @@ async function extractOmanTeamAssignments(imgEl) {
         const escaWidthRatio = (calib.dayBoundaries.length >= 8 ? (calib.dayBoundaries[7] - calib.dayBoundaries[6]) : 168) / 168;
         const escaRight = calib.escaLeft + 168 * escaWidthRatio + 40; // 패널 우측까지 넉넉히 포함(전체 셀 OCR)
         for (const [yTopRef, yBottomRef, name] of ESCA_ROW_SLOTS) {
-            escaSlots[name] = await ocrTeamInRegion(imgEl, calib.escaLeft, scaleRefY(calib, yTopRef), escaRight, scaleRefY(calib, yBottomRef));
+            escaSlots[name] = await ocrTeamInRegion(worker, imgEl, calib.escaLeft, scaleRefY(calib, yTopRef), escaRight, scaleRefY(calib, yBottomRef));
         }
     }
     result['에스카로스'] = escaSlots;
@@ -4204,7 +4204,7 @@ async function extractOmanTeamAssignments(imgEl) {
     if (calib.dayBoundaries.length >= 8) {
         const satLeft = calib.dayBoundaries[6], satRight = calib.dayBoundaries[7];
         for (const [yTopRef, yBottomRef, name] of SAT_ROW_SLOTS) {
-            satSlots[name] = await ocrTeamInRegion(imgEl, satLeft, scaleRefY(calib, yTopRef), satRight, scaleRefY(calib, yBottomRef));
+            satSlots[name] = await ocrTeamInRegion(worker, imgEl, satLeft, scaleRefY(calib, yTopRef), satRight, scaleRefY(calib, yBottomRef));
         }
     }
     result['토요일'] = satSlots;
@@ -4268,7 +4268,10 @@ function bestTeamNameMatch(text) {
 
 // 이미지의 특정 영역만 잘라 OCR 실행 → 팀명 반환 (실패 시 null)
 // 이진화 여부에 따라 결과가 흔들려서, 두 방식 다 시도해 더 확신도 높은(자모거리 낮은) 쪽을 채택
-async function ocrTeamInRegion(imgEl, x0, y0, x1, y1, scale = 6) {
+async function ocrTeamInRegion(worker, imgEl, x0, y0, x1, y1, scale = 6) {
+    // 계산 오차 등으로 크롭 영역이 비정상적으로 좁으면(가로/세로 5px 미만) OCR 자체가 무의미하므로 바로 포기
+    if ((x1 - x0) < 5 || (y1 - y0) < 5) return null;
+
     const makeCanvas = (binarize) => {
         const c = document.createElement('canvas');
         c.width = (x1 - x0) * scale;
@@ -4291,7 +4294,7 @@ async function ocrTeamInRegion(imgEl, x0, y0, x1, y1, scale = 6) {
 
     try {
         // 먼저 원문(비이진화)만 시도 — 정확히 일치하면 이진화 패스는 생략해서 속도 절약
-        const textB = await Tesseract.recognize(makeCanvas(false), 'kor').then(r => r.data.text);
+        const textB = await worker.recognize(makeCanvas(false)).then(r => r.data.text);
         const scoreB = scoreTeamNameMatch(textB);
         if (scoreB && scoreB.dist === 0) return scoreB.name;
 
@@ -4299,7 +4302,7 @@ async function ocrTeamInRegion(imgEl, x0, y0, x1, y1, scale = 6) {
         // 원문에 한글이 전혀 안 잡히면(화살표 등 노이즈뿐) 이진화도 애매하면 신뢰하지 않을 것이므로 바로 포기
         if (!rawCleaned) return null;
 
-        const textA = await Tesseract.recognize(makeCanvas(true), 'kor').then(r => r.data.text);
+        const textA = await worker.recognize(makeCanvas(true)).then(r => r.data.text);
         const scoreA = scoreTeamNameMatch(textA);
 
         const best = [scoreA, scoreB].filter(Boolean).sort((a, b) => a.dist - b.dist)[0];
@@ -4331,7 +4334,17 @@ const TEBE_TEXT_Y_REF = [455, 478];
 
 // 오만타워/에스카로스/토요일(색상) + 개미/신념3·4층(OCR)을 모두 포함해서 인식
 async function extractAllTeamAssignments(imgEl) {
-    const result = await extractOmanTeamAssignments(imgEl); // 오만타워/에스카로스/토요일/신념1,2 — result._calib에 감지된 격자 포함
+    // OCR 엔진(워커)을 한 번만 띄워서 전체 인식 과정 동안 재사용 — 매번 새로 띄우면 엄청 느려짐
+    const worker = await Tesseract.createWorker('kor');
+    try {
+        return await extractAllTeamAssignmentsInner(imgEl, worker);
+    } finally {
+        await worker.terminate();
+    }
+}
+
+async function extractAllTeamAssignmentsInner(imgEl, worker) {
+    const result = await extractOmanTeamAssignments(imgEl, worker); // 오만타워/에스카로스/토요일/신념1,2 — result._calib에 감지된 격자 포함
     const calib = result._calib;
     delete result._calib;
 
@@ -4353,7 +4366,7 @@ async function extractAllTeamAssignments(imgEl) {
             const x1 = colLeft + w * TEBE_TEXT_X_FRAC[1];
             const y0 = scaleRefY(calib, TEBE_TEXT_Y_REF[0]);
             const y1 = scaleRefY(calib, TEBE_TEXT_Y_REF[1]);
-            result[day]['테베류'] = await ocrTeamInRegion(imgEl, x0, y0, x1, y1, 10);
+            result[day]['테베류'] = await ocrTeamInRegion(worker, imgEl, x0, y0, x1, y1, 10);
         }
     }
 
@@ -4364,7 +4377,7 @@ async function extractAllTeamAssignments(imgEl) {
         const headerWidth = headerRight - headerLeft;
         const ax0 = headerLeft + headerWidth * ANT_TEAM_REGION_FRAC[0];
         const ax1 = headerLeft + headerWidth * ANT_TEAM_REGION_FRAC[1];
-        result['개미산란장'] = { '담당': await ocrTeamInRegion(imgEl, ax0, ANT_TEAM_REGION_Y[0], ax1, ANT_TEAM_REGION_Y[1]) };
+        result['개미산란장'] = { '담당': await ocrTeamInRegion(worker, imgEl, ax0, ANT_TEAM_REGION_Y[0], ax1, ANT_TEAM_REGION_Y[1]) };
     } else {
         result['개미산란장'] = { '담당': null };
     }
@@ -4380,8 +4393,8 @@ async function extractAllTeamAssignments(imgEl) {
         const bottomY = calib.anchorBottom + 124 * ((calib.anchorBottom - calib.anchorTop) / (REF_ANCHOR_BOTTOM - REF_ANCHOR_TOP));
 
         // ① 2x2 격자 스타일: 3층=좌측 절반, 4층=우측 절반, 같은 y band(shinSplit~bottomY)
-        const t3New = await ocrTeamInRegion(imgEl, colLeft + w * 0.05, calib.shinSplit, colLeft + w * 0.48, bottomY);
-        const t4New = await ocrTeamInRegion(imgEl, colLeft + w * 0.52, calib.shinSplit, colLeft + w * 0.95, bottomY);
+        const t3New = await ocrTeamInRegion(worker, imgEl, colLeft + w * 0.05, calib.shinSplit, colLeft + w * 0.48, bottomY);
+        const t4New = await ocrTeamInRegion(worker, imgEl, colLeft + w * 0.52, calib.shinSplit, colLeft + w * 0.95, bottomY);
 
         if (t3New) result[day]['신념3층'] = t3New;
         if (t4New) result[day]['신념4층'] = t4New;
@@ -4394,7 +4407,7 @@ async function extractAllTeamAssignments(imgEl) {
                 if (result[day][slot]) continue;
                 const y0 = scaleRefY(calib, yTopRef);
                 const y1 = scaleRefY(calib, yBottomRef);
-                result[day][slot] = await ocrTeamInRegion(imgEl, x0, y0, x1, y1);
+                result[day][slot] = await ocrTeamInRegion(worker, imgEl, x0, y0, x1, y1);
             }
         }
     }
@@ -4409,7 +4422,7 @@ async function extractAllTeamAssignments(imgEl) {
         for (const [name, yTopRef, yBottomRef] of SUNDAY_TEXT_REGIONS_REF) {
             const y0 = scaleSunY(calib, yTopRef) - 8;
             const y1 = scaleSunY(calib, yBottomRef) + 8;
-            sundaySlots[name] = await ocrTeamInRegion(imgEl, sx0, y0, sx1, y1);
+            sundaySlots[name] = await ocrTeamInRegion(worker, imgEl, sx0, y0, sx1, y1);
         }
     }
     result['일요일텍스트'] = sundaySlots;
