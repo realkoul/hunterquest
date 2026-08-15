@@ -670,8 +670,8 @@ function getCurrentBoss() {
 
 // 개미(산란장) — 일주일에 한 번 바뀌는 담당자 배너 (오늘 스케줄 위에 표시)
 function buildAntNestBannerHtml(viewServer) {
-    if (viewServer !== 'jingir') return ''; // 현재는 진기르 이미지만 지원
-    const antSlots = omanTeamAssignmentCache['개미산란장'];
+    const serverCache = omanTeamAssignmentCache[viewServer];
+    const antSlots = serverCache ? serverCache['개미산란장'] : null;
     const team = antSlots ? (antSlots['담당'] || null) : null;
     if (!team) return '';
 
@@ -850,9 +850,9 @@ function buildEscaMultiBossHtml() {
     }).join('');
 }
 
-    // 현재 보스 표시명 → 내 서버 기준으로 계산
+    // 현재 보스 표시명 → 담당 팀 배지는 "오늘 스케줄"과 동일하게 viewServer 기준(서버 탭 전환 시 같이 바뀌도록), 보스명 자체는 내 서버 기준
     const isEsca = (currentBoss.name || '').includes('에스카');
-    const currentBossOmanResults = getOmanTeamForSchedule(currentBoss, myServer);
+    const currentBossOmanResults = getOmanTeamForSchedule(currentBoss, viewServer);
     const currentBossDisplayName = getBossDisplayName(currentBoss, myServer);
     const currentBossTeamBadgeHtml = buildOmanTeamBadgeHtml(currentBossOmanResults, false, true);
 
@@ -4524,21 +4524,19 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
             };
             updates[getScheduleMetaPath(weekStartStr, serverKey)] = true;
 
-            // 🔤 진기르("기르&진기르") 서버 이미지는 원본 해상도 기준으로 담당 팀 자동 인식
+            // 🔤 스케줄 이미지에서 원본 해상도 기준으로 담당 팀 자동 인식 (서버 공통 — 표 구조가 동일하면 다 지원)
             // (텍스트 인식이라 몇 초~1분 정도 걸릴 수 있음. 인식 실패 항목은 이어서 관리자가 직접 확인)
             let omanAssignments = null;
-            if (serverKey === 'jingir') {
-                try {
-                    inputEl.disabled = true;
-                    omanAssignments = await extractAllTeamAssignments(img); // 리사이즈 전 원본 img 사용
-                    delete omanAssignments._calib;
-                    omanAssignments = await showOcrReviewModal(omanAssignments); // 인식 실패 항목 관리자 확인/보정
-                    updates[`oman_team_assignments/${weekStartStr}`] = omanAssignments;
-                } catch (err) {
-                    console.error('담당 팀 인식 실패:', err);
-                } finally {
-                    inputEl.disabled = false;
-                }
+            try {
+                inputEl.disabled = true;
+                omanAssignments = await extractAllTeamAssignments(img); // 리사이즈 전 원본 img 사용
+                delete omanAssignments._calib;
+                omanAssignments = await showOcrReviewModal(omanAssignments); // 인식 실패 항목 관리자 확인/보정
+                updates[`oman_team_assignments/${weekStartStr}/${serverKey}`] = omanAssignments;
+            } catch (err) {
+                console.error('담당 팀 인식 실패:', err);
+            } finally {
+                inputEl.disabled = false;
             }
 
             db.ref().update(updates).then(() => {
@@ -4609,7 +4607,9 @@ function loadWeekAssignment() {
 // [{floor:'1', team:'정훈'}, {floor:'6', team:'고은'}] 형태. 인식 불가하면 null.
 // 판도라/지원은 아직 이 형식의 이미지가 캘리브레이션되어 있지 않아 null 반환.
 function getOmanTeamForSchedule(schedule, serverKey) {
-    if (serverKey !== 'jingir') return null; // 현재는 진기르 이미지만 지원
+    // 서버별로 각자 올린 이미지에서 인식한 결과를 사용 (진기르/판도라/지원 다 지원)
+    const serverCache = omanTeamAssignmentCache[serverKey];
+    if (!serverCache) return null; // 이 서버는 아직 인식 데이터가 없음(이미지 미업로드 등)
 
     const name = schedule.name || '';
 
@@ -4617,7 +4617,7 @@ function getOmanTeamForSchedule(schedule, serverKey) {
     const ESCA_BOSS_NAMES = ['웨링', '듀페', '욤니', '살라', '그라'];
     const matchedEsca = ESCA_BOSS_NAMES.find(n => name.includes(n));
     if (matchedEsca) {
-        const escaSlots = omanTeamAssignmentCache['에스카로스'];
+        const escaSlots = serverCache['에스카로스'];
         const team = escaSlots ? (escaSlots[matchedEsca] || null) : null;
         return team ? [{ floor: null, team }] : null;
     }
@@ -4626,14 +4626,14 @@ function getOmanTeamForSchedule(schedule, serverKey) {
     const SAT_BOSS_NAMES = ['하피퀸', '코카킹', '오거킹', '드레킹', '그미노', '타이탄'];
     const matchedSat = SAT_BOSS_NAMES.find(n => name.includes(n));
     if (matchedSat) {
-        const satSlots = omanTeamAssignmentCache['토요일'];
+        const satSlots = serverCache['토요일'];
         const team = satSlots ? (satSlots[matchedSat] || null) : null;
         return team ? [{ floor: null, team }] : null;
     }
 
     // 개미(산란장) — 요일 무관, OCR로 인식된 단일 담당자 (일주일에 한 번 표기)
     if (name.includes('개미')) {
-        const antSlots = omanTeamAssignmentCache['개미산란장'];
+        const antSlots = serverCache['개미산란장'];
         const team = antSlots ? (antSlots['담당'] || null) : null;
         return team ? [{ floor: null, team }] : null;
     }
@@ -4646,7 +4646,7 @@ function getOmanTeamForSchedule(schedule, serverKey) {
     const SUNDAY_TEXT_NAMES = ['암살', '마령', '마수', '명법', '기란성혈레열쇠', '아덴성혈레열쇠', '켄성혈레열쇠'];
     const matchedSundayNames = SUNDAY_TEXT_NAMES.filter(n => name.includes(n));
     if (matchedSundayNames.length > 0) {
-        const sundaySlots = omanTeamAssignmentCache['일요일텍스트'] || {};
+        const sundaySlots = serverCache['일요일텍스트'] || {};
         const results = matchedSundayNames.map(n => ({ floor: null, team: sundaySlots[n] || null, label: n }))
             .filter(r => r.team);
         results.sort((a, b) => (a.team === OUR_TEAM_NAME ? -1 : 0) - (b.team === OUR_TEAM_NAME ? -1 : 0));
@@ -4654,7 +4654,7 @@ function getOmanTeamForSchedule(schedule, serverKey) {
     }
 
     const dayKorean = ['일', '월', '화', '수', '목', '금', '토'][schedule.dayOfWeek];
-    const daySlots = omanTeamAssignmentCache[dayKorean];
+    const daySlots = serverCache[dayKorean];
     if (!daySlots) return null;
 
     if (name.includes('오만') && name.includes('/')) {
