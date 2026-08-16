@@ -721,7 +721,7 @@ async function renderTodaySchedules() {
         const tabBtns = Object.entries(serverNames).map(([key, label]) => {
             const c = serverColors[key];
             const isActive = viewServer === key;
-            return `<button onclick="window._viewServer='${key}'; renderTodaySchedules();"
+            return `<button onclick="window._viewServer='${key}'; if (typeof switchScheduleImageServer === 'function') switchScheduleImageServer('${key}'); else renderTodaySchedules();"
                 style="padding:4px 12px; border-radius:5px; border:2px solid ${c};
                        background:${isActive ? c : 'white'}; color:${isActive ? 'white' : c};
                        font-weight:bold; font-size:0.82rem; cursor:pointer; transition:all 0.15s;">
@@ -3928,6 +3928,10 @@ function switchScheduleImageServer(serverKey) {
     currentScheduleImageServer = serverKey;
     renderScheduleImageTabs();
     loadScheduleImageForServer(serverKey); // 선택한 서버 것만 그 때 다운로드
+
+    // "오늘 스케줄" 탭도 같은 서버로 동기화
+    window._viewServer = serverKey;
+    renderTodaySchedules();
 }
 
 // 탭 존재 여부 스타일 갱신 (메타 기준, 다운로드 없음)
