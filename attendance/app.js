@@ -239,6 +239,8 @@ window.onload = function() {
         loadWeekAssignment();
         // 이번 주 서버 스케줄 이미지 로드 (+ 지난 주 자동 정리)
         loadWeeklyScheduleImage();
+        // 이번 주 팀 이름(로스터)이 저장돼 있으면 입력칸에 미리 채워줌
+        loadTeamRosterForCurrentWeek();
     });
 };
 
@@ -4224,7 +4226,41 @@ async function extractOmanTeamAssignments(imgEl, worker) {
 // 작은 텍스트 영역만 잘라내 OCR로 "고은/꼬장/정훈" 중 무엇인지 판별함.
 // ============================================================
 
-const TEAM_NAME_CANDIDATES = ['고은', '꼬장', '정훈'];
+// 평소엔 이 3명이 기본값이지만, 이번 주에 팀 구성이 달라지면(예: 2명, 다른 이름) 아래에서 바꿀 수 있음
+let TEAM_NAME_CANDIDATES = ['고은', '꼬장', '정훈'];
+const DEFAULT_TEAM_NAME_CANDIDATES = ['고은', '꼬장', '정훈'];
+
+// 이번 주 팀 이름 목록을 화면 입력칸에서 읽어와 적용 (비어있으면 기본 3명으로 되돌림)
+function applyTeamRosterFromInput() {
+    const inputEl = document.getElementById('team-roster-input');
+    if (!inputEl) return;
+    const raw = inputEl.value.trim();
+    if (!raw) {
+        TEAM_NAME_CANDIDATES = [...DEFAULT_TEAM_NAME_CANDIDATES];
+        db.ref(`oman_team_roster/${formatLocalDate(getWeekStartSun(new Date()))}`).set(null).catch(() => {});
+        return;
+    }
+    const names = raw.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+    TEAM_NAME_CANDIDATES = names.length >= 2 ? names : [...DEFAULT_TEAM_NAME_CANDIDATES];
+    db.ref(`oman_team_roster/${formatLocalDate(getWeekStartSun(new Date()))}`).set(TEAM_NAME_CANDIDATES).catch(() => {});
+}
+
+// 페이지 로드 시, 이번 주에 저장해둔 팀 로스터가 있으면 입력칸에 미리 채워줌
+async function loadTeamRosterForCurrentWeek() {
+    const inputEl = document.getElementById('team-roster-input');
+    if (!inputEl) return;
+    try {
+        const weekStartStr = formatLocalDate(getWeekStartSun(new Date()));
+        const snap = await db.ref(`oman_team_roster/${weekStartStr}`).once('value');
+        const saved = snap.val();
+        if (Array.isArray(saved) && saved.length >= 2) {
+            inputEl.value = saved.join(',');
+            TEAM_NAME_CANDIDATES = saved;
+        }
+    } catch (err) {
+        console.error('이번 주 팀 로스터 불러오기 실패:', err);
+    }
+}
 
 // 한글 음절 하나를 (초성,중성,종성) 자모 인덱스로 분해 — 한글 아니면 그대로 반환
 function decomposeHangul(ch) {
@@ -4584,6 +4620,7 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
             let omanAssignments = null;
             try {
                 inputEl.disabled = true;
+                applyTeamRosterFromInput(); // 이번 주 팀 이름이 입력돼 있으면 그 기준으로, 없으면 기본 3명
                 omanAssignments = await extractAllTeamAssignments(img); // 리사이즈 전 원본 img 사용
                 delete omanAssignments._calib;
                 omanAssignments = await showOcrReviewModal(omanAssignments); // 인식 실패 항목 관리자 확인/보정
