@@ -835,9 +835,10 @@ async function renderTodaySchedules() {
 
 // 에스카로스 — 출석체크는 한 번만 하지만 실제로는 5개 보스가 순서대로 진행되므로,
 // "진행 중인 보스" 카드에 5개를 한 번에 나열해서 보여줌 (출석 로직은 그대로, 표시만 다르게)
-function buildEscaMultiBossHtml() {
+function buildEscaMultiBossHtml(serverKey) {
     const ESCA_BOSS_NAMES = ['웨링', '듀페', '욤니', '살라', '그라'];
-    const escaSlots = omanTeamAssignmentCache['에스카로스'] || {};
+    const serverCache = omanTeamAssignmentCache[serverKey] || {};
+    const escaSlots = serverCache['에스카로스'] || {};
     return ESCA_BOSS_NAMES.map((name, i) => {
         const team = escaSlots[name] || null;
         const isOurTeam = team === OUR_TEAM_NAME;
@@ -866,7 +867,7 @@ function buildEscaMultiBossHtml() {
                 <div style="font-size:0.78rem; color:${timeStatus.status === 'present' ? '#16a085' : '#95a5a6'}; font-weight:bold; margin-bottom:4px;">${timeStatus.status === 'present' ? '⭕ 진행 중' : '⏸ 대기 중'}</div>
                 <div style="font-size:1.3rem; font-weight:bold; color:#2c3e50;">${currentBossDisplayName}</div>
                 ${isEsca
-                    ? `<div style="margin-top:6px; padding-top:6px; border-top:1px solid #ddd; font-size:0.85rem;">${buildEscaMultiBossHtml()}</div>`
+                    ? `<div style="margin-top:6px; padding-top:6px; border-top:1px solid #ddd; font-size:0.85rem;">${buildEscaMultiBossHtml(viewServer)}</div>`
                     : (currentBossTeamBadgeHtml ? `<div style="margin-top:3px;">${currentBossTeamBadgeHtml}</div>` : '')}
                 <div style="font-size:0.8rem; color:#7f8c8d; margin-top:2px;">${currentBoss.time}</div>
             </div>
@@ -4270,11 +4271,17 @@ function bestTeamNameMatch(text) {
     return r && r.dist <= 3 ? r.name : null; // 자모 절반 이상 다르면 인식 실패로 처리
 }
 
-// 이미지의 특정 영역만 잘라 OCR 실행 → 팀명 반환 (실패 시 null)
-// 이진화 여부에 따라 결과가 흔들려서, 두 방식 다 시도해 더 확신도 높은(자모거리 낮은) 쪽을 채택
+// 이미지의 특정 영역만 잘라 OCR 실행 → 팀명 반환
+// 반환값: 알려진 이름(고은/꼬장/정훈)에 확신 있게 맞으면 그 이름 그대로.
+// 확신은 없지만 뭔가 글자가 읽히긴 했으면 "?추정텍스트" 형태로 반환(관리자 확인 필요 표시).
+// 정말 아무 글자도 없으면(노이즈뿐) null.
+// ⚠️ 팀 이름이 매주 고정 3개가 아니라 새 이름이 등장하거나 인원수 자체가 달라지는 주가 있어서,
+//    "모르는 이름 = 실패"로 버리지 않고 "일단 읽은 대로 보여주고 사람이 확인" 하는 방식으로 설계함
 async function ocrTeamInRegion(worker, imgEl, x0, y0, x1, y1, scale = 6) {
     // 계산 오차 등으로 크롭 영역이 비정상적으로 좁으면(가로/세로 5px 미만) OCR 자체가 무의미하므로 바로 포기
     if ((x1 - x0) < 5 || (y1 - y0) < 5) return null;
+
+    const cleanHangul = (t) => (t || '').replace(/\s+/g, '').replace(/[^가-힣]/g, '');
 
     const makeCanvas = (binarize) => {
         const c = document.createElement('canvas');
@@ -4302,15 +4309,21 @@ async function ocrTeamInRegion(worker, imgEl, x0, y0, x1, y1, scale = 6) {
         const scoreB = scoreTeamNameMatch(textB);
         if (scoreB && scoreB.dist === 0) return scoreB.name;
 
-        const rawCleaned = (textB || '').replace(/\s+/g, '').replace(/[^가-힣]/g, '');
-        // 원문에 한글이 전혀 안 잡히면(화살표 등 노이즈뿐) 이진화도 애매하면 신뢰하지 않을 것이므로 바로 포기
-        if (!rawCleaned) return null;
+        const rawCleanedB = cleanHangul(textB);
+        // 원문에 한글이 전혀 안 잡히면(화살표 등 노이즈뿐) 실제 글자 자체가 없다는 뜻이므로 포기
+        if (!rawCleanedB) return null;
 
         const textA = await worker.recognize(makeCanvas(true)).then(r => r.data.text);
         const scoreA = scoreTeamNameMatch(textA);
+        const rawCleanedA = cleanHangul(textA);
 
         const best = [scoreA, scoreB].filter(Boolean).sort((a, b) => a.dist - b.dist)[0];
-        return best && best.dist <= 3 ? best.name : null;
+        if (best && best.dist <= 3) return best.name; // 알려진 3개 이름 중 하나로 확신 있게 판단됨
+
+        // 알려진 이름 어디에도 확신 있게 안 맞음 — 그렇다고 그냥 버리지 않고,
+        // 실제로 읽힌 글자를 "미확인 추정치"로 남겨서(? 접두사) 관리자가 검토하게 함
+        const guess = (rawCleanedB && (!rawCleanedA || rawCleanedB.length <= rawCleanedA.length)) ? rawCleanedB : (rawCleanedA || rawCleanedB);
+        return guess ? ('?' + guess) : null;
     } catch (err) {
         console.error('OCR 인식 실패:', err);
         return null;
@@ -4433,46 +4446,75 @@ async function extractAllTeamAssignmentsInner(imgEl, worker) {
 
     return result;
 }
-// 인식 결과에서 실패(null)한 항목만 평평한 목록으로 추출
+// 인식 실패(null) + 확신 없는 추정치(?접두사) 항목을 "새 이름 추정" / "완전 실패" 두 그룹으로 분리
+// (팀 이름이 매주 고정 3개가 아니라 새 이름/다른 인원수가 나올 수 있어서,
+//  "모르는 이름"도 그냥 버리지 않고, 뭔가 읽힌 건 "이거 맞아요?"로 따로 확인받음)
 function findNullSlots(assignments) {
-    const list = [];
+    const guessed = [];  // OCR이 뭔가 읽긴 함 → "새 이름 맞나요?" 확인
+    const failed = [];   // 아무것도 못 읽음 → 직접 선택
     Object.entries(assignments).forEach(([day, slots]) => {
         if (day === '_calib' || !slots || typeof slots !== 'object') return;
         Object.entries(slots).forEach(([slot, team]) => {
-            if (!team) list.push({ day, slot });
+            if (!team) {
+                failed.push({ day, slot });
+            } else if (typeof team === 'string' && team.startsWith('?')) {
+                guessed.push({ day, slot, guess: team.slice(1) });
+            }
         });
     });
-    return list;
+    return { guessed, failed };
 }
 
 let _ocrReviewResolve = null;
 
-// 인식 실패 항목을 관리자가 직접 고를 수 있는 모달을 띄우고, 최종(보정된) 인식 결과를 반환하는 Promise
+// 인식 실패/미확인 항목을 관리자가 직접 고르거나 새 이름을 확인할 수 있는 모달을 띄우고,
+// 최종(보정된) 인식 결과를 반환하는 Promise
 function showOcrReviewModal(assignments) {
-    const nullSlots = findNullSlots(assignments);
-    if (nullSlots.length === 0) return Promise.resolve(assignments); // 인식 실패 없으면 바로 통과
+    const { guessed, failed } = findNullSlots(assignments);
+    if (guessed.length === 0 && failed.length === 0) return Promise.resolve(assignments); // 검토할 항목 없으면 바로 통과
 
     const modal = document.getElementById('ocr-review-modal');
     const listEl = document.getElementById('ocr-review-list');
-    listEl.innerHTML = nullSlots.map((item, i) => `
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; background:#fff8e6; border-radius:6px;">
-            <span style="font-size:0.9rem; color:#2c3e50;">${item.day} · ${item.slot}</span>
-            <select id="ocr-review-select-${i}" class="input-text" style="width:auto; margin-bottom:0; padding:6px 10px;">
-                <option value="">미배정</option>
-                <option value="고은">고은</option>
-                <option value="꼬장">꼬장</option>
-                <option value="정훈">정훈</option>
-            </select>
-        </div>
-    `).join('');
+
+    const guessedHtml = guessed.length === 0 ? '' : `
+        <div style="font-weight:bold; color:#2c3e50; margin:6px 0 8px;">🆕 새로운 이름 감지 (${guessed.length}건) — 이렇게 읽었어요, 확인해주세요</div>
+        ${guessed.map((item, i) => `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; background:#eaf6ff; border-radius:6px; margin-bottom:6px;">
+                <span style="font-size:0.9rem; color:#2c3e50;">${item.day} · ${item.slot}</span>
+                <span style="font-size:0.85rem; color:#7f8c8d;">"${item.guess}" 로 읽힘 →</span>
+                <input type="text" id="ocr-guess-text-${i}" class="input-text" style="width:110px; margin-bottom:0; padding:6px 10px;" value="${item.guess}">
+            </div>
+        `).join('')}
+    `;
+
+    const failedHtml = failed.length === 0 ? '' : `
+        <div style="font-weight:bold; color:#2c3e50; margin:14px 0 8px;">❓ 인식 실패 (${failed.length}건) — 직접 선택해주세요</div>
+        ${failed.map((item, i) => `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; background:#fff8e6; border-radius:6px; margin-bottom:6px;">
+                <span style="font-size:0.9rem; color:#2c3e50;">${item.day} · ${item.slot}</span>
+                <select id="ocr-failed-select-${i}" class="input-text" style="width:auto; margin-bottom:0; padding:6px 10px;">
+                    <option value="">미배정</option>
+                    <option value="고은">고은</option>
+                    <option value="꼬장">꼬장</option>
+                    <option value="정훈">정훈</option>
+                </select>
+            </div>
+        `).join('')}
+    `;
+
+    listEl.innerHTML = guessedHtml + failedHtml;
 
     modal.style.display = 'flex';
     return new Promise(resolve => {
         _ocrReviewResolve = () => {
-            nullSlots.forEach((item, i) => {
-                const sel = document.getElementById(`ocr-review-select-${i}`);
-                const picked = sel ? sel.value : '';
-                if (picked) assignments[item.day][item.slot] = picked;
+            guessed.forEach((item, i) => {
+                const txt = document.getElementById(`ocr-guess-text-${i}`);
+                const val = txt ? txt.value.trim() : item.guess;
+                assignments[item.day][item.slot] = val || null;
+            });
+            failed.forEach((item, i) => {
+                const sel = document.getElementById(`ocr-failed-select-${i}`);
+                assignments[item.day][item.slot] = (sel ? sel.value : '') || null;
             });
             modal.style.display = 'none';
             resolve(assignments);
@@ -4485,12 +4527,21 @@ function confirmOcrReview() {
 }
 
 function cancelOcrReview() {
-    document.getElementById('ocr-review-modal').style.display = 'none';
-    if (_ocrReviewResolve) {
-        // 취소 시 미배정 그대로 두고 진행 (선택 안 한 항목은 null 유지)
-        _ocrReviewResolve();
-        _ocrReviewResolve = null;
-    }
+    // 확인/취소 둘 다 현재 폼 상태를 그대로 반영해서 진행 (건드리지 않은 항목은 미배정으로 남음)
+    if (_ocrReviewResolve) { _ocrReviewResolve(); _ocrReviewResolve = null; }
+}
+
+// 혹시 리뷰 모달을 취소했거나 놓친 경우를 대비해, 저장 직전에 한 번 더 "?추정치"를 미배정으로 안전하게 정리
+function sanitizeUnconfirmedGuesses(assignments) {
+    Object.entries(assignments).forEach(([day, slots]) => {
+        if (day === '_calib' || !slots || typeof slots !== 'object') return;
+        Object.entries(slots).forEach(([slot, team]) => {
+            if (typeof team === 'string' && team.startsWith('?')) {
+                slots[slot] = null;
+            }
+        });
+    });
+    return assignments;
 }
 
 function buildOmanAssignmentPreviewText(assignments) {
@@ -4536,6 +4587,7 @@ function uploadWeeklyScheduleImage(inputEl, serverKey) {
                 omanAssignments = await extractAllTeamAssignments(img); // 리사이즈 전 원본 img 사용
                 delete omanAssignments._calib;
                 omanAssignments = await showOcrReviewModal(omanAssignments); // 인식 실패 항목 관리자 확인/보정
+                omanAssignments = sanitizeUnconfirmedGuesses(omanAssignments); // 혹시 남은 "?추정치" 안전하게 정리
                 updates[`oman_team_assignments/${weekStartStr}/${serverKey}`] = omanAssignments;
             } catch (err) {
                 console.error('담당 팀 인식 실패:', err);
@@ -6054,4 +6106,90 @@ function onAssignWeekChange() {
 // 주차별 Firebase 경로
 function getAssignPath(weekStart) {
     return 'boss_schedule_assignments/' + weekStart;
+}
+// ============================================================
+// 🔧 담당 팀 직접 수정 (이미지 재업로드 없이 잘못 인식된 것만 바로 고치기)
+// ============================================================
+
+const TEAM_EDIT_DAY_SLOTS = ['오만1층', '오만6층', '오만2층', '오만7층', '오만3층', '오만8층', '오만4층', '오만9층', '테베류', '오만5층', '오만10층', '신념1층', '신념2층', '신념3층', '신념4층'];
+const TEAM_EDIT_ESCA_SLOTS = ['웨링', '듀페', '욤니', '살라', '그라'];
+const TEAM_EDIT_SAT_SLOTS = ['하피퀸', '코카킹', '오거킹', '드레킹', '그미노', '타이탄'];
+const TEAM_EDIT_SUNDAY_SLOTS = ['암살', '마령', '마수', '명법', '기란성혈레열쇠', '아덴성혈레열쇠', '켄성혈레열쇠'];
+
+async function loadTeamEditTable() {
+    const server = document.getElementById('team-edit-server-select').value;
+    const weekStartStr = formatLocalDate(getWeekStartSun(new Date()));
+    const tableEl = document.getElementById('team-edit-table');
+    tableEl.innerHTML = '<p style="color:#95a5a6;">불러오는 중...</p>';
+
+    let data = {};
+    try {
+        const snap = await db.ref(`oman_team_assignments/${weekStartStr}/${server}`).once('value');
+        data = snap.val() || {};
+    } catch (err) {
+        tableEl.innerHTML = `<p style="color:#e74c3c;">불러오기 실패: ${err.message}</p>`;
+        return;
+    }
+
+    const dayNames = ['월', '화', '수', '목', '금'];
+    let html = '';
+
+    dayNames.forEach(day => {
+        html += `<div style="font-weight:bold; margin:10px 0 4px; color:#2980b9;">${day}요일</div>`;
+        TEAM_EDIT_DAY_SLOTS.forEach(slot => {
+            html += buildTeamEditRow(day, slot, (data[day] || {})[slot] || '');
+        });
+    });
+
+    html += `<div style="font-weight:bold; margin:14px 0 4px; color:#2980b9;">에스카로스</div>`;
+    TEAM_EDIT_ESCA_SLOTS.forEach(slot => {
+        html += buildTeamEditRow('에스카로스', slot, (data['에스카로스'] || {})[slot] || '');
+    });
+
+    html += `<div style="font-weight:bold; margin:14px 0 4px; color:#2980b9;">토요일</div>`;
+    TEAM_EDIT_SAT_SLOTS.forEach(slot => {
+        html += buildTeamEditRow('토요일', slot, (data['토요일'] || {})[slot] || '');
+    });
+
+    html += `<div style="font-weight:bold; margin:14px 0 4px; color:#2980b9;">개미산란장</div>`;
+    html += buildTeamEditRow('개미산란장', '담당', (data['개미산란장'] || {})['담당'] || '');
+
+    html += `<div style="font-weight:bold; margin:14px 0 4px; color:#2980b9;">일요일 텍스트</div>`;
+    TEAM_EDIT_SUNDAY_SLOTS.forEach(slot => {
+        html += buildTeamEditRow('일요일텍스트', slot, (data['일요일텍스트'] || {})[slot] || '');
+    });
+
+    tableEl.innerHTML = html;
+}
+
+function buildTeamEditRow(group, slot, current) {
+    const inputId = ('team-edit-input-' + group + '-' + slot).replace(/[^가-힣a-zA-Z0-9\-]/g, '_');
+    return `
+        <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; border-bottom:1px solid #f0f0f0;">
+            <span style="flex:1; font-size:0.85rem; color:#2c3e50;">${slot}</span>
+            <input type="text" id="${inputId}" value="${current}" placeholder="미배정"
+                style="width:90px; margin-bottom:0; padding:5px 8px; font-size:0.85rem;">
+            <button class="btn btn-primary" style="width:auto; margin:0; padding:5px 10px; font-size:0.8rem;"
+                onclick="saveTeamEditSlot('${group}','${slot}','${inputId}')">저장</button>
+        </div>
+    `;
+}
+
+async function saveTeamEditSlot(group, slot, inputId) {
+    const val = document.getElementById(inputId).value.trim();
+    const server = document.getElementById('team-edit-server-select').value;
+    const weekStartStr = formatLocalDate(getWeekStartSun(new Date()));
+    const path = `oman_team_assignments/${weekStartStr}/${server}/${group}/${slot}`;
+    try {
+        await db.ref(path).set(val || null);
+        alert(`저장됐어요: ${group} · ${slot} = ${val || '미배정'}`);
+        // 이 슬롯의 실시간 캐시(있으면)도 갱신해서 화면에 바로 반영
+        if (typeof omanTeamAssignmentCache !== 'undefined' && omanTeamAssignmentCache[server]) {
+            omanTeamAssignmentCache[server][group] = omanTeamAssignmentCache[server][group] || {};
+            omanTeamAssignmentCache[server][group][slot] = val || null;
+            if (typeof renderTodaySchedules === 'function') renderTodaySchedules();
+        }
+    } catch (err) {
+        alert('저장 실패: ' + err.message);
+    }
 }

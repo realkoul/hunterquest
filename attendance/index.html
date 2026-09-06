@@ -488,6 +488,28 @@
             </div>
         </div>
 
+        <!-- 🔧 담당 팀 직접 수정 -->
+        <div class="accordion-card" id="acc-team-edit" style="border:2px solid #2980b9;">
+            <div class="accordion-header" onclick="toggleAccordion('acc-team-edit')">
+                <h2>🔧 담당 팀 직접 수정</h2>
+                <span class="accordion-arrow">▼</span>
+            </div>
+            <div class="accordion-body">
+                <p style="color:#7f8c8d; margin:15px 0 15px;">
+                    자동 인식이 잘못됐을 때, 이미지를 다시 올리지 않고 이 자리에서 바로 고칠 수 있어요.
+                </p>
+                <div style="display:flex; gap:8px; margin-bottom:12px;">
+                    <select id="team-edit-server-select" class="input-text" style="margin-bottom:0;" onchange="loadTeamEditTable()">
+                        <option value="jingir">진기르</option>
+                        <option value="pandora">판도라</option>
+                        <option value="support">지원</option>
+                    </select>
+                    <button class="btn btn-secondary" onclick="loadTeamEditTable()" style="width:auto; padding:10px 16px;">🔄 불러오기</button>
+                </div>
+                <div id="team-edit-table" style="max-height:500px; overflow-y:auto;"></div>
+            </div>
+        </div>
+
         <!-- 🧪 테스트 모드 -->
         <div class="accordion-card" id="acc-testmode" style="border:2px solid #9b59b6;">
             <div class="accordion-header" onclick="toggleAccordion('acc-testmode')">
