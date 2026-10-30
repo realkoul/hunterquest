@@ -64,6 +64,7 @@ const state = {
     stQuery: '', stCat: { type: '', job: '' }, stSort: 'recent', stShow: 40, stPanel: false,      // 보관함 검색 / 종류·직업 분류 / 정렬 / 한 번에 보여줄 개수
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
+    backupStatus: null, backupCool: 0,                                                                  // 구글시트 백업 상태(Apps Script 가 기록) / 연속 요청 방지
     supportTeam: [], calcSupportPct: 50                                                                  // 지원조 명단(userId[], 관리자만 설정) / 지원조 몫(%)
 };
 
@@ -139,10 +140,13 @@ function buildRoot() {
                 <h2 style="font-size:1.05rem; margin:0;">📊 정산</h2>
                 <div id="settle-calc-actions" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
             </div>
-            <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 8px;">판매가 끝난 아이템의 낙찰액을 합산해 선택한 인원에게 균등 배분합니다. 한 번 정산한 아이템은 다시 합산되지 않습니다.</p>
+            <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 8px;">판매가 끝난 아이템의 낙찰액을 합산해 선택한 인원에게 배분합니다. (균등 · 지원조 비율 · 서버별 비율, 특정인 금액 직접 지정 가능) 한 번 정산한 아이템은 다시 합산되지 않습니다.</p>
             <div id="settle-calc-area"></div>
             <div id="settle-history-area"></div>
         </div>
+
+        <!-- 구글시트 자동 백업 (관리자) -->
+        <div class="card" id="settle-backup-card" style="display:none;"></div>
     </div>
 
     <div id="settle-pane-reimb" style="display:none;"></div>`;
@@ -203,6 +207,7 @@ function onModeChange() {
 function refreshAll() {
     renderStorage();
     renderCalcActions();
+    renderBackupCard();
     if (state.stFilter === 'undelivered' && (!state.undelivLoaded || state.undelivStale) && !state.undelivLoading) loadUndelivered();
 }
 
@@ -239,7 +244,7 @@ function ensureSupportTeam() {
         if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
     });
 }
-function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureStorage(); }
+function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureBackupStatus(); ensureStorage(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -1140,15 +1145,15 @@ const NONE_CAT = '__none';
 const CAT_SETS = [['type', '종류'], ['job', '직업']];
 const DEFAULT_CATS = {
     type: [
+        { name: '주문서', keywords: ['주문서', '스크롤'] },
         { name: '반지', keywords: ['반지'] },
         { name: '목걸이', keywords: ['목걸이'] },
         { name: '귀걸이', keywords: ['귀걸이'] },
-        { name: '방어구', keywords: ['투구', '갑옷', '망토', '장갑', '각반', '부츠', '장화', '방패', '티셔츠', '허리띠', '벨트','가더'] },
-        { name: '무기', keywords: ['단검','한손검','양손검','지팡이','활','창','도끼','이도류','크로우','건틀렛','라이플','핸드캐넌','체인소드','사이드','룬소드'] },
+        { name: '방어구', keywords: ['투구', '갑옷', '망토', '장갑', '각반', '부츠', '장화', '방패', '티셔츠', '허리띠', '벨트'] },
+        { name: '무기', keywords: ['지팡이', '크로우', '석궁', '단검', '키링크', '체인소드', '이도류', '도끼', '양손검', '한손검'] },
         { name: '마법인형', keywords: ['마법인형', '카드'] },
-        { name: '영웅제작비법서', keywords: ['영비'] },
-        { name: '전설제작비법서', keywords: ['전비'] },
-        { name: '스킬북', keywords: ['스킬북'] }
+        { name: '비법서', keywords: ['비법서', '제작'] },
+        { name: '스킬북', keywords: ['스킬북', '마법서', '기술서'] }
     ],
     job: [
         { name: '군주', keywords: ['군주'] },
@@ -1156,14 +1161,10 @@ const DEFAULT_CATS = {
         { name: '요정', keywords: ['요정'] },
         { name: '법사', keywords: ['법사', '마법사'] },
         { name: '다크엘프', keywords: ['다크엘프', '다엘'] },
-        { name: '총사', keywords: ['총사'] },
-        { name: '투사', keywords: ['투사'] },
-        { name: '암흑기사', keywords: ['암흑기사','암기'] },
-        { name: '신성검사', keywords: ['신성검사','신검'] },
-        { name: '광전사', keywords: ['광전사','광전'] },
-        { name: '사신', keywords: ['사신'] },
-        { name: '뇌신', keywords: ['뇌신'] },
-        { name: '마검사', keywords: ['마검사','마검'] }
+        { name: '용기사', keywords: ['용기사'] },
+        { name: '환술사', keywords: ['환술사'] },
+        { name: '전사', keywords: ['전사'] },
+        { name: '검사', keywords: ['검사'] }
     ]
 };
 const normKey = (t) => String(t || '').replace(/\s+/g, '').toLowerCase();
@@ -1741,6 +1742,112 @@ async function saveSupportTeam() {
         closeModal();
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
+
+// ============================================================
+// ☁️ 구글시트 자동 백업 — 상태 확인 / 지금 백업 (관리자)
+//   백업 자체는 구글 Apps Script 가 매주 수요일 오전 6시에 알아서 실행하고(사이트를 열지 않아도 됨),
+//   결과를 hunter_config/backupStatus 에 기록합니다. 여기서는 그 상태를 보여주고, [지금 백업]으로 바로 실행을 요청합니다.
+// ============================================================
+const BK_URL = 'settleBackupUrl', BK_KEY = 'settleBackupKey';
+function backupCfg() {
+    try { return { url: localStorage.getItem(BK_URL) || '', key: localStorage.getItem(BK_KEY) || '' }; }
+    catch (e) { return { url: '', key: '' }; }
+}
+let backupOn = false;
+function ensureBackupStatus() {
+    if (backupOn || !depsOk()) return;
+    backupOn = true;
+    db.ref('hunter_config/backupStatus').on('value', snap => {
+        const v = snap.val();
+        state.backupStatus = v && typeof v === 'object' ? v : null;
+        renderBackupCard();
+    });
+}
+const BK_SRC = { trigger: '자동 실행', manual: '직접 실행', web: '사이트에서 요청', setup: '처음 설정' };
+function renderBackupCard() {
+    const box = $('settle-backup-card');
+    if (!box) return;
+    if (!isAdmin) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    const st = state.backupStatus, cfg = backupCfg();
+    const when = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('ko-KR'); };
+    let line, tone = '#7f8c8d';
+    if (!st) {
+        line = '아직 백업 기록이 없습니다. 구글 Apps Script를 설치하면 매주 수요일 오전 6시에 복구비·아이템·정산이 시트에 자동으로 정리됩니다. (설치 방법: 설치방법.md)';
+    } else if (st.ok) {
+        const rows = st.rows || {};
+        const link = /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+/.test(String(st.sheetUrl || ''))
+            ? ` <a href="${esc(st.sheetUrl)}" target="_blank" rel="noopener noreferrer" style="color:#2980b9; font-weight:bold; white-space:nowrap;">📄 시트 열기</a>` : '';
+        const days = Math.floor((Date.now() - new Date(st.at).getTime()) / 86400000);
+        line = `✅ 마지막 백업 <b>${esc(when(st.at))}</b> (${esc(BK_SRC[st.source] || '')}) · ${st.mode === 'all' ? '전체 기간' : '최근 ' + (Number(st.weeks) || 0) + '주'} · 복구비 ${fmt(rows.reimb)}행 · 아이템 ${fmt(rows.items)}개 · 정산 ${fmt(rows.settle)}건${link}`;
+        if (days >= 9) line += `<div style="color:#d35400; margin-top:4px;">⚠️ 마지막 백업이 ${days}일 전입니다. 매주 자동 실행이 멈추지 않았는지 확인하세요. (Apps Script → 트리거)</div>`;
+        tone = '#27ae60';
+    } else {
+        line = `❌ 마지막 시도 <b>${esc(when(st.at))}</b> 실패: ${esc(String(st.error || '알 수 없는 오류').slice(0, 300))}`;
+        tone = '#c0392b';
+    }
+    box.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+            <h2 style="font-size:1.05rem; margin:0;">☁️ 구글시트 자동 백업</h2>
+            <div style="display:flex; gap:6px;">${actBtn('📤 지금 백업', 'Settle.backupNowRequest()', '#27ae60')}${actBtn('⚙️ 설정', 'Settle.openBackupSettings()', '#8e44ad')}</div>
+        </div>
+        <div style="font-size:0.85rem; line-height:1.6; color:${tone};">${line}</div>
+        <p style="font-size:0.76rem; color:#95a5a6; margin:8px 0 0; line-height:1.5;">매주 수요일 오전 6시에 복구비·아이템 드랍/판매·정산이 주 단위로 정리됩니다. 확정·지급·판매 같은 상태는 나중에 바뀌므로 최근 4주를 매번 다시 정리합니다.${cfg.url && cfg.key ? '' : ' [지금 백업] 버튼은 ⚙️ 설정에서 웹 앱 주소와 키를 한 번 입력하면 쓸 수 있습니다.'}</p>`;
+}
+async function openBackupSettings() {
+    if (!(await requireAdmin())) return;
+    const cfg = backupCfg();
+    const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
+    showModal(`
+        <h3 style="margin:0 0 4px; color:#2c3e50;">⚙️ 구글시트 백업 설정</h3>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.5;">[지금 백업] 버튼에만 필요합니다. (자동 백업은 이 설정 없이도 구글에서 매주 실행됩니다) 이 기기의 브라우저에만 저장되며, 다른 기기에서도 쓰려면 각각 입력하세요.</p>
+        <label style="${lab}">웹 앱 주소 (Apps Script 배포 URL)</label>
+        <input type="text" id="settle-bk-url" value="${esc(cfg.url)}" placeholder="https://script.google.com/macros/s/.../exec" style="${inputStyle}">
+        <label style="${lab}">백업 키</label>
+        <input type="text" id="settle-bk-key" value="${esc(cfg.key)}" placeholder="Apps Script 에서 setup 실행 시 로그에 표시된 키" autocomplete="off" style="${inputStyle}">
+        <div style="display:flex; gap:8px; margin-top:14px;">
+            ${actBtn('저장', 'Settle.saveBackupSettings()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('삭제', 'Settle.clearBackupSettings()', '#7f8c8d').replace('padding:6px 11px', 'padding:11px')}
+            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'padding:11px')}
+        </div>`);
+}
+async function saveBackupSettings() {
+    const url = ($('settle-bk-url').value || '').trim(), key = ($('settle-bk-key').value || '').trim();
+    if (!url) { alert('웹 앱 주소를 입력하세요.'); return; }
+    if (url.indexOf('https://script.google.com/') !== 0) { alert('Apps Script 웹 앱 주소가 아닙니다. (https://script.google.com/ 으로 시작해야 합니다)'); return; }
+    if (!/\/exec$/.test(url)) { alert('주소는 /exec 로 끝나야 합니다. (배포 → 웹 앱 URL)'); return; }
+    if (key.length < 8 || /\s/.test(key)) { alert('백업 키를 확인하세요. (공백 없이 8자 이상)'); return; }
+    if (!(await requireAdmin())) return;
+    try { localStorage.setItem(BK_URL, url); localStorage.setItem(BK_KEY, key); }
+    catch (e) { alert('❌ 이 브라우저에는 설정을 저장할 수 없습니다.'); return; }
+    closeModal();
+    renderBackupCard();
+}
+async function clearBackupSettings() {
+    if (!(await requireAdmin())) return;
+    try { localStorage.removeItem(BK_URL); localStorage.removeItem(BK_KEY); } catch (e) { /* 무시 */ }
+    closeModal();
+    renderBackupCard();
+}
+async function backupNowRequest() {
+    if (!(await requireAdmin())) return;
+    const cfg = backupCfg();
+    if (!cfg.url || !cfg.key) {
+        alert('먼저 ⚙️ 설정에서 웹 앱 주소와 백업 키를 입력해 주세요.\n(자동 백업은 설정 없이도 매주 실행됩니다. 이 버튼은 지금 바로 백업하고 싶을 때만 필요합니다)');
+        openBackupSettings();
+        return;
+    }
+    if (Date.now() < state.backupCool) { alert('방금 백업을 요청했습니다. 1~2분 뒤에 상태가 바뀝니다.'); return; }
+    if (!confirm('지금 구글시트로 백업할까요?\n최근 4주의 복구비·아이템·정산을 다시 정리합니다. (1~2분 걸립니다)')) return;
+    try {
+        await fetch(cfg.url, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, mode: 'no-cors', body: JSON.stringify({ action: 'backup', key: cfg.key }) });
+        state.backupCool = Date.now() + 15000;
+        alert('✅ 백업 요청을 보냈습니다.\n보통 1~2분 안에 끝나며, 이 카드의 "마지막 백업" 시각이 바뀌면 완료된 것입니다.');
+    } catch (e) {
+        alert('❌ 요청을 보내지 못했습니다: ' + e.message + '\n주소와 인터넷 연결을 확인해 주세요.');
+    }
+}
+
 
 
 // ============================================================
@@ -3172,7 +3279,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
