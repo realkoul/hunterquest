@@ -59,7 +59,8 @@ const state = {
     managers: [],                 // 담당자 userId[]
     storage: [], stFilter: 'all', stServer: '',
     drops: [], dropKey: '', dropRef: null, bossItems: [],
-    settlements: [], recipients: new Set(), calcItemIds: []
+    settlements: [], recipients: new Set(), calcItemIds: [],
+    calcMode: 'equal', calcRatios: { jingir: 0, pandora: 0, support: 0, other: 0 }, calcFixed: {}      // 정산 계산: 분배 방식 / 서버별 비율(%) / 직접 지정 금액
 };
 
 function depsOk() {
@@ -1332,14 +1333,71 @@ function calcItems() {
     return { items: items, total: items.reduce((s, i) => s + (Number(i.bidPrice) || 0), 0) };
 }
 // 총액을 n명에게 나누고 남는 금액은 이름순 앞 사람부터 1씩 (인원 간 차이는 최대 1)
-function distribute(total, recipients) {
-    const list = recipients.slice().sort((a, b) => koCmp(a.name, b.name));
-    const n = list.length;
-    if (!n) return [];
-    const base = Math.floor(total / n);
-    let rem = total - base * n;
-    return list.map(u => ({ userId: Number(u.id), name: u.name, server: u.server || '', amount: base + (rem-- > 0 ? 1 : 0) }));
+// ── 정산 분배 계산 ──────────────────────────────────────────
+// 1) 직접 지정한 금액(특정인에게 주는 금액)을 총액에서 먼저 뺌
+// 2) 남은 금액을 방식대로 분배: 균등 / 서버별 비율(조건 = 서버, 비율 = %, 각 서버 몫 안에서는 균등)
+// 3) 받을 사람이 없는 서버의 몫은 "미배분"(혈 귀속)으로 따로 표시. 정수(다이아) 단위, 남는 1은 이름순 앞사람부터
+const RATIO_GROUPS = [['jingir', '진기르'], ['pandora', '판도라'], ['support', '지원'], ['other', '서버 없음']];
+const groupOf = (u) => (SERVERS[u.server] ? u.server : 'other');
+const sumOf = (arr) => arr.reduce((a, b) => a + b, 0);
+
+function computeSplit(total, recips, mode, ratios, fixed) {
+    const warnings = [], errors = [];
+    const rows = recips.slice().sort((a, b) => koCmp(a.name, b.name))
+        .map(u => ({ userId: Number(u.id), name: u.name, server: u.server || '', group: groupOf(u), amount: 0, fixed: false }));
+    let fixedSum = 0;
+    rows.forEach(r => {
+        const f = fixed ? fixed[r.userId] : undefined;
+        if (f !== undefined && f !== null && f !== '' && !isNaN(Number(f))) { r.fixed = true; r.amount = Math.max(0, Math.floor(Number(f))); fixedSum += r.amount; }
+    });
+    const ratioSum = sumOf(RATIO_GROUPS.map(([g]) => Number(ratios && ratios[g]) || 0));
+    let pool = total - fixedSum, unallocated = 0;
+    if (!rows.length) errors.push('정산 대상자를 1명 이상 선택하세요.');
+    if (pool < 0) { errors.push(`직접 지정한 금액 합계(${fmt(fixedSum)})가 총액(${fmt(total)})보다 큽니다.`); pool = 0; }
+    const auto = rows.filter(r => !r.fixed);
+    if (rows.length && !auto.length) {
+        unallocated = pool;
+        if (pool > 0) warnings.push(`전원 금액을 직접 지정해서 남은 ${fmt(pool)} ${UNIT}은 배분되지 않습니다. (미배분)`);
+    } else if (auto.length && mode !== 'ratio') {
+        const base = Math.floor(pool / auto.length);
+        let rem = pool - base * auto.length;
+        auto.forEach(r => { r.amount = base + (rem-- > 0 ? 1 : 0); });
+    } else if (auto.length) {
+        if (Math.abs(ratioSum - 100) > 0.01) errors.push(`서버별 비율의 합계가 ${Math.round(ratioSum * 100) / 100}%입니다. 100%로 맞춰주세요.`);
+        const gs = RATIO_GROUPS.map(([g]) => g);
+        const exact = gs.map(g => pool * (Number(ratios[g]) || 0) / 100);
+        const pools = exact.map(Math.floor);
+        let left = pool - sumOf(pools);                                      // 소수점 정리: 소수 부분이 큰 서버부터 1씩
+        const order = gs.map((g, i) => ({ i: i, frac: exact[i] - pools[i] })).filter(o => exact[o.i] > 0).sort((a, b) => b.frac - a.frac || a.i - b.i);
+        for (let k = 0; left > 0 && order.length && Math.abs(ratioSum - 100) <= 0.01; k++, left--) pools[order[k % order.length].i]++;
+        gs.forEach((g, gi) => {
+            const members = auto.filter(r => r.group === g);
+            const share = pools[gi];
+            if (!members.length) {
+                if (share > 0) {
+                    unallocated += share;
+                    warnings.push(`${RATIO_GROUPS[gi][1]} 몫 ${fmt(share)} ${UNIT}은 받을 사람이 없어 미배분입니다.`);
+                }
+                return;
+            }
+            const base = Math.floor(share / members.length);
+            let rem = share - base * members.length;
+            members.forEach(r => { r.amount = base + (rem-- > 0 ? 1 : 0); });
+            if (share === 0 && members.length) warnings.push(`${RATIO_GROUPS[gi][1]} ${members.length}명은 비율이 0%라 받는 금액이 없습니다.`);
+        });
+    }
+    const paid = sumOf(rows.map(r => r.amount));
+    return { rows: rows, unallocated: unallocated, fixedSum: fixedSum, pool: pool, ratioSum: ratioSum, warnings: warnings, errors: errors, valid: errors.length === 0, paid: paid, balanced: paid + unallocated === total };
 }
+
+function calcCurrent() {
+    const { items, total } = calcItems();
+    const recips = getUsers().filter(u => state.recipients.has(Number(u.id)));
+    return Object.assign({ items: items, total: total, recips: recips }, computeSplit(total, recips, state.calcMode, state.calcRatios, state.calcFixed));
+}
+const calcModeText = (mode, ratios) => mode === 'ratio'
+    ? '서버별 비율 (' + RATIO_GROUPS.filter(([g]) => Number((ratios || {})[g]) > 0).map(([g, n]) => n + ' ' + (Math.round(Number(ratios[g]) * 100) / 100) + '%').join(' · ') + ')'
+    : '균등 배분';
 
 function renderCalcActions() {
     const box = $('settle-calc-actions');
@@ -1355,6 +1413,7 @@ function openCalc() {
     if (!items.length) { alert('정산할 아이템이 없습니다.\n(판매 완료 상태이고 아직 정산되지 않은 아이템만 대상입니다)'); return; }
     state.calcItemIds = items.map(i => String(i.id));
     state.recipients = new Set(getUsers().map(u => Number(u.id)));     // 기본: 전원
+    state.calcMode = 'equal'; state.calcRatios = { jingir: 0, pandora: 0, support: 0, other: 0 }; state.calcFixed = {};
     renderCalc();
 }
 function closeCalc() { const b = $('settle-calc-area'); if (b) b.innerHTML = ''; }
@@ -1364,6 +1423,8 @@ function renderCalc() {
     if (!box) return;
     const { items, total } = calcItems();
     const us = getUsers().slice().sort((a, b) => koCmp(a.name, b.name));
+    const showOther = us.some(u => !SERVERS[u.server]);
+    const inp = 'width:70px; margin:0; padding:5px 7px; border:2px solid #ddd; border-radius:6px; font-size:0.85rem; text-align:right; box-sizing:border-box;';
     box.innerHTML = `
     <div style="border:2px solid #27ae60; border-radius:10px; overflow:hidden; margin-bottom:12px;">
         <div style="background:#2c3e50; color:white; padding:10px 14px; display:flex; justify-content:space-between; align-items:center;">
@@ -1374,37 +1435,117 @@ function renderCalc() {
             ${items.map(i => `<div style="display:flex; justify-content:space-between; gap:8px; padding:3px 0; border-bottom:1px dashed #eee;"><span>${esc(i.itemName)}${i.bossVariant ? ' (' + esc(i.bossVariant) + ')' : ''} → ${esc(i.buyer)}</span><b style="color:#2980b9;">${fmt(i.bidPrice)}</b></div>`).join('')}
         </div>
         <div style="padding:0 14px 10px;">
-            <div style="font-size:0.85rem; font-weight:bold; margin:6px 0;">👥 정산 대상자 <span id="settle-rcpt-count" style="color:#27ae60;"></span></div>
+            <div style="font-size:0.85rem; font-weight:bold; margin:6px 0;">⚖️ 분배 방식</div>
+            <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <button id="settle-mode-equal" onclick="Settle.setCalcMode('equal')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;">균등 배분</button>
+                <button id="settle-mode-ratio" onclick="Settle.setCalcMode('ratio')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;">서버별 비율</button>
+            </div>
+            <div id="settle-ratio-box" style="display:none; background:#f8f9fa; border-radius:8px; padding:8px 10px; margin-bottom:6px;">
+                <div style="font-size:0.78rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">서버마다 몫(%)을 정하면, 각 서버 몫을 그 서버 대상자끼리 균등하게 나눕니다.</div>
+                ${RATIO_GROUPS.filter(([g]) => g !== 'other' || showOther).map(([g, n]) => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:3px 0; font-size:0.85rem;"><span>${n}</span><span><input type="number" id="settle-ratio-${g}" min="0" max="100" step="0.5" value="${Number(state.calcRatios[g]) || 0}" oninput="Settle.setRatio('${g}', this.value)" style="${inp}"> %</span></div>`).join('')}
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:0.82rem;"><span id="settle-ratio-sum"></span>${actBtn('대상 인원 비례로 채우기', 'Settle.fillRatioByHeadcount()', '#5D6D7E')}</div>
+            </div>
+            <div style="font-size:0.85rem; font-weight:bold; margin:8px 0 6px;">👥 정산 대상자 <span id="settle-rcpt-count" style="color:#27ae60;"></span></div>
+            <div style="font-size:0.76rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">오른쪽 칸에 금액을 입력하면 그 사람에게는 <b>그 금액</b>을 줍니다. (직접 지정한 금액을 먼저 빼고 남은 금액을 위 방식으로 나눕니다. 비워두면 자동)</div>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
                 ${actBtn('전체 선택', 'Settle.setRecipientsAll(true)', '#5D6D7E')}
                 ${actBtn('전체 해제', 'Settle.setRecipientsAll(false)', '#95a5a6')}
                 ${Object.keys(SERVERS).map(k => actBtn(SERVERS[k].name + '만', `Settle.setRecipientsServer('${k}')`, SERVERS[k].color)).join('')}
             </div>
-            <div id="settle-rcpt-list" style="max-height:200px; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
-                ${us.map(u => `<label style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-bottom:1px solid #f5f5f5; cursor:pointer;">
-                    <input type="checkbox" style="${cbStyle}" data-uid="${Number(u.id)}" ${state.recipients.has(Number(u.id)) ? 'checked' : ''} onchange="Settle.toggleRecipient(${Number(u.id)}, this.checked)"> ${esc(u.name)}${serverBadge(u.server)}</label>`).join('')}
+            <div id="settle-rcpt-list" style="max-height:240px; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
+                ${us.map(u => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 10px; border-bottom:1px solid #f5f5f5;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; flex:1; min-width:0;">
+                        <input type="checkbox" style="${cbStyle}" data-uid="${Number(u.id)}" ${state.recipients.has(Number(u.id)) ? 'checked' : ''} onchange="Settle.toggleRecipient(${Number(u.id)}, this.checked)"> <span>${esc(u.name)}${serverBadge(u.server)}</span></label>
+                    <input type="number" data-fix="${Number(u.id)}" min="0" step="1" oninput="Settle.setFixed(${Number(u.id)}, this.value)" style="${inp} width:96px;" title="이 사람에게 줄 금액을 직접 지정">
+                </div>`).join('')}
             </div>
             <div id="settle-calc-preview" style="margin-top:10px;"></div>
         </div>
         <div style="padding:10px 14px; border-top:1px solid #eee; display:flex; gap:8px;">
-            ${actBtn('💾 정산 확정 저장', 'Settle.saveSettlement()', '#27ae60')}
+            ${actBtn('💾 정산 확정 저장', 'Settle.saveSettlement()', '#27ae60').replace('<button', '<button id="settle-save-btn"')}
             ${actBtn('닫기', 'Settle.closeCalc()', '#95a5a6')}
         </div>
     </div>`;
+    renderCalcModeUi();
+    renderCalcPreview();
+}
+
+function renderCalcModeUi() {
+    const on = 'background:#2c3e50; color:white; border:2px solid #2c3e50;', off = 'background:white; color:#2c3e50; border:2px solid #d5d8dc;';
+    const be = $('settle-mode-equal'), br = $('settle-mode-ratio');
+    if (be) be.style.cssText = (state.calcMode === 'equal' ? on : off) + ' flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;';
+    if (br) br.style.cssText = (state.calcMode === 'ratio' ? on : off) + ' flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;';
+    const rb2 = $('settle-ratio-box');
+    if (rb2) rb2.style.display = state.calcMode === 'ratio' ? 'block' : 'none';
+    RATIO_GROUPS.forEach(([g]) => { const el = $('settle-ratio-' + g); if (el && document.activeElement !== el) el.value = Number(state.calcRatios[g]) || 0; });
+}
+function setCalcMode(m) {
+    state.calcMode = m === 'ratio' ? 'ratio' : 'equal';
+    if (state.calcMode === 'ratio' && RATIO_GROUPS.every(([g]) => !Number(state.calcRatios[g]))) fillRatioByHeadcount();
+    renderCalcModeUi();
+    renderCalcPreview();
+}
+function fillRatioByHeadcount() {                              // 선택된 대상자 수에 비례 (결과는 균등 배분과 같아짐) → 여기서 숫자만 고쳐 쓰면 됨
+    const recips = getUsers().filter(u => state.recipients.has(Number(u.id)));
+    const n = recips.length;
+    if (!n) return;
+    const cnt = {}; RATIO_GROUPS.forEach(([g]) => { cnt[g] = recips.filter(u => groupOf(u) === g).length; });
+    const pct = {}; let used = 0, big = 'jingir';
+    RATIO_GROUPS.forEach(([g]) => { pct[g] = Math.floor(cnt[g] / n * 1000) / 10; used += pct[g]; if (cnt[g] > cnt[big]) big = g; });
+    pct[big] = Math.round((pct[big] + (100 - used)) * 10) / 10;       // 합계가 정확히 100이 되도록 가장 큰 서버에 맞춤
+    state.calcRatios = pct;
+    renderCalcModeUi();
+    renderCalcPreview();
+}
+function setRatio(g, v) {
+    state.calcRatios[g] = (v === '' || v === null) ? 0 : Math.max(0, Number(v) || 0);
+    renderCalcPreview();
+}
+function setFixed(uid, v) {
+    if (v === '' || v === null || v === undefined) delete state.calcFixed[Number(uid)];
+    else state.calcFixed[Number(uid)] = Math.max(0, Math.floor(Number(v) || 0));
     renderCalcPreview();
 }
 
 function renderCalcPreview() {
     const el = $('settle-calc-preview'), cnt = $('settle-rcpt-count');
     if (!el) return;
-    const { total } = calcItems();
-    const recips = getUsers().filter(u => state.recipients.has(Number(u.id)));
-    if (cnt) cnt.textContent = '(' + recips.length + '명 선택)';
-    if (!recips.length) { el.innerHTML = '<div style="color:#c0392b; font-size:0.85rem;">대상자를 1명 이상 선택하세요.</div>'; return; }
-    const base = Math.floor(total / recips.length), rem = total - base * recips.length;
-    el.innerHTML = `<div style="background:#f0fff4; border:1px solid #a9dfbf; border-radius:8px; padding:10px 12px; font-size:0.88rem;">
-        1인당 <b style="color:#27ae60;">${fmt(base)} ${UNIT}</b>
-        ${rem ? `<span style="color:#7f8c8d; font-size:0.8rem;"> (남는 ${rem} ${UNIT}은 이름순 앞 ${rem}명에게 1씩)</span>` : ''}
+    const c = calcCurrent();
+    if (cnt) cnt.textContent = '(' + c.recips.length + '명 선택)';
+    // 대상자가 아닌 사람의 직접 지정은 버리고, 행마다 "자동 금액"을 입력칸 안내문구로 표시
+    const byId = {}; c.rows.forEach(r => { byId[r.userId] = r; });
+    document.querySelectorAll('#settle-rcpt-list input[data-fix]').forEach(i => {
+        const uid = Number(i.dataset.fix), r = byId[uid];
+        if (!r) { delete state.calcFixed[uid]; i.value = ''; i.disabled = true; i.placeholder = '-'; i.style.borderColor = '#ddd'; return; }
+        i.disabled = false;
+        i.placeholder = r.fixed ? '' : '자동 ' + fmt(r.amount);
+        i.style.borderColor = r.fixed ? '#e67e22' : '#ddd';
+        if (document.activeElement !== i) i.value = r.fixed ? String(r.amount) : '';     // 입력 중이 아닐 때는 칸 표시를 실제 계산과 항상 일치시킴
+    });
+    RATIO_GROUPS.forEach(([g]) => { const el = $('settle-ratio-' + g); if (el && document.activeElement !== el) el.value = Number(state.calcRatios[g]) || 0; });
+    const sumEl = $('settle-ratio-sum');
+    if (sumEl) {
+        const okSum = Math.abs(c.ratioSum - 100) <= 0.01;
+        sumEl.innerHTML = `합계 <b style="color:${okSum ? '#27ae60' : '#c0392b'};">${Math.round(c.ratioSum * 100) / 100}%</b> ${okSum ? '✓' : '(100%로 맞춰주세요)'}`;
+    }
+    const sb = $('settle-save-btn');
+    if (sb) { sb.disabled = !c.valid; sb.style.opacity = c.valid ? '' : '0.45'; }
+    if (!c.recips.length) { el.innerHTML = '<div style="color:#c0392b; font-size:0.85rem;">대상자를 1명 이상 선택하세요.</div>'; return; }
+    const auto = c.rows.filter(r => !r.fixed);
+    let line;
+    if (!auto.length) line = '직접 지정한 금액만 지급합니다.';
+    else if (state.calcMode !== 'ratio') {
+        const base = Math.floor(c.pool / auto.length), rem = c.pool - base * auto.length;
+        line = `1인당 <b style="color:#27ae60;">${fmt(base)} ${UNIT}</b>${rem ? `<span style="color:#7f8c8d; font-size:0.8rem;"> (남는 ${rem} ${UNIT}은 이름순 앞 ${rem}명에게 1씩)</span>` : ''}${c.fixedSum ? ` <span style="color:#7f8c8d; font-size:0.8rem;">· 자동 분배 ${auto.length}명</span>` : ''}`;
+    } else {
+        const amts = auto.map(r => r.amount);
+        line = `자동 분배 ${auto.length}명: 1인당 <b style="color:#27ae60;">${fmt(Math.min.apply(null, amts))}${Math.min.apply(null, amts) !== Math.max.apply(null, amts) ? ' ~ ' + fmt(Math.max.apply(null, amts)) : ''} ${UNIT}</b>`;
+    }
+    el.innerHTML = `<div style="background:#f0fff4; border:1px solid #a9dfbf; border-radius:8px; padding:10px 12px; font-size:0.88rem; line-height:1.6;">
+        <div>${line}</div>
+        <div style="font-size:0.8rem; color:#555; margin-top:2px;">총액 <b>${fmt(c.total)}</b> = 직접 지정 <b style="color:#e67e22;">${fmt(c.fixedSum)}</b> + 자동 분배 <b>${fmt(c.paid - c.fixedSum)}</b> + 미배분 <b style="color:${c.unallocated ? '#c0392b' : '#555'};">${fmt(c.unallocated)}</b></div>
+        ${c.errors.map(m => `<div style="color:#c0392b; font-size:0.8rem; margin-top:3px;">⛔ ${esc(m)}</div>`).join('')}
+        ${c.warnings.map(m => `<div style="color:#d35400; font-size:0.8rem; margin-top:3px;">⚠️ ${esc(m)}</div>`).join('')}
     </div>`;
 }
 
@@ -1427,12 +1568,16 @@ function setRecipientsServer(sv) {
 
 async function saveSettlement() {
     if (!(await requireManage())) return;
-    const { items, total } = calcItems();
+    const c = calcCurrent();
+    const items = c.items, total = c.total;
     if (!items.length) { alert('정산할 아이템이 없습니다. (이미 정산되었을 수 있습니다)'); return; }
-    const recips = getUsers().filter(u => state.recipients.has(Number(u.id)));
-    if (!recips.length) { alert('정산 대상자를 1명 이상 선택하세요.'); return; }
-    const dist = distribute(total, recips);
-    if (!confirm(`아이템 ${items.length}개, 총 ${fmt(total)} ${UNIT}을(를) ${dist.length}명에게 배분하고 정산을 확정할까요?\n(확정 후에는 같은 아이템이 다시 정산되지 않습니다)`)) return;
+    if (!c.recips.length) { alert('정산 대상자를 1명 이상 선택하세요.'); return; }
+    if (c.errors.length) { alert(c.errors[0]); return; }
+    if (!c.balanced) { alert('금액 계산이 맞지 않습니다. (배분 합계 ' + fmt(c.paid) + ' + 미배분 ' + fmt(c.unallocated) + ' ≠ 총액 ' + fmt(total) + ')\n분배 설정을 확인하세요.'); return; }
+    const dist = c.rows;
+    const fixedN = dist.filter(d => d.fixed).length;
+    if (c.unallocated > 0 && !confirm(`미배분 금액이 ${fmt(c.unallocated)} ${UNIT} 있습니다. (받을 사람이 없는 몫)\n이 금액은 누구에게도 지급되지 않습니다. 그대로 저장할까요?`)) return;
+    if (!confirm(`아이템 ${items.length}개, 총 ${fmt(total)} ${UNIT}을(를) ${dist.length}명에게 배분하고 정산을 확정할까요?\n방식: ${calcModeText(state.calcMode, state.calcRatios)}${fixedN ? ' · 직접 지정 ' + fixedN + '명' : ''}\n(확정 후에는 같은 아이템이 다시 정산되지 않습니다)`)) return;
 
     try {
         // 다른 사람이 먼저 정산했는지 서버 값으로 재확인
@@ -1441,12 +1586,19 @@ async function saveSettlement() {
 
         const sidv = 'S' + Date.now();
         const recMap = {};
-        dist.forEach(d => { recMap['u' + d.userId] = { userId: d.userId, name: d.name, server: d.server, amount: d.amount, received: false }; });
+        dist.forEach(d => {
+            recMap['u' + d.userId] = { userId: d.userId, name: d.name, server: d.server, amount: d.amount, received: false };
+            if (d.fixed) recMap['u' + d.userId].fixed = true;                       // 운영진이 금액을 직접 지정한 사람
+        });
         const record = {
             id: sidv, createdAt: nowIso(), totalAmount: total, count: dist.length,
+            mode: state.calcMode === 'ratio' ? 'ratio' : 'equal',
             items: items.map(i => ({ id: String(i.id), itemName: i.itemName, bossName: i.bossName, bossServer: i.bossServer || '', bossVariant: i.bossVariant || '', date: i.date, buyer: i.buyer, bidPrice: i.bidPrice })),
             recipients: recMap
         };
+        if (state.calcMode === 'ratio') { record.ratios = {}; RATIO_GROUPS.forEach(([g]) => { record.ratios[g] = Number(state.calcRatios[g]) || 0; }); }
+        if (c.fixedSum) record.fixedTotal = c.fixedSum;
+        if (c.unallocated) record.unallocated = c.unallocated;
         const updates = {};
         updates['boss_settlement/' + sidv] = record;
         items.forEach(i => { updates['boss_storage/' + i.id + '/settledId'] = sidv; });
@@ -1499,6 +1651,7 @@ function renderHistory() {
                     <span style="font-size:0.8rem; color:#7f8c8d;"> 아이템 ${its.length}개 · ${rc.length}명</span></div>
                 <b style="color:#2980b9;">${fmt(r.totalAmount)} ${UNIT}</b>
             </div>
+            <div style="font-size:0.78rem; color:#7f8c8d; margin-top:3px;">분배: ${esc(calcModeText(r.mode, r.ratios))}${rc.filter(x => x.fixed).length ? ' · 직접 지정 ' + rc.filter(x => x.fixed).length + '명' : ''}${Number(r.unallocated) ? ' · <span style="color:#c0392b;">미배분 ' + fmt(r.unallocated) + '</span>' : ''}</div>
             <div id="settle-hist-prog-${rid}" style="font-size:0.78rem; color:#7f8c8d; margin-top:3px;">수령 확인 ${done}/${rc.length}</div>
             <details style="margin-top:6px;">
                 <summary style="cursor:pointer; font-size:0.85rem; color:#2c3e50;">낙찰 아이템 / 대상자 보기</summary>
@@ -1507,7 +1660,7 @@ function renderHistory() {
                 </div>
                 <div style="max-height:220px; overflow-y:auto; border:1px solid #eee; border-radius:6px;">
                     ${rc.map(x => `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 10px; border-bottom:1px solid #f3f3f3; font-size:0.85rem;">
-                        <span>${esc(x.name)}${serverBadge(x.server)}</span>
+                        <span>${esc(x.name)}${serverBadge(x.server)}${x.fixed ? ' <span style="padding:1px 6px; background:#fdebd0; color:#d35400; border-radius:4px; font-size:0.7rem;">직접 지정</span>' : ''}</span>
                         <span style="display:flex; align-items:center; gap:8px;"><b style="color:#27ae60;">${fmt(x.amount)}</b>
                         ${mg ? `<input type="checkbox" style="${cbStyle}" ${x.received ? 'checked' : ''} onchange="Settle.toggleReceived('${rid}', '${sid(x._key)}', this.checked)" title="수령 확인">`
                              : (x.received ? '<span style="color:#27ae60; font-size:0.75rem;">수령</span>' : '')}</span>
@@ -1555,7 +1708,7 @@ const RB_MAX_IMAGES = 3;
 const rb = {
     inited: false, week: '', requests: [], prices: { recovery: 0, blessing: 0 },
     shots: [], shotSeq: 0, ocrQ: Promise.resolve(), workerP: null,
-    uInited: false, userData: {}, userRefs: {},          // 사용자 탭: 최근 3주 데이터
+    uInited: false, userData: {}, userRefs: {}, weekCb: null,          // 사용자 탭: 최근 3주 데이터
     weekRef: null, priceBound: false, imgCache: {}, open: new Set()
 };
 const RB_MAX_PER_KIND = 2;                                   // 복구 사진 2장 · 축복 사진 2장까지
@@ -1648,10 +1801,11 @@ function rbBuildUser() {
         <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 12px; line-height:1.5;">게임의 <b>[호칭 → 호칭 리스트]</b> 화면 사진을 올리면 종류(복구·축복)와 점수(= 사용 횟수)를 자동으로 읽습니다. 운영진이 확정하면 혈에서 비용을 지급합니다.<br>⏰ 주간 호칭 랭킹은 <b>매주 수요일 05시</b>에 초기화되니, 초기화 전에 올려주세요.</p>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
             <label style="font-weight:bold; color:#2c3e50;">주차:</label>
-            <select id="rbu-week" style="width:auto; margin:0; padding:9px 12px; border:2px solid #5D6D7E; border-radius:8px; font-size:0.86rem; font-weight:bold;"></select>
+            <select id="rbu-week" onchange="Settle.rbSubmitState()" style="width:auto; margin:0; padding:9px 12px; border:2px solid #5D6D7E; border-radius:8px; font-size:0.86rem; font-weight:bold;"></select>
         </div>
         <div id="rbu-price-line" style="font-size:0.82rem; color:#7f8c8d; margin-bottom:12px;"></div>
-        <div style="margin-bottom:12px;"><label style="${lab}">신청자</label><select id="rb-user" style="${inputStyle}"></select></div>
+        <div style="margin-bottom:12px;"><label style="${lab}">신청자</label><select id="rb-user" onchange="Settle.rbSubmitState()" style="${inputStyle}"></select></div>
+        <div id="rbu-state" style="display:none; margin:-4px 0 12px; padding:9px 12px; border-radius:8px; font-size:0.84rem; line-height:1.5;"></div>
         <div style="margin-bottom:10px;">
             <label style="${lab}">호칭 화면 사진 <span style="font-weight:normal; color:#7f8c8d;">(복구 2장 · 축복 2장까지)</span></label>
             <p style="font-size:0.76rem; color:#7f8c8d; margin:0 0 8px; line-height:1.5;">"두려움없이"는 복구, "축복의기사"는 축복 화면입니다. 읽은 값이 틀리면 직접 고치세요. 다른 사람 사진이면 내 횟수로 바꿔 입력하세요.</p>
@@ -1700,15 +1854,22 @@ function rbUserOpen() {
     rbRenderUser();
 }
 function rbUserAttach() {
-    rbRecentWeeks(3).forEach(key => {
+    const keys = rbRecentWeeks(3);
+    Object.keys(rb.userRefs).forEach(k => {                  // 새 주가 시작되어 범위를 벗어난 주차는 구독 해제
+        if (keys.includes(k)) return;
+        try { rb.userRefs[k].ref.off('value', rb.userRefs[k].cb); } catch (e) { /* 이미 해제됨 */ }
+        delete rb.userRefs[k]; delete rb.userData[k];
+    });
+    keys.forEach(key => {
         if (rb.userRefs[key]) return;
         const ref = db.ref('boss_reimburse/' + key);
-        rb.userRefs[key] = ref;
-        ref.on('value', snap => {
+        const cb = snap => {
             const data = snap.val() || {};
             rb.userData[key] = Object.values(data).filter(r => r && r.id).map(r => Object.assign({}, r, { _week: key }));
             rbRenderUser();
-        });
+        };
+        rb.userRefs[key] = { ref: ref, cb: cb };
+        ref.on('value', cb);
     });
 }
 function initUserReimb() {                               // 복구비 탭이 열릴 때마다 (app.js 수정 없이 감지)
@@ -1970,17 +2131,18 @@ function rbRemoveShot(id) {
 function rbLoadWeek() {
     rb.week = $('rb-week').value;
     rb.open.clear();
-    if (rb.weekRef) rb.weekRef.off('value');
+    if (rb.weekRef && rb.weekCb) rb.weekRef.off('value', rb.weekCb);      // 내 구독만 해제 (같은 주차를 보는 사용자 탭 구독은 유지)
     const key = rb.week;
     const ref = db.ref('boss_reimburse/' + key);
-    rb.weekRef = ref;
-    ref.on('value', snap => {
+    const cb = snap => {
         if (rb.weekRef !== ref) return;
         const data = snap.val() || {};
         rb.requests = Object.values(data).filter(r => r && r.id).map(r => Object.assign({}, r, { _week: key }))
             .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
         rbRender();
-    });
+    };
+    rb.weekRef = ref; rb.weekCb = cb;
+    ref.on('value', cb);
 }
 
 function rbRenderPriceLine() {
@@ -2002,6 +2164,8 @@ async function rbSubmit() {
     const week = $('rbu-week') ? $('rbu-week').value : rb.week;
     if (!week) { alert('주차를 선택하세요.'); return; }
     if (!user)    { alert('신청자를 선택하세요.'); return; }
+    const localMine = (rb.userData[week] || []).filter(r => Number(r.userId) === Number(user.id));
+    if (localMine.some(r => r.status === 'approved')) { alert(rbLockMsg(user.name)); return; }          // 확정된 주차는 제출 불가
     if (rb.shots.length === 0) { alert('호칭 화면 사진을 1장 이상 올려주세요.'); return; }
     if (rb.shots.some(x => x.status === 'reading' && !x.manual)) { alert('사진을 읽는 중입니다. 잠시 뒤에 다시 눌러주세요. (횟수를 직접 입력해도 됩니다)'); return; }
     for (let i = 0; i < rb.shots.length; i++) {
@@ -2018,13 +2182,18 @@ async function rbSubmit() {
         if (same.length === 2 && same[0].data === same[1].data) { alert(RB_KIND[kind] + ' 사진이 같은 사진으로 두 번 올라갔습니다. 하나를 지워주세요.'); return; }
         if (same.length === 2 && Number(same[0].cnt) === Number(same[1].cnt) && !confirm(RB_KIND[kind] + ' 사진 두 장의 횟수가 같습니다(' + same[0].cnt + '회).\n서로 다른 캐릭터 사진이 맞나요? 합산해서 신청합니다.')) return;
     }
-    // 점수는 한 주 누적값이라, 같은 사람이 같은 주에 두 번 신청하면 이중으로 합산됨 → 한 사람당 한 건
-    let existing = rb.userData[week] || [];
-    try { existing = Object.values((await db.ref('boss_reimburse/' + week).once('value')).val() || {}); } catch (e) { /* 화면에 있는 값으로 확인 */ }
-    if (existing.some(r => r && Number(r.userId) === Number(user.id) && r.status !== 'rejected')) {
-        alert(user.name + '님은 이 주차에 이미 신청이 있습니다.\n횟수를 고치려면 아래 [내 신청 내역]의 [횟수 수정]을 쓰거나, 삭제한 뒤 다시 올려주세요.');
-        return;
-    }
+    // 점수는 한 주 누적값이라 한 사람당 한 건만 유지: 확정 전 신청은 새 내용으로 교체(재신청), 확정되면 불가 — 서버 값으로 확인
+    let existing = localMine;
+    try { existing = Object.values((await db.ref('boss_reimburse/' + week).once('value')).val() || {}).filter(r => r && Number(r.userId) === Number(user.id)); } catch (e) { /* 화면에 있는 값으로 확인 */ }
+    if (existing.some(r => r.status === 'approved')) { alert(rbLockMsg(user.name)); return; }
+    const old = existing;
+    if (old.length && !confirm(`${user.name}님의 이 주차 신청이 이미 있습니다.\n(${old[0].status === 'rejected' ? '반려' : '확인 대기'}: 복구 ${fmt(old[0].recoveryCnt)}회 · 축복 ${fmt(old[0].blessingCnt)}회)\n\n새 내용으로 재신청하면 기존 신청과 증빙 사진은 삭제됩니다. 계속할까요?`)) return;
+    try {
+        for (const o of old) {                                                    // 교체 직전, 그 사이 운영진이 확정하지 않았는지 한 번 더 확인
+            const res = await db.ref('boss_reimburse/' + week + '/' + o.id).transaction(cur => (cur && cur.status === 'approved') ? undefined : cur);
+            if (res && res.committed === false) { alert('방금 운영진이 확정했습니다. ' + rbLockMsg(user.name)); return; }
+        }
+    } catch (e) { alert('❌ 확인 실패: ' + e.message); return; }
 
     const btn = $('rb-submit-btn');
     btn.disabled = true; btn.textContent = '제출 중...';
@@ -2036,18 +2205,21 @@ async function rbSubmit() {
         memo: memo, imgCount: rb.shots.length, status: 'pending', paid: false, by: deviceId(), createdAt: nowIso()
     };
     const updates = {};
+    old.forEach(o => { updates['boss_reimburse/' + week + '/' + o.id] = null; updates['boss_reimburse_img/' + o.id] = null; });
     updates['boss_reimburse/' + week + '/' + id] = req;
     updates['boss_reimburse_img/' + id] = rb.shots.map(x => x.data);
     try {
         await db.ref().update(updates);
+        old.forEach(o => { delete rb.imgCache[o.id]; rb.open.delete(sid(o.id)); });
         rb.shots = [];
         rbRenderShots();
         $('rb-memo').value = '';
-        alert('✅ 제출되었습니다. 운영진 확인 후 확정되면 지급됩니다.');
+        alert(old.length ? '✅ 재신청이 완료되었습니다. 기존 신청이 새 내용으로 바뀌었습니다.' : '✅ 제출되었습니다. 운영진 확인 후 확정되면 지급됩니다.');
     } catch (e) {
         alert('❌ 제출 실패: ' + e.message);
     } finally {
-        btn.disabled = false; btn.textContent = '📤 제출';
+        btn.disabled = false;
+        rbRenderSubmitState();
     }
 }
 
@@ -2121,7 +2293,38 @@ function rbRenderUser() {
     rbRenderPriceLine();
     rbRenderMoney();
     rbRenderMine();
+    rbRenderSubmitState();
 }
+// 신청자·주차에 따라 제출 버튼 상태: 신청 없음 → [제출] / 확정 전 신청 있음 → [재신청] / 확정됨 → 제출 불가
+const rbLockMsg = (name) => name + '님의 이 주차 신청은 이미 확정되어 이번 주는 더 이상 제출할 수 없습니다.';
+function rbRenderSubmitState() {
+    const btn = $('rb-submit-btn'), note = $('rbu-state');
+    if (!btn || !note) return;
+    const lock = (on) => {
+        btn.disabled = on; btn.style.opacity = on ? '0.5' : '';
+        const f = $('rb-files'); if (f) f.disabled = on;
+        const lbl = document.querySelector('label[for="rb-files"]');
+        if (lbl) { lbl.style.opacity = on ? '0.4' : ''; lbl.style.pointerEvents = on ? 'none' : ''; }
+    };
+    const user = userById(parseInt($('rb-user').value));
+    const week = $('rbu-week') ? $('rbu-week').value : '';
+    const mine = (user && week) ? (rb.userData[week] || []).filter(r => Number(r.userId) === Number(user.id)) : [];
+    const done = mine.find(r => r.status === 'approved');
+    if (done) {
+        note.style.cssText = 'display:block; margin:-4px 0 12px; padding:9px 12px; border-radius:8px; font-size:0.84rem; line-height:1.5; background:#eaf2f8; color:#1f618d; border:1px solid #aed6f1;';
+        note.innerHTML = '🔒 ' + esc(rbLockMsg(user.name)) + '<br><span style="font-size:0.78rem;">확정 내용: 복구 ' + fmt(done.recoveryCnt) + '회 · 축복 ' + fmt(done.blessingCnt) + '회</span>';
+        btn.textContent = '🔒 확정됨 — 제출 불가'; lock(true);
+    } else if (mine.length) {
+        const o = mine[0];
+        note.style.cssText = 'display:block; margin:-4px 0 12px; padding:9px 12px; border-radius:8px; font-size:0.84rem; line-height:1.5; background:#fef5e7; color:#a04000; border:1px solid #f5cba7;';
+        note.innerHTML = '🔄 이 주차에 이미 신청이 있습니다 (' + (o.status === 'rejected' ? '반려' : '확인 대기') + ': 복구 ' + fmt(o.recoveryCnt) + '회 · 축복 ' + fmt(o.blessingCnt) + '회).<br><span style="font-size:0.78rem;">다시 제출하면 기존 신청이 새 내용으로 바뀝니다. 확정되기 전까지 몇 번이든 재신청할 수 있습니다.</span>';
+        btn.textContent = '🔄 재신청'; lock(false);
+    } else {
+        note.style.display = 'none'; note.innerHTML = '';
+        btn.textContent = '📤 제출'; lock(false);
+    }
+}
+
 function rbRenderMoney() {
     const el = $('rbu-money');
     if (!el) return;
@@ -2417,9 +2620,9 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, toggleRecipient, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, toggleRecipient, setCalcMode, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
-    rbLoadWeek, rbUserOpen, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
+    rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
 };
 
