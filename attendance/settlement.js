@@ -115,7 +115,7 @@ function closeModal() {
 function buildRoot() {
     const root = $('settle-root');
     root.innerHTML = `
-    <div class="card" style="padding:10px 18px;">
+    <div class="card" id="settle-seg-bar" style="padding:10px 18px;">
         <div style="display:flex; gap:8px;">
             <button id="settle-seg-items" onclick="Settle.showPane('items')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">📦 아이템·정산</button>
             <button id="settle-seg-reimb" onclick="Settle.showPane('reimb')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">💸 복구비 관리</button>
@@ -134,8 +134,8 @@ function buildRoot() {
             <div id="settle-storage-list"></div>
         </div>
 
-        <!-- 정산 -->
-        <div class="card">
+        <!-- 정산 (관리자·담당자만 보임) -->
+        <div class="card" id="settle-calc-card">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:6px;">
                 <h2 style="font-size:1.05rem; margin:0;">📊 정산</h2>
                 <div id="settle-calc-actions" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
@@ -171,11 +171,18 @@ function renderSeg() {
 }
 
 // 하단 [정산] 메뉴는 관리자·담당자에게만 보임 (일반 사용자는 출석 · 복구비 신청 · 내 정보 중심)
+// 하단 [정산] 메뉴는 모두에게 보임. 관리자·담당자는 전체 기능, 일반 사용자는 아이템 보관함만 (낙찰자·낙찰가·정산·복구비 관리·백업은 숨김)
 function updateNav() {
     const n = $('nav-settle');
-    if (n) n.style.display = canManage() ? '' : 'none';
-    const tab = $('tab-settle');
-    if (tab && tab.classList.contains('active') && !canManage() && typeof switchTab === 'function') switchTab('attendance');
+    if (n) n.style.display = '';
+}
+// 권한(관리자·담당자 여부)에 맞게 화면 정리: 일반 사용자에겐 정산 카드·구분 버튼·미전달 칩·낙찰가 정렬을 숨김
+function viewerSync() {
+    const mg = canManage();
+    if (!mg && state.stFilter === 'undelivered') state.stFilter = 'all';
+    if (!mg && state.stSort === 'price') state.stSort = 'recent';
+    const calc = $('settle-calc-card'); if (calc) calc.style.display = mg ? '' : 'none';
+    const bar = $('settle-seg-bar'); if (bar) bar.style.display = isAdmin ? '' : 'none';
 }
 
 // ── 탭 진입/모드 변경 ────────────────────────────────────
@@ -186,12 +193,12 @@ function onOpen() {
         root.innerHTML = '<div class="card"><p style="color:#c0392b;">정산 모듈을 시작할 수 없습니다. app.js 가 먼저 로드되었는지 확인하세요.</p></div>';
         return;
     }
-    if (!canManage()) { if (typeof switchTab === 'function') switchTab('attendance'); return; }   // 정산 탭은 관리자·담당자 전용
     if (!state.inited) {
         buildRoot();
         state.inited = true;
         showPane('items');
     }
+    if (!state.viewerDefaulted && !canManage()) { state.viewerDefaulted = true; state.stFilter = 'pending'; }     // 일반 사용자는 처음에 "보관중"인 아이템부터
     ensureListeners();
     refreshAll();
     renderSeg();
@@ -435,6 +442,7 @@ function syncDropBox(force) {
     dropSig = sig;
     updateNav();
     rbRenderUser();
+    if (state.inited) renderStorage();
     renderDropTargets();
     renderWinnerSelect();
     renderVariantSelect();
@@ -1127,6 +1135,7 @@ async function deleteDrop(k) {
 // 🏪 보관함
 // ============================================================
 function setStorageFilter(f) {
+    if (f === 'undelivered' && !canManage()) f = 'all';                 // 미전달 목록은 관리자·담당자만 (드랍 기록도 읽지 않음)
     state.stFilter = f;
     state.stShow = STORAGE_PAGE;
     if (f === 'undelivered' && (!state.undelivLoaded || state.undelivStale)) loadUndelivered();   // 미전달 목록은 눌렀을 때 읽음
@@ -1220,7 +1229,7 @@ function catTagLine(name) {                                                     
 // 검색어(띄어쓰기로 여러 단어, 모두 포함) + 종류/직업 선택에 맞는지. skip: 칩 개수를 셀 때 그 묶음의 선택은 빼고 계산
 function stPass(o, skip) {
     if (state.stQuery) {
-        const hay = normKey([o.itemName, o.bossName, o.bossVariant, o.bossVariantName, o.winner, o.buyer].filter(Boolean).join(' '));
+        const hay = normKey([o.itemName, o.bossName, o.bossVariant, o.bossVariantName, o.winner, canManage() ? o.buyer : ''].filter(Boolean).join(' '));
         if (!state.stQuery.split(/\s+/).map(normKey).filter(Boolean).every(t => hay.indexOf(t) >= 0)) return false;
     }
     const c = itemCats(o.itemName);
@@ -1273,7 +1282,7 @@ function renderCatBar(base, shown) {
     const so = (v, t) => `<option value="${v}"${state.stSort === v ? ' selected' : ''}>${t}</option>`;
     html += `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         <span style="font-size:0.78rem; color:#555; font-weight:bold;">정렬</span>
-        <select id="settle-st-sort" onchange="Settle.setStSort(this.value)" style="width:auto; margin:0; padding:5px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.82rem;">${so('recent', '최신순')}${so('old', '오래된순')}${so('name', '이름순')}${so('price', '낙찰가 높은순')}</select>
+        <select id="settle-st-sort" onchange="Settle.setStSort(this.value)" style="width:auto; margin:0; padding:5px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.82rem;">${so('recent', '최신순')}${so('old', '오래된순')}${so('name', '이름순')}${canManage() ? so('price', '낙찰가 높은순') : ''}</select>
         ${actBtn('필터 초기화', 'Settle.clearStFilters()', '#95a5a6')}
     </div>`;
     panel.innerHTML = html;
@@ -1435,13 +1444,14 @@ function renderStorage() {
     if (!box) return;
     const mg = canManage();
     stValidateSel();                                                                   // 분류 규칙이 바뀌어 사라진 분류를 선택 중이면, 목록을 계산하기 전에 먼저 해제
+    viewerSync();
     acts.innerHTML = (isAdmin ? actBtn('👤 담당자 설정', 'Settle.openManagers()', '#8e44ad') + actBtn('🏷️ 분류 설정', 'Settle.openCatSettings()', '#8e44ad') : '')
                    + (mg ? actBtn('💰 입찰/판매', 'Settle.openAuction()', '#e67e22') : '');
     fil.innerHTML =
         chip('전체', state.stFilter === 'all', '#5D6D7E', "Settle.setStorageFilter('all')")
         + chip('보관중', state.stFilter === 'pending', '#e67e22', "Settle.setStorageFilter('pending')")
         + chip('판매완료', state.stFilter === 'sold', '#27ae60', "Settle.setStorageFilter('sold')")
-        + chip('미전달' + (state.undelivLoaded ? ' ' + notInStorage().length : ''), state.stFilter === 'undelivered', '#d35400', "Settle.setStorageFilter('undelivered')")
+        + (mg ? chip('미전달' + (state.undelivLoaded ? ' ' + notInStorage().length : ''), state.stFilter === 'undelivered', '#d35400', "Settle.setStorageFilter('undelivered')") : '')
         + '<span style="color:#ddd;">|</span>'
         + chip('전서버', !state.stServer, '#95a5a6', "Settle.setStorageServer('')")
         + Object.keys(SERVERS).map(k => chip(SERVERS[k].name, state.stServer === k, SERVERS[k].color, `Settle.setStorageServer('${k}')`)).join('');
@@ -1466,7 +1476,10 @@ function renderStorage() {
     const soldTotal = state.storage.filter(i => i.sold).reduce((t, i) => t + (Number(i.bidPrice) || 0), 0);
     const waiting = unsettledItems().reduce((t, i) => t + (Number(i.bidPrice) || 0), 0);
     const tile = (label, val, bg, color, sub) => `<div style="flex:1; background:${bg}; border-radius:8px; padding:8px; text-align:center;"><div style="font-size:0.74rem; color:#7f8c8d;">${label}</div><div style="font-size:1.05rem; font-weight:bold; color:${color};">${val}</div>${sub ? `<div style="font-size:0.7rem; color:#7f8c8d; margin-top:2px;">${sub}</div>` : ''}</div>`;
-    const head = `<div style="display:flex; gap:8px; margin-bottom:10px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('아이템 판매 금액', fmt(soldTotal) + ' ' + UNIT, '#d5f4e6', '#27ae60', soldTotal ? (waiting ? '정산 대기 ' + fmt(waiting) : '모두 정산됨') : '')}</div>`;
+    const soldN = state.storage.filter(i => i.sold).length;
+    const head = mg
+        ? `<div style="display:flex; gap:8px; margin-bottom:10px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('아이템 판매 금액', fmt(soldTotal) + ' ' + UNIT, '#d5f4e6', '#27ae60', soldTotal ? (waiting ? '정산 대기 ' + fmt(waiting) : '모두 정산됨') : '')}</div>`
+        : `<div style="display:flex; gap:8px; margin-bottom:10px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('판매완료', soldN + '개', '#eef2f3', '#7f8c8d')}</div>`;      // 일반 사용자에겐 금액을 보여주지 않음
 
     if (!list.length) { box.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">조건에 맞는 아이템이 없습니다.</p>'; return; }
     box.innerHTML = head + list.slice(0, state.stShow).map(it => {
@@ -1483,7 +1496,7 @@ function renderStorage() {
                     <div style="font-weight:bold; color:#2c3e50;">${esc(it.itemName)} ${sold ? badge(it.settledId ? '정산완료' : '판매완료', it.settledId ? '#16a085' : '#27ae60') : ''}</div>
                     ${catTagLine(it.itemName)}
                     <div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${it.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(it.bossVariant)}${it.bossVariantName ? ' · ' + esc(it.bossVariantName) : ''}</span>` : ''}${serverBadge(it.bossServer)}</div>
-                    <div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>
+                    <div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold && mg ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">${btns.join('')}</div>
             </div>
@@ -2191,6 +2204,7 @@ async function saveSettlement() {
 
 // ── 정산 내역 ─────────────────────────────────────────────
 async function showHistory() {
+    if (!canManage()) return;
     const area = $('settle-history-area');
     if (!area) return;
     area.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:10px; margin:0;">불러오는 중...</p>';
