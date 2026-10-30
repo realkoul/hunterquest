@@ -62,7 +62,8 @@ const state = {
     settlements: [], recipients: new Set(), calcItemIds: [],
     calcMode: 'equal', calcRatios: { jingir: 0, pandora: 0, support: 0, other: 0 }, calcFixed: {},     // 정산 계산: 분배 방식 / 서버별 비율(%) / 직접 지정 금액
     stQuery: '', stCat: { type: '', job: '' }, stSort: 'recent', stShow: 40, stPanel: false,      // 보관함 검색 / 종류·직업 분류 / 정렬 / 한 번에 보여줄 개수
-    catRules: {}, catCache: {}, catDraft: null,                                                      // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
+    catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
+                                                         // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     supportTeam: [], calcSupportPct: 50                                                                  // 지원조 명단(userId[], 관리자만 설정) / 지원조 몫(%)
 };
 
@@ -238,7 +239,7 @@ function ensureSupportTeam() {
         if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
     });
 }
-function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureStorage(); }
+function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureStorage(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -723,6 +724,7 @@ function initMyAtt() { afterAuth(() => { myAttTick(); setInterval(myAttTick, 100
 async function adminOpen() {
     if (!depsOk() || state.admLoading) return;
     state.admLoading = true;
+    ensureCatRules(); ensureItemTags();                      // 아이템별 분류 선택칸에 쓸 분류 목록과 지정 내용
     try { state.admVariants = (await db.ref('boss_variants').once('value')).val() || {}; }
     catch (e) { state.admVariants = {}; }
     state.admLoading = false;
@@ -781,15 +783,34 @@ function adminRender() {
     if (!a) { box.innerHTML = '<p style="color:#95a5a6; font-size:0.88rem; margin:6px 0;">위에서 보스를 선택하면 그 보스의 아이템 목록을 관리할 수 있습니다.</p>'; return; }
     const days = a.e.sched.map(x => DOW_KO[x.s.dayOfWeek] + ' ' + x.s.time).filter((v, i, arr) => arr.indexOf(v) === i).join(', ');
     const row = (n, btns, stack) => `<div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px 8px; padding:7px 10px; border-bottom:1px solid #f3f3f3;"><span style="color:#2c3e50; word-break:break-all; ${stack ? 'flex:1 1 100%;' : 'flex:1 1 0; min-width:0;'}">${esc(n)}</span><span style="display:flex; gap:6px; flex:none;">${btns}</span></div>`;
+    const tagSel = (g, label, n, i) => {
+        const ex = explicitTag(n, g), auto = autoCatsOf(n)[g];
+        return `<label style="display:flex; align-items:center; gap:4px; font-size:0.74rem; color:#7f8c8d;">${label}
+            <select onchange="Settle.adminSetTag(${i}, '${g}', this.value)" style="width:auto; max-width:132px; margin:0; padding:3px 4px; border:1.5px solid ${ex ? '#8e44ad' : '#ddd'}; border-radius:6px; font-size:0.78rem;">
+                <option value=""${!ex ? ' selected' : ''}>${esc('자동 (' + (auto.length ? auto.join('·') : '없음') + ')')}</option>
+                ${catRules()[g].map(c => `<option value="${esc(c.name)}"${ex === c.name ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}
+                <option value="${NONE_CAT}"${ex === NONE_CAT ? ' selected' : ''}>없음(기타)</option>
+                <option value="__new">➕ 새 분류 만들기…</option>
+            </select></label>`;
+    };
+    const itemRow = (n, i) => `<div style="padding:7px 10px; border-bottom:1px solid #f3f3f3;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;"><span style="color:#2c3e50; word-break:break-all; flex:1; min-width:0;">${esc(n)}</span>${actBtn('✕', `Settle.adminDeleteItem(${i})`, '#e74c3c')}</div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:4px;">${tagSel('type', '종류', n, i)}${tagSel('job', '직업', n, i)}</div>
+    </div>`;
+    const newSel = (g, label) => `<label style="display:flex; align-items:center; gap:4px; font-size:0.76rem; color:#7f8c8d;">${label}
+        <select id="settle-adm-new-${g}" style="width:auto; max-width:132px; margin:0; padding:3px 4px; border:1.5px solid #ddd; border-radius:6px; font-size:0.78rem;">
+            <option value="">자동</option>${catRules()[g].map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('')}<option value="${NONE_CAT}">없음(기타)</option></select></label>`;
     box.innerHTML = `
         <div style="background:#f8f9fa; border-radius:8px; padding:9px 12px; margin-bottom:10px; font-size:0.85rem;">
             <b style="color:#2c3e50;">${esc(a.e.name)}</b>${a.e.bossName ? ' · ' + esc(a.e.bossName) : ''}
             <div style="font-size:0.75rem; color:#95a5a6; margin-top:2px;">나오는 시간: ${esc(days)}</div>
         </div>
-        <div style="font-size:0.85rem; font-weight:bold; color:#555; margin-bottom:4px;">아이템 ${a.items.length}개</div>
+        <div style="font-size:0.85rem; font-weight:bold; color:#555; margin-bottom:2px;">아이템 ${a.items.length}개</div>
+        <div style="font-size:0.74rem; color:#95a5a6; margin-bottom:4px; line-height:1.5;">🏷️ 아이템마다 종류·직업을 정하면 보관함에서 그 분류로 걸러 볼 수 있습니다. 정하지 않으면 이름의 키워드로 자동 분류합니다.</div>
         <div style="border:1px solid #eee; border-radius:8px; margin-bottom:10px; max-height:260px; overflow-y:auto;">
-            ${a.items.length ? a.items.map((n, i) => row(n, actBtn('✕', `Settle.adminDeleteItem(${i})`, '#e74c3c'))).join('') : '<div style="padding:12px; color:#95a5a6; font-size:0.85rem; text-align:center;">등록된 아이템이 없습니다.</div>'}
+            ${a.items.length ? a.items.map((n, i) => itemRow(n, i)).join('') : '<div style="padding:12px; color:#95a5a6; font-size:0.85rem; text-align:center;">등록된 아이템이 없습니다.</div>'}
         </div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:6px;"><span style="font-size:0.76rem; color:#7f8c8d; font-weight:bold;">추가할 아이템의 분류</span>${newSel('type', '종류')}${newSel('job', '직업')}</div>
         <textarea id="settle-adm-input" rows="3" placeholder="추가할 아이템 이름 (여러 개는 줄바꿈으로 구분)" style="width:100%; margin:0 0 8px; padding:9px; border:2px solid #ddd; border-radius:7px; font-size:0.92rem; box-sizing:border-box;"></textarea>
         <button class="btn btn-primary" onclick="Settle.adminAddItems()" style="width:100%;">➕ 아이템 추가</button>
         ${a.slot.length ? `
@@ -821,11 +842,12 @@ async function adminAddItems() {
     const raw = ($('settle-adm-input').value || '').split('\n').map(x => x.trim().slice(0, 60)).filter(Boolean);
     if (!raw.length) { alert('추가할 아이템 이름을 입력하세요.'); return; }
     if (!(await requireAdmin())) return;
-    const list = a.items.slice();
-    let added = 0;
-    raw.forEach(n => { if (!list.includes(n)) { list.push(n); added++; } });
-    if (!added) { alert('이미 모두 등록된 아이템입니다.'); return; }
+    const list = a.items.slice(), newNames = [];
+    raw.forEach(n => { if (!list.includes(n)) { list.push(n); newNames.push(n); } });
+    if (!newNames.length) { alert('이미 모두 등록된 아이템입니다.'); return; }
+    const pickType = ($('settle-adm-new-type') || {}).value || '', pickJob = ($('settle-adm-new-job') || {}).value || '';
     await adminSave(list);
+    if (pickType || pickJob) await tagSet(newNames, { type: pickType || undefined, job: pickJob || undefined });      // 함께 고른 분류를 새 아이템에 지정
     const inp = $('settle-adm-input');
     if (inp) inp.value = '';
 }
@@ -838,6 +860,48 @@ async function adminDeleteItem(i) {
     if (!confirm(`"${name}" 을(를) ${a.e.name} 아이템 목록에서 삭제할까요?\n(이미 기록된 드랍 내역은 그대로 남습니다)`)) return;
     await adminSave(a.items.filter(x => x !== name));
 }
+
+// ── 아이템별 분류 직접 지정 (관리자) ──
+// patch: { type?: 이름 | NONE_CAT | '' (지정 해제), job?: 같음 }. undefined 는 그대로 둠
+async function tagSet(names, patch) {
+    const updates = {};
+    names.forEach(n => {
+        const key = tagKey(n), cur = state.itemTags[key] || {};
+        const next = { type: cur.type || '', job: cur.job || '' };
+        CAT_SETS.forEach(([g]) => { if (patch[g] !== undefined) next[g] = patch[g] || ''; });
+        const entry = {};
+        if (next.type) entry.type = next.type;
+        if (next.job) entry.job = next.job;
+        updates['hunter_config/itemTags/' + key] = (entry.type || entry.job) ? Object.assign({ name: n }, entry) : null;
+    });
+    try { await db.ref().update(updates); } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+// 분류가 없으면 만들고, 이미 같은 이름이 있으면 그것을 씀. 반환: 사용할 분류 이름 (실패 시 '')
+async function catEnsure(g, name) {
+    const rules = catRules();
+    const same = rules[g].find(c => c.name.toLowerCase() === name.toLowerCase());
+    if (same) return same.name;
+    if (rules[g].length >= 40) { alert('분류는 묶음마다 최대 40개까지입니다.'); return ''; }
+    const next = { type: rules.type.map(c => ({ name: c.name, keywords: c.keywords.slice() })), job: rules.job.map(c => ({ name: c.name, keywords: c.keywords.slice() })) };
+    next[g].push({ name: name, keywords: [] });
+    try { await db.ref('hunter_config/itemCategories').set(next); return name; }
+    catch (e) { alert('❌ 저장 실패: ' + e.message); return ''; }
+}
+async function adminSetTag(i, g, v) {
+    const a = state.adm, name = a ? a.items[i] : null;
+    if (!name) return;
+    if (!(await requireAdmin())) { adminRender(); return; }
+    let val = v;
+    if (v === '__new') {
+        const nm = String(prompt('새 ' + (g === 'type' ? '종류' : '직업') + ' 분류 이름을 입력하세요 (10자 이내)') || '').trim();
+        if (!nm) { adminRender(); return; }
+        if (nm.length > 10) { alert('분류 이름은 10자 이내로 입력하세요.'); adminRender(); return; }
+        val = await catEnsure(g, nm);
+        if (!val) { adminRender(); return; }
+    }
+    await tagSet([name], { [g]: val });
+}
+
 
 async function adminMoveSlot(i) {
     const a = state.adm;
@@ -1114,10 +1178,9 @@ function normRules(v) {                                                         
     return out;
 }
 // 아이템 이름 → { type: [분류이름…], job: [분류이름…] }. 더 긴 키워드 안에 들어 있는 짧은 키워드는 제외 ("용기사" 안의 "기사")
-function itemCats(name) {
-    const key = String(name || '');
-    if (state.catCache[key]) return state.catCache[key];
-    const flat = normKey(key), rules = catRules(), out = { type: [], job: [] };
+// 키워드로 자동 판단한 분류. 더 긴 키워드 안에 들어 있는 짧은 키워드는 제외 ("용기사" 안의 "기사")
+function autoCatsOf(name) {
+    const flat = normKey(name), rules = catRules(), out = { type: [], job: [] };
     CAT_SETS.forEach(([g]) => {
         const hits = [];
         rules[g].forEach(c => {
@@ -1126,8 +1189,28 @@ function itemCats(name) {
         });
         out[g] = hits.filter(h => !hits.some(o => o !== h && o.kw.length > h.kw.length && o.kw.indexOf(h.kw) >= 0)).map(h => h.name);
     });
+    return out;
+}
+// 관리 탭 [보스 아이템 설정]에서 아이템별로 직접 지정한 분류: 분류 이름 / NONE_CAT(없음) / ''(지정 안 함 = 자동)
+const tagKey = (name) => normKey(name).replace(/[.$#\[\]\/]/g, '_').slice(0, 120);
+function explicitTag(name, g) {
+    const t = state.itemTags[tagKey(name)];
+    const v = t ? t[g] : '';
+    if (v === NONE_CAT) return NONE_CAT;
+    return v && catRules()[g].some(c => c.name === v) ? v : '';
+}
+// 최종 분류 = 직접 지정한 것이 있으면 그것, 없으면 키워드 자동 판단
+function itemCats(name) {
+    const key = String(name || '');
+    if (state.catCache[key]) return state.catCache[key];
+    const out = autoCatsOf(key);
+    CAT_SETS.forEach(([g]) => { const ex = explicitTag(key, g); if (ex === NONE_CAT) out[g] = []; else if (ex) out[g] = [ex]; });
     state.catCache[key] = out;
     return out;
+}
+function catTagLine(name) {                                                      // 보관함 카드에 붙이는 작은 분류 표시
+    const c = itemCats(name), parts = c.type.concat(c.job);
+    return parts.length ? `<div style="font-size:0.74rem; color:#8e44ad; margin-top:1px;">🏷️ ${parts.map(esc).join(' · ')}</div>` : '';
 }
 // 검색어(띄어쓰기로 여러 단어, 모두 포함) + 종류/직업 선택에 맞는지. skip: 칩 개수를 셀 때 그 묶음의 선택은 빼고 계산
 function stPass(o, skip) {
@@ -1215,11 +1298,23 @@ function clearStFilters() {
     renderStorage();
 }
 
+let tagsOn = false;
+function ensureItemTags() {
+    if (tagsOn || !depsOk()) return;
+    tagsOn = true;
+    db.ref('hunter_config/itemTags').on('value', snap => {
+        const v = snap.val() || {};
+        state.itemTags = {};
+        Object.keys(v).forEach(k => { const t = v[k]; if (t && typeof t === 'object') state.itemTags[k] = { name: String(t.name || ''), type: t.type || '', job: t.job || '' }; });
+        state.catCache = {}; stValidateSel(); renderStorage();
+        if (state.adm) adminRender();                                              // 관리 탭 편집기의 선택칸도 최신 상태로
+    });
+}
 let catRulesOn = false;
 function ensureCatRules() {
     if (catRulesOn || !depsOk()) return;
     catRulesOn = true;
-    db.ref('hunter_config/itemCategories').on('value', snap => { state.catRules = normRules(snap.val()); state.catCache = {}; stValidateSel(); renderStorage(); });
+    db.ref('hunter_config/itemCategories').on('value', snap => { state.catRules = normRules(snap.val()); state.catCache = {}; stValidateSel(); renderStorage(); if (state.adm) adminRender(); });
 }
 
 // ── 분류 설정 (관리자 전용) ──
@@ -1236,6 +1331,7 @@ function catUnclassified(g) {                                                   
 async function openCatSettings() {
     if (!(await requireAdmin())) return;
     state.catDraft = JSON.parse(JSON.stringify(catRules()));
+    CAT_SETS.forEach(([g]) => state.catDraft[g].forEach(c => { c.orig = c.name; }));          // 이름을 바꾸는지 알아보기 위해 원래 이름을 기억
     renderCatEditor();
 }
 function catDraftSync() {                                                        // 입력칸에 적은 내용을 임시 편집본에 반영
@@ -1243,13 +1339,13 @@ function catDraftSync() {                                                       
     CAT_SETS.forEach(([g]) => {
         const rows = Array.from(document.querySelectorAll('#settle-cat-editor .cat-row[data-set="' + g + '"]'));
         if (!rows.length) return;
-        state.catDraft[g] = rows.map(r => ({ name: r.querySelector('.cat-name').value.trim(), keywords: r.querySelector('.cat-kw').value.split(/[,\n]/).map(k => k.trim()).filter(Boolean) }));
+        state.catDraft[g] = rows.map(r => ({ name: r.querySelector('.cat-name').value.trim(), keywords: r.querySelector('.cat-kw').value.split(/[,\n]/).map(k => k.trim()).filter(Boolean), orig: r.dataset.orig || '' }));
     });
 }
 function renderCatEditor() {
     const d = state.catDraft;
     if (!d) return;
-    const row = (g, c, i) => `<div class="cat-row" data-set="${g}" style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+    const row = (g, c, i) => `<div class="cat-row" data-set="${g}" data-orig="${esc(c.orig || '')}" style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
         <input class="cat-name" value="${esc(c.name)}" maxlength="10" placeholder="이름" oninput="Settle.catRowCount(this)" style="width:78px; flex:none; margin:0; padding:7px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.85rem; box-sizing:border-box;">
         <input class="cat-kw" value="${esc((c.keywords || []).join(', '))}" placeholder="키워드 (쉼표로 구분)" oninput="Settle.catRowCount(this)" style="flex:1; min-width:0; margin:0; padding:7px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.85rem; box-sizing:border-box;">
         <span class="cat-cnt" style="font-size:0.72rem; color:#7f8c8d; width:34px; text-align:right; flex:none;">${catCountFor(c.keywords)}개</span>
@@ -1301,9 +1397,23 @@ async function saveCatSettings() {
         }
         out[g] = list.map(c => ({ name: c.name, keywords: c.keywords }));
     }
+    // 이름만 바꾼 분류는 "이름 변경"으로 보고, 그 분류로 직접 지정한 아이템도 함께 옮김. 삭제된 분류는 영향을 안내
+    const renames = [], removed = [], oldRules = catRules();
+    CAT_SETS.forEach(([g]) => {
+        const newNames = out[g].map(c => c.name);
+        d[g].forEach(c => { if (c.orig && c.orig !== c.name && !newNames.includes(c.orig)) renames.push({ g: g, from: c.orig, to: c.name }); });
+        oldRules[g].forEach(c => { if (!newNames.includes(c.name) && !renames.some(r => r.g === g && r.from === c.name)) removed.push({ g: g, name: c.name }); });
+    });
+    const carried = (g, nm) => Object.keys(state.itemTags).filter(k => state.itemTags[k][g] === nm);
+    let msg = '';
+    renames.forEach(r => { const n = carried(r.g, r.from).length; if (n) msg += `\n· 이름 변경 "${r.from}" → "${r.to}": 직접 지정한 아이템 ${n}개도 함께 바뀝니다.`; });
+    removed.forEach(r => { const n = carried(r.g, r.name).length; if (n) msg += `\n· "${r.name}" 삭제: 직접 지정한 아이템 ${n}개는 자동 분류(키워드)로 돌아갑니다.`; });
+    if (msg && !confirm('분류를 바꾸면 아이템 분류에 영향이 있습니다.' + msg + '\n\n계속할까요?')) return;
     if (!(await requireAdmin())) return;                                         // 저장 시점에도 관리자 확인
     try {
-        await db.ref('hunter_config/itemCategories').set(JSON.stringify(out) === JSON.stringify(DEFAULT_CATS) ? null : out);
+        const updates = { 'hunter_config/itemCategories': JSON.stringify(out) === JSON.stringify(DEFAULT_CATS) ? null : out };
+        renames.forEach(r => carried(r.g, r.from).forEach(k => { updates['hunter_config/itemTags/' + k + '/' + r.g] = r.to; }));
+        await db.ref().update(updates);
         state.catDraft = null;
         closeModal();
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
@@ -1366,6 +1476,7 @@ function renderStorage() {
             <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
                 <div style="flex:1; min-width:150px;">
                     <div style="font-weight:bold; color:#2c3e50;">${esc(it.itemName)} ${sold ? badge(it.settledId ? '정산완료' : '판매완료', it.settledId ? '#16a085' : '#27ae60') : ''}</div>
+                    ${catTagLine(it.itemName)}
                     <div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${it.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(it.bossVariant)}${it.bossVariantName ? ' · ' + esc(it.bossVariantName) : ''}</span>` : ''}${serverBadge(it.bossServer)}</div>
                     <div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>
                 </div>
@@ -1464,6 +1575,7 @@ function renderUndelivered(box) {
             <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
                 <div style="flex:1; min-width:150px;">
                     <div style="font-weight:bold; color:#2c3e50;">${esc(d.itemName)} ${marked ? badge('보관함 미등록', '#e67e22') : badge('미전달', '#d35400')}</div>
+                    ${catTagLine(d.itemName)}
                     <div style="font-size:0.8rem; color:#666;">📅 ${esc(d.date)} (${ago(d.date)}) ⚔️ ${esc(d.bossName)}${d.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(d.bossVariant)}${d.bossVariantName ? ' · ' + esc(d.bossVariantName) : ''}</span>` : ''}</div>
                     <div style="font-size:0.8rem; color:#666;">획득: <b>${esc(d.winner)}</b>${serverBadge(d.bossServer || d.winnerServer)}</div>
                     ${marked ? '<div style="font-size:0.75rem; color:#e67e22; margin-top:2px;">전달완료로 표시되어 있지만 보관함에는 없습니다.' + (mg ? ' [전달 확인]을 누르면 보관함에 등록됩니다.' : '') + '</div>' : ''}
@@ -3056,7 +3168,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
