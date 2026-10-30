@@ -61,6 +61,8 @@ const state = {
     drops: [], dropKey: '', dropRef: null, bossItems: [],
     settlements: [], recipients: new Set(), calcItemIds: [],
     calcMode: 'equal', calcRatios: { jingir: 0, pandora: 0, support: 0, other: 0 }, calcFixed: {},     // 정산 계산: 분배 방식 / 서버별 비율(%) / 직접 지정 금액
+    stQuery: '', stCat: { type: '', job: '' }, stSort: 'recent', stShow: 40, stPanel: false,      // 보관함 검색 / 종류·직업 분류 / 정렬 / 한 번에 보여줄 개수
+    catRules: {}, catCache: {}, catDraft: null,                                                      // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     supportTeam: [], calcSupportPct: 50                                                                  // 지원조 명단(userId[], 관리자만 설정) / 지원조 몫(%)
 };
 
@@ -126,6 +128,7 @@ function buildRoot() {
                 <div id="settle-storage-actions" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
             </div>
             <div id="settle-storage-filters" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;"></div>
+            <div id="settle-storage-cats"></div>
             <div id="settle-storage-list"></div>
         </div>
 
@@ -235,7 +238,7 @@ function ensureSupportTeam() {
         if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
     });
 }
-function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureStorage(); }
+function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureStorage(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -1056,16 +1059,268 @@ async function deleteDrop(k) {
 // ============================================================
 function setStorageFilter(f) {
     state.stFilter = f;
+    state.stShow = STORAGE_PAGE;
     if (f === 'undelivered' && (!state.undelivLoaded || state.undelivStale)) loadUndelivered();   // 미전달 목록은 눌렀을 때 읽음
     else renderStorage();
 }
-function setStorageServer(sv) { state.stServer = sv; renderStorage(); }
+function setStorageServer(sv) { state.stServer = sv; state.stShow = STORAGE_PAGE; renderStorage(); }
+
+// ============================================================
+// 🔎 보관함 검색 · 분류 — 아이템이 많아져도 찾기 쉽게
+//   · 분류는 아이템 이름에 들어 있는 키워드로 자동 판단 (종류: 주문서·반지…, 직업: 법사·기사…). 키워드는 관리자가 고칠 수 있음
+//   · 종류 × 직업 은 동시에 고를 수 있고(예: 법사 + 반지), 검색어·상태·서버 필터와도 함께 적용
+//   · 한 번에 40개씩만 보여주고 [더 보기]로 늘림
+// ============================================================
+const STORAGE_PAGE = 40;
+const NONE_CAT = '__none';
+const CAT_SETS = [['type', '종류'], ['job', '직업']];
+const DEFAULT_CATS = {
+    type: [
+        { name: '주문서', keywords: ['주문서', '스크롤'] },
+        { name: '반지', keywords: ['반지'] },
+        { name: '목걸이', keywords: ['목걸이'] },
+        { name: '귀걸이', keywords: ['귀걸이'] },
+        { name: '방어구', keywords: ['투구', '갑옷', '망토', '장갑', '각반', '부츠', '장화', '방패', '티셔츠', '허리띠', '벨트'] },
+        { name: '무기', keywords: ['지팡이', '크로우', '석궁', '단검', '키링크', '체인소드', '이도류', '도끼', '양손검', '한손검'] },
+        { name: '마법인형', keywords: ['마법인형', '카드'] },
+        { name: '비법서', keywords: ['비법서', '제작'] },
+        { name: '스킬북', keywords: ['스킬북', '마법서', '기술서'] }
+    ],
+    job: [
+        { name: '군주', keywords: ['군주'] },
+        { name: '기사', keywords: ['기사'] },
+        { name: '요정', keywords: ['요정'] },
+        { name: '법사', keywords: ['법사', '마법사'] },
+        { name: '다크엘프', keywords: ['다크엘프', '다엘'] },
+        { name: '용기사', keywords: ['용기사'] },
+        { name: '환술사', keywords: ['환술사'] },
+        { name: '전사', keywords: ['전사'] },
+        { name: '검사', keywords: ['검사'] }
+    ]
+};
+const normKey = (t) => String(t || '').replace(/\s+/g, '').toLowerCase();
+const qarg = (t) => encodeURIComponent(String(t)).replace(/'/g, '%27');           // onclick="...('값')" 안에 안전하게 넣기 위한 인코딩
+
+function catRules() {
+    const v = state.catRules || {};
+    return { type: (v.type && v.type.length) ? v.type : DEFAULT_CATS.type, job: (v.job && v.job.length) ? v.job : DEFAULT_CATS.job };
+}
+function normRules(v) {                                                          // DB 값 → 규칙 (깨진 값은 무시, 없는 묶음은 기본값 사용)
+    const out = {};
+    CAT_SETS.forEach(([g]) => {
+        const arr = Object.values((v && v[g]) || {}).filter(c => c && typeof c === 'object' && String(c.name || '').trim());
+        if (arr.length) out[g] = arr.map(c => ({ name: String(c.name).trim(), keywords: Object.values(c.keywords || {}).map(k => String(k).trim()).filter(Boolean) }));
+    });
+    return out;
+}
+// 아이템 이름 → { type: [분류이름…], job: [분류이름…] }. 더 긴 키워드 안에 들어 있는 짧은 키워드는 제외 ("용기사" 안의 "기사")
+function itemCats(name) {
+    const key = String(name || '');
+    if (state.catCache[key]) return state.catCache[key];
+    const flat = normKey(key), rules = catRules(), out = { type: [], job: [] };
+    CAT_SETS.forEach(([g]) => {
+        const hits = [];
+        rules[g].forEach(c => {
+            const kws = (c.keywords || []).map(normKey).filter(k => k && flat.indexOf(k) >= 0).sort((a, b) => b.length - a.length);
+            if (kws.length) hits.push({ name: c.name, kw: kws[0] });
+        });
+        out[g] = hits.filter(h => !hits.some(o => o !== h && o.kw.length > h.kw.length && o.kw.indexOf(h.kw) >= 0)).map(h => h.name);
+    });
+    state.catCache[key] = out;
+    return out;
+}
+// 검색어(띄어쓰기로 여러 단어, 모두 포함) + 종류/직업 선택에 맞는지. skip: 칩 개수를 셀 때 그 묶음의 선택은 빼고 계산
+function stPass(o, skip) {
+    if (state.stQuery) {
+        const hay = normKey([o.itemName, o.bossName, o.bossVariant, o.bossVariantName, o.winner, o.buyer].filter(Boolean).join(' '));
+        if (!state.stQuery.split(/\s+/).map(normKey).filter(Boolean).every(t => hay.indexOf(t) >= 0)) return false;
+    }
+    const c = itemCats(o.itemName);
+    for (const [g] of CAT_SETS) {
+        if (g === skip) continue;
+        const sel = state.stCat[g];
+        if (!sel) continue;
+        if (sel === NONE_CAT ? c[g].length > 0 : c[g].indexOf(sel) < 0) return false;
+    }
+    return true;
+}
+const stActiveCount = () => (state.stCat.type ? 1 : 0) + (state.stCat.job ? 1 : 0);
+function stValidateSel() {                                                       // 분류 규칙이 바뀌어 없어진 분류를 선택 중이면 해제
+    const rules = catRules();
+    CAT_SETS.forEach(([g]) => { const sel = state.stCat[g]; if (sel && sel !== NONE_CAT && !rules[g].some(c => c.name === sel)) state.stCat[g] = ''; });
+}
+
+function ensureCatBar() {
+    const bar = $('settle-storage-cats');
+    if (!bar || $('settle-st-q')) return;
+    bar.innerHTML = `
+        <div style="display:flex; gap:6px; margin-bottom:6px;">
+            <input type="search" id="settle-st-q" value="${esc(state.stQuery)}" placeholder="🔎 아이템·보스·획득자 검색 (띄어쓰기로 여러 단어)" oninput="Settle.setStQuery(this.value)" style="flex:1; min-width:0; margin:0; padding:9px 10px; border:2px solid #ddd; border-radius:8px; font-size:0.9rem; box-sizing:border-box;">
+            <button id="settle-st-toggle" onclick="Settle.toggleCatPanel()" style="flex:none; padding:0 12px; border-radius:8px; font-weight:bold; font-size:0.85rem; cursor:pointer; white-space:nowrap;"></button>
+        </div>
+        <div id="settle-st-panel" style="display:none; background:#f8f9fa; border-radius:8px; padding:8px 10px; margin-bottom:6px;"></div>
+        <div id="settle-st-summary" style="font-size:0.78rem; color:#7f8c8d; margin-bottom:8px; line-height:1.5;"></div>`;
+}
+// base: 상태/서버 필터까지만 적용한 목록 (칩의 개수 계산용), shown: 조건에 맞는 개수
+function renderCatBar(base, shown) {
+    ensureCatBar();
+    const panel = $('settle-st-panel'), sum = $('settle-st-summary'), tog = $('settle-st-toggle');
+    if (!panel || !sum || !tog) return;
+    stValidateSel();
+    const rules = catRules();
+    let html = '';
+    CAT_SETS.forEach(([g, label]) => {
+        const cnt = {}; let none = 0;
+        base.filter(o => stPass(o, g)).forEach(o => {
+            const cs = itemCats(o.itemName)[g];
+            if (!cs.length) none++; else cs.forEach(n => { cnt[n] = (cnt[n] || 0) + 1; });
+        });
+        const sel = state.stCat[g];
+        const chips = rules[g].filter(c => cnt[c.name] || sel === c.name)
+            .map(c => chip(esc(c.name) + ' ' + (cnt[c.name] || 0), sel === c.name, '#34495e', `Settle.setStCat('${g}', '${qarg(c.name)}')`));
+        if (none || sel === NONE_CAT) chips.push(chip('기타 ' + none, sel === NONE_CAT, '#95a5a6', `Settle.setStCat('${g}', '${NONE_CAT}')`));
+        html += `<div style="margin-bottom:8px;"><div style="font-size:0.76rem; font-weight:bold; color:#555; margin-bottom:4px;">${label}</div>
+            <div style="display:flex; gap:5px; flex-wrap:wrap;">${chip('전체', !sel, '#5D6D7E', `Settle.setStCat('${g}', '')`)}${chips.join('')}</div></div>`;
+    });
+    const so = (v, t) => `<option value="${v}"${state.stSort === v ? ' selected' : ''}>${t}</option>`;
+    html += `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <span style="font-size:0.78rem; color:#555; font-weight:bold;">정렬</span>
+        <select id="settle-st-sort" onchange="Settle.setStSort(this.value)" style="width:auto; margin:0; padding:5px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.82rem;">${so('recent', '최신순')}${so('old', '오래된순')}${so('name', '이름순')}${so('price', '낙찰가 높은순')}</select>
+        ${actBtn('필터 초기화', 'Settle.clearStFilters()', '#95a5a6')}
+    </div>`;
+    panel.innerHTML = html;
+    panel.style.display = state.stPanel ? 'block' : 'none';
+    const n = stActiveCount();
+    tog.textContent = '분류 ' + (state.stPanel ? '▴' : '▾') + (n ? ' ' + n : '');
+    tog.style.cssText = 'flex:none; padding:0 12px; border-radius:8px; font-weight:bold; font-size:0.85rem; cursor:pointer; white-space:nowrap; ' + (n ? 'background:#34495e; color:white; border:2px solid #34495e;' : 'background:white; color:#34495e; border:2px solid #d5d8dc;');
+    const act = [];
+    CAT_SETS.forEach(([g, label]) => { const sel = state.stCat[g]; if (sel) act.push(label + ': <b>' + (sel === NONE_CAT ? '기타' : esc(sel)) + '</b>'); });
+    sum.innerHTML = `조건에 맞는 아이템 <b>${shown}</b>개${shown !== base.length ? ' / 전체 ' + base.length + '개' : ''}${act.length ? ' · ' + act.join(' · ') : ''}${state.stQuery ? ' · 검색 "<b>' + esc(state.stQuery) + '</b>"' : ''}`;
+}
+const stMoreBtn = (total, shown) => total > shown ? `<div style="text-align:center; margin:8px 0 2px;">${actBtn('⬇️ 더 보기 (남은 ' + (total - shown) + '개)', 'Settle.moreStorage()', '#5D6D7E')}</div>` : '';
+
+function setStQuery(v) { state.stQuery = String(v || '').trim(); state.stShow = STORAGE_PAGE; renderStorage(); }
+function setStCat(g, v) {
+    const val = v === '' ? '' : decodeURIComponent(v);
+    state.stCat[g] = (val && state.stCat[g] === val) ? '' : val;                 // 이미 선택한 분류를 다시 누르면 해제
+    state.stShow = STORAGE_PAGE;
+    renderStorage();
+}
+function setStSort(v) { state.stSort = v; state.stShow = STORAGE_PAGE; renderStorage(); }
+function toggleCatPanel() { state.stPanel = !state.stPanel; renderStorage(); }
+function moreStorage() { state.stShow += STORAGE_PAGE; renderStorage(); }
+function clearStFilters() {
+    state.stQuery = ''; state.stCat = { type: '', job: '' }; state.stSort = 'recent'; state.stShow = STORAGE_PAGE;
+    const q = $('settle-st-q'); if (q) q.value = '';
+    renderStorage();
+}
+
+let catRulesOn = false;
+function ensureCatRules() {
+    if (catRulesOn || !depsOk()) return;
+    catRulesOn = true;
+    db.ref('hunter_config/itemCategories').on('value', snap => { state.catRules = normRules(snap.val()); state.catCache = {}; stValidateSel(); renderStorage(); });
+}
+
+// ── 분류 설정 (관리자 전용) ──
+const catCountFor = (keywords) => {
+    const ks = (keywords || []).map(normKey).filter(Boolean);
+    if (!ks.length) return 0;
+    return state.storage.filter(i => { const f = normKey(i.itemName); return ks.some(k => f.indexOf(k) >= 0); }).length;
+};
+function catUnclassified(g) {                                                    // 저장된 규칙으로 분류되지 않는 아이템 이름 (규칙을 보완할 때 참고)
+    const seen = new Set(), names = [];
+    state.storage.forEach(i => { const n = i.itemName; if (n && !seen.has(n)) { seen.add(n); if (!itemCats(n)[g].length) names.push(n); } });
+    return names;
+}
+async function openCatSettings() {
+    if (!(await requireAdmin())) return;
+    state.catDraft = JSON.parse(JSON.stringify(catRules()));
+    renderCatEditor();
+}
+function catDraftSync() {                                                        // 입력칸에 적은 내용을 임시 편집본에 반영
+    if (!state.catDraft) return;
+    CAT_SETS.forEach(([g]) => {
+        const rows = Array.from(document.querySelectorAll('#settle-cat-editor .cat-row[data-set="' + g + '"]'));
+        if (!rows.length) return;
+        state.catDraft[g] = rows.map(r => ({ name: r.querySelector('.cat-name').value.trim(), keywords: r.querySelector('.cat-kw').value.split(/[,\n]/).map(k => k.trim()).filter(Boolean) }));
+    });
+}
+function renderCatEditor() {
+    const d = state.catDraft;
+    if (!d) return;
+    const row = (g, c, i) => `<div class="cat-row" data-set="${g}" style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+        <input class="cat-name" value="${esc(c.name)}" maxlength="10" placeholder="이름" oninput="Settle.catRowCount(this)" style="width:78px; flex:none; margin:0; padding:7px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.85rem; box-sizing:border-box;">
+        <input class="cat-kw" value="${esc((c.keywords || []).join(', '))}" placeholder="키워드 (쉼표로 구분)" oninput="Settle.catRowCount(this)" style="flex:1; min-width:0; margin:0; padding:7px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.85rem; box-sizing:border-box;">
+        <span class="cat-cnt" style="font-size:0.72rem; color:#7f8c8d; width:34px; text-align:right; flex:none;">${catCountFor(c.keywords)}개</span>
+        <button onclick="Settle.catDelRow('${g}', ${i})" style="width:26px; height:26px; border-radius:50%; border:none; background:#e74c3c; color:white; cursor:pointer; font-size:12px; flex:none;">✕</button></div>`;
+    const sec = ([g, label]) => {
+        const un = catUnclassified(g);
+        return `<div style="margin-bottom:14px;">
+            <div style="font-size:0.9rem; font-weight:bold; color:#2c3e50; margin-bottom:4px;">${label} 분류</div>
+            ${d[g].map((c, i) => row(g, c, i)).join('')}
+            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">${actBtn('➕ 분류 추가', `Settle.catAddRow('${g}')`, '#5D6D7E')}
+                <span style="font-size:0.74rem; color:#95a5a6;">아이템 이름에 키워드가 들어 있으면 그 분류로 묶입니다.</span></div>
+            ${un.length ? `<div style="font-size:0.74rem; color:#d35400; margin-top:4px; line-height:1.5;">분류 안 된 아이템 ${un.length}종: ${un.slice(0, 8).map(esc).join(', ')}${un.length > 8 ? ' 외 ' + (un.length - 8) + '종' : ''}</div>` : ''}
+        </div>`;
+    };
+    showModal(`
+        <h3 style="margin:0 0 4px; color:#2c3e50;">🏷️ 아이템 분류 설정</h3>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px; line-height:1.5;">보관함에서 아이템을 분류별로 걸러 볼 수 있게 이름과 키워드를 정합니다. 오른쪽 숫자는 지금 보관함에서 그 키워드에 해당하는 아이템 수입니다. (관리자만 변경)</p>
+        <div id="settle-cat-editor" style="max-height:52vh; overflow-y:auto; padding-right:2px;">${CAT_SETS.map(sec).join('')}</div>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+            ${actBtn('저장', 'Settle.saveCatSettings()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('기본값으로', 'Settle.resetCatSettings()', '#7f8c8d').replace('padding:6px 11px', 'padding:11px')}
+            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'padding:11px')}
+        </div>`);
+}
+function catRowCount(el) {
+    const r = el.closest('.cat-row');
+    if (!r) return;
+    const kws = r.querySelector('.cat-kw').value.split(/[,\n]/).map(k => k.trim()).filter(Boolean);
+    r.querySelector('.cat-cnt').textContent = catCountFor(kws) + '개';
+}
+function catAddRow(g) { catDraftSync(); if (state.catDraft) { state.catDraft[g].push({ name: '', keywords: [] }); renderCatEditor(); } }
+function catDelRow(g, i) { catDraftSync(); if (state.catDraft) { state.catDraft[g].splice(i, 1); renderCatEditor(); } }
+async function saveCatSettings() {
+    catDraftSync();
+    const d = state.catDraft;
+    if (!d) return;
+    const out = {};
+    for (const [g, label] of CAT_SETS) {
+        const list = d[g] || [];
+        if (!list.length) { alert(label + ' 분류가 비어 있습니다. 최소 1개는 있어야 합니다. (쓰지 않으려면 키워드를 비워 두세요)'); return; }
+        if (list.length > 40) { alert(label + ' 분류는 최대 40개까지입니다.'); return; }
+        const seen = new Set();
+        for (const c of list) {
+            if (!c.name) { alert(label + ' 분류의 이름을 입력하세요.'); return; }
+            const key = c.name.toLowerCase();
+            if (seen.has(key)) { alert(label + ' 분류 이름이 겹칩니다: ' + c.name); return; }
+            seen.add(key);
+            if (c.keywords.some(k => k.length > 20)) { alert('키워드는 20자 이내로 입력하세요. (' + c.name + ')'); return; }
+        }
+        out[g] = list.map(c => ({ name: c.name, keywords: c.keywords }));
+    }
+    if (!(await requireAdmin())) return;                                         // 저장 시점에도 관리자 확인
+    try {
+        await db.ref('hunter_config/itemCategories').set(JSON.stringify(out) === JSON.stringify(DEFAULT_CATS) ? null : out);
+        state.catDraft = null;
+        closeModal();
+    } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+async function resetCatSettings() {
+    if (!confirm('분류를 기본값으로 되돌릴까요?\n(직접 추가·수정한 분류와 키워드가 모두 사라집니다)')) return;
+    if (!(await requireAdmin())) return;
+    try { await db.ref('hunter_config/itemCategories').remove(); state.catDraft = null; closeModal(); } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+
 
 function renderStorage() {
     const acts = $('settle-storage-actions'), fil = $('settle-storage-filters'), box = $('settle-storage-list');
     if (!box) return;
     const mg = canManage();
-    acts.innerHTML = (isAdmin ? actBtn('👤 담당자 설정', 'Settle.openManagers()', '#8e44ad') : '')
+    stValidateSel();                                                                   // 분류 규칙이 바뀌어 사라진 분류를 선택 중이면, 목록을 계산하기 전에 먼저 해제
+    acts.innerHTML = (isAdmin ? actBtn('👤 담당자 설정', 'Settle.openManagers()', '#8e44ad') + actBtn('🏷️ 분류 설정', 'Settle.openCatSettings()', '#8e44ad') : '')
                    + (mg ? actBtn('💰 입찰/판매', 'Settle.openAuction()', '#e67e22') : '');
     fil.innerHTML =
         chip('전체', state.stFilter === 'all', '#5D6D7E', "Settle.setStorageFilter('all')")
@@ -1078,12 +1333,19 @@ function renderStorage() {
 
     if (state.stFilter === 'undelivered') { renderUndelivered(box); return; }
 
-    const list = state.storage.filter(i => {
+    const base = state.storage.filter(i => {
         if (state.stFilter === 'pending' && i.sold) return false;
         if (state.stFilter === 'sold' && !i.sold) return false;
         if (state.stServer && i.bossServer !== state.stServer) return false;
         return true;
-    }).sort((a, b) => String(b.addedAt || '').localeCompare(String(a.addedAt || '')));
+    });
+    const byRecent = (a, b) => String(b.addedAt || '').localeCompare(String(a.addedAt || ''));
+    const sorter = state.stSort === 'old' ? (a, b) => -byRecent(a, b)
+        : state.stSort === 'name' ? (a, b) => koCmp(a.itemName, b.itemName) || byRecent(a, b)
+        : state.stSort === 'price' ? (a, b) => (Number(b.bidPrice) || 0) - (Number(a.bidPrice) || 0) || byRecent(a, b)
+        : byRecent;
+    const list = base.filter(i => stPass(i)).sort(sorter);
+    renderCatBar(base, list.length);
 
     const pendingN = state.storage.filter(i => !i.sold).length;
     const soldTotal = state.storage.filter(i => i.sold).reduce((t, i) => t + (Number(i.bidPrice) || 0), 0);
@@ -1092,7 +1354,7 @@ function renderStorage() {
     const head = `<div style="display:flex; gap:8px; margin-bottom:10px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('아이템 판매 금액', fmt(soldTotal) + ' ' + UNIT, '#d5f4e6', '#27ae60', soldTotal ? (waiting ? '정산 대기 ' + fmt(waiting) : '모두 정산됨') : '')}</div>`;
 
     if (!list.length) { box.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">조건에 맞는 아이템이 없습니다.</p>'; return; }
-    box.innerHTML = head + list.map(it => {
+    box.innerHTML = head + list.slice(0, state.stShow).map(it => {
         const k = sid(it.id);
         const sold = !!it.sold;
         const btns = [];
@@ -1110,7 +1372,7 @@ function renderStorage() {
                 <div style="display:flex; gap:6px; align-items:center;">${btns.join('')}</div>
             </div>
         </div>`;
-    }).join('');
+    }).join('') + stMoreBtn(list.length, state.stShow);
 }
 
 async function deleteStorage(k) {
@@ -1181,18 +1443,20 @@ function renderUndelivered(box) {
         return;
     }
     const mg = canManage();
-    const list = undeliveredList();
+    const allU = undeliveredList();
+    const list = allU.filter(d => stPass(d));
+    renderCatBar(allU, list.length);
     const today = ymdOf(nowD());
     const ago = (ds) => {
         const n = Math.round((new Date(today + 'T00:00:00') - new Date(ds + 'T00:00:00')) / 86400000);
         return n <= 0 ? '오늘' : n + '일 전';
     };
     const head = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-        <div style="font-size:0.85rem; font-weight:bold; color:#d35400;">📭 아직 전달되지 않은 아이템 ${list.length}건 <span style="font-weight:normal; color:#95a5a6; font-size:0.76rem;">(최근 ${UNDELIV_DAYS}일)</span></div>
+        <div style="font-size:0.85rem; font-weight:bold; color:#d35400;">📭 아직 전달되지 않은 아이템 ${list.length}건${list.length !== allU.length ? ' / 전체 ' + allU.length + '건' : ''} <span style="font-weight:normal; color:#95a5a6; font-size:0.76rem;">(최근 ${UNDELIV_DAYS}일)</span></div>
         ${actBtn('🔄 새로고침', 'Settle.reloadUndelivered()', '#5D6D7E')}
     </div>`;
-    if (!list.length) { box.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">미전달 아이템이 없습니다. 👍</p>'; return; }
-    box.innerHTML = head + list.map(d => {
+    if (!list.length) { box.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">' + (allU.length ? '조건에 맞는 미전달 아이템이 없습니다.' : '미전달 아이템이 없습니다. 👍') + '</p>'; return; }
+    box.innerHTML = head + list.slice(0, state.stShow).map(d => {
         const pk = sid(d._pk), kk = sid(d._k);
         const marked = d.delivered === true;                 // 전달완료로 표시됐지만 보관함에는 없는 경우
         return `
@@ -1207,7 +1471,7 @@ function renderUndelivered(box) {
                 <div style="display:flex; gap:6px; align-items:center;">${mg ? actBtn('✅ 전달 확인', `Settle.confirmDelivery('${pk}', '${kk}')`, '#16a085') + actBtn('🗑️', `Settle.deleteUndelivered('${pk}', '${kk}')`, '#e74c3c') : ''}</div>
             </div>
         </div>`;
-    }).join('') + (mg ? '' : '<p style="font-size:0.78rem; color:#7f8c8d; margin:6px 0 0;">ℹ️ 전달 확인은 관리자·담당자만 할 수 있습니다.</p>');
+    }).join('') + stMoreBtn(list.length, state.stShow) + (mg ? '' : '<p style="font-size:0.78rem; color:#7f8c8d; margin:6px 0 0;">ℹ️ 전달 확인은 관리자·담당자만 할 수 있습니다.</p>');
 }
 
 const findUndeliv = (pk, k) => state.undeliv.find(d => sid(d._pk) === pk && sid(d._k) === k);
@@ -2792,7 +3056,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
