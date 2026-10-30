@@ -55,7 +55,7 @@ const cbStyle = 'width:16px; height:16px; margin:0; padding:0; border:none; flex
 
 // ── 상태 ─────────────────────────────────────────────────
 const state = {
-    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {}, variants: [], variantSel: '', variantMem: {},
+    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {}, variants: [], variantSel: '', variantMem: {}, undeliv: [], undelivLoaded: false, undelivLoading: false, undelivStale: false,
     managers: [],                 // 담당자 userId[]
     storage: [], stFilter: 'all', stServer: '',
     drops: [], dropKey: '', dropRef: null, bossItems: [],
@@ -178,6 +178,7 @@ function onModeChange() {
 function refreshAll() {
     renderStorage();
     renderCalcActions();
+    if (state.stFilter === 'undelivered' && (!state.undelivLoaded || state.undelivStale) && !state.undelivLoading) loadUndelivered();
 }
 
 // 담당자/보관함 구독은 필요할 때(정산 탭 열기, 드랍 칸 펼치기)만 시작 — 출석 화면을 열 때마다 보관함 전체를 내려받지 않도록
@@ -635,6 +636,7 @@ async function addDrop() {
     if (isMgr) updates['boss_storage/' + id] = storageFromDrop(Object.assign({ _k: id }, drop));   // 보관함에도 실제로 등록
     try {
         await db.ref().update(updates);
+        state.undelivStale = true;
         await learnItem(itemName);
         $('settle-drop-item').value = '';
         $('settle-drop-item-direct').value = '';
@@ -659,6 +661,7 @@ function renderDrops() {
     if (!state.drops.length) { box.innerHTML = msg('이 보스의 드랍 기록이 없습니다.'); return; }
     const t = dropTarget();
     const mg = canManage();
+    const hint = mg ? '' : '<div style="font-size:0.76rem; color:#7f8c8d; margin-top:4px; line-height:1.5;">ℹ️ ✅ 전달완료 체크는 <b>관리자·담당자</b>만 보입니다. 담당자라면 <b>[내 이름 설정]</b>에 담당자로 지정된 본인 이름이 등록되어 있어야 합니다.</div>';
     box.innerHTML = `<div style="font-size:0.82rem; font-weight:bold; color:#555; margin-bottom:6px;">${esc(t.date.slice(5))} ${t.boss ? esc(t.boss.time + ' ' + t.boss.name) : ''} · 드랍 ${state.drops.length}개</div>` + state.drops.map(d => {
         const k = sid(d.id);
         const st = state.storageLoaded ? stById(d.id) : (state.dropStorage[k] || null);
@@ -688,7 +691,7 @@ function renderDrops() {
             <div style="font-size:0.74rem; color:#aaa; margin-top:2px;">${esc(new Date(d.timestamp).toLocaleString('ko-KR'))}</div>
             ${controls}
         </div>`;
-    }).join('');
+    }).join('') + hint;
 }
 
 // 전달완료 체크 = 담당자에게 전달되어 보관함에 들어간 것 (체크하면 보관함에 등록, 해제하면 보관함에서 제거)
@@ -704,7 +707,7 @@ async function toggleDelivered(k, checked) {
     updates[base + '/inStorage'] = !!checked;
     if (checked) { if (!st) updates['boss_storage/' + d.id] = storageFromDrop(d); }
     else updates['boss_storage/' + d.id] = null;
-    try { await db.ref().update(updates); } catch (e) { alert('❌ 저장 실패: ' + e.message); renderDrops(); }
+    try { await db.ref().update(updates); state.undelivStale = true; } catch (e) { alert('❌ 저장 실패: ' + e.message); renderDrops(); }
 }
 async function deleteDrop(k) {
     const d = findDrop(k);
@@ -716,13 +719,17 @@ async function deleteDrop(k) {
     const updates = {};
     updates['boss_drops/' + state.dropKey + '/items/' + d._k] = null;
     updates['boss_storage/' + d.id] = null;
-    try { await db.ref().update(updates); } catch (e) { alert('❌ 삭제 실패: ' + e.message); }
+    try { await db.ref().update(updates); state.undelivStale = true; } catch (e) { alert('❌ 삭제 실패: ' + e.message); }
 }
 
 // ============================================================
 // 🏪 보관함
 // ============================================================
-function setStorageFilter(f) { state.stFilter = f; renderStorage(); }
+function setStorageFilter(f) {
+    state.stFilter = f;
+    if (f === 'undelivered' && (!state.undelivLoaded || state.undelivStale)) loadUndelivered();   // 미전달 목록은 눌렀을 때 읽음
+    else renderStorage();
+}
 function setStorageServer(sv) { state.stServer = sv; renderStorage(); }
 
 function renderStorage() {
@@ -735,9 +742,12 @@ function renderStorage() {
         chip('전체', state.stFilter === 'all', '#5D6D7E', "Settle.setStorageFilter('all')")
         + chip('보관중', state.stFilter === 'pending', '#e67e22', "Settle.setStorageFilter('pending')")
         + chip('판매완료', state.stFilter === 'sold', '#27ae60', "Settle.setStorageFilter('sold')")
+        + chip('미전달' + (state.undelivLoaded ? ' ' + notInStorage().length : ''), state.stFilter === 'undelivered', '#d35400', "Settle.setStorageFilter('undelivered')")
         + '<span style="color:#ddd;">|</span>'
         + chip('전서버', !state.stServer, '#95a5a6', "Settle.setStorageServer('')")
         + Object.keys(SERVERS).map(k => chip(SERVERS[k].name, state.stServer === k, SERVERS[k].color, `Settle.setStorageServer('${k}')`)).join('');
+
+    if (state.stFilter === 'undelivered') { renderUndelivered(box); return; }
 
     const list = state.storage.filter(i => {
         if (state.stFilter === 'pending' && i.sold) return false;
@@ -778,12 +788,135 @@ async function deleteStorage(k) {
     if (!it) return;
     if (!(await requireManage())) return;
     if (it.sold) { alert('판매된 아이템은 삭제할 수 없습니다.'); return; }
-    if (!confirm(`"${it.itemName}" 을(를) 보관함에서 삭제할까요?`)) return;
+    if (!confirm(`"${it.itemName}" 을(를) 보관함에서 삭제할까요?\n(드랍 기록은 "미전달" 상태로 돌아갑니다)`)) return;
     const updates = {};
     updates['boss_storage/' + it.id] = null;
-    if (it.dropPath) updates[it.dropPath + '/inStorage'] = false;
-    try { await db.ref().update(updates); } catch (e) { alert('❌ 삭제 실패: ' + e.message); }
+    if (it.dropPath) { updates[it.dropPath + '/inStorage'] = false; updates[it.dropPath + '/delivered'] = false; }
+    try { await db.ref().update(updates); state.undelivStale = true; } catch (e) { alert('❌ 삭제 실패: ' + e.message); }
 }
+
+// ============================================================
+// 📭 미전달 아이템 — 담당자에게 아직 전달되지 않아 보관함에 없는 드랍
+//   boss_drops 의 키가 "날짜_일정ID" 이므로 최근 UNDELIV_DAYS 일만 키 범위로 읽음 (전체를 읽지 않음)
+// ============================================================
+const UNDELIV_DAYS = 45;
+
+async function loadUndelivered() {
+    if (state.undelivLoading) return;
+    state.undelivLoading = true;
+    renderStorage();
+    const from = ymdOf(new Date(Date.now() - UNDELIV_DAYS * 86400000));
+    try {
+        const snap = await db.ref('boss_drops').orderByKey().startAt(from).once('value');
+        const list = [];
+        snap.forEach(ch => {
+            const pk = String(ch.key);
+            if (pk.slice(0, 10) < from) return;
+            const items = (ch.val() || {}).items || {};
+            Object.keys(items).forEach(k => {
+                const v = items[k];
+                if (!v || typeof v !== 'object') return;
+                const bossId = v.bossId || pk.slice(11);                      // 예전 기록은 날짜/보스ID 가 키에만 있음
+                const sch = getSchedules().find(b => b.id === bossId);
+                list.push(Object.assign({}, v, {
+                    id: v.id != null ? v.id : k, _k: k, _pk: pk,
+                    date: v.date || pk.slice(0, 10), bossId: bossId, bossName: v.bossName || (sch ? sch.name : '')
+                }));
+            });
+        });
+        state.undeliv = list;
+        state.undelivLoaded = true;
+        state.undelivStale = false;
+    } catch (e) {
+        alert('❌ 미전달 목록을 불러오지 못했습니다: ' + e.message);
+    }
+    state.undelivLoading = false;
+    renderStorage();
+}
+function reloadUndelivered() { loadUndelivered(); }
+
+// 보관함에 없는 드랍 (= 아직 담당자에게 전달되지 않았거나, 예전 방식으로 전달완료만 체크된 것)
+function notInStorage() {
+    return state.undeliv.filter(d => !(state.storageLoaded ? !!stById(d.id) : d.delivered === true));
+}
+function undeliveredList() {
+    return notInStorage()
+        .filter(d => !state.stServer || (d.bossServer || d.winnerServer) === state.stServer)
+        .sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));      // 오래 못 전달한 것부터
+}
+
+function renderUndelivered(box) {
+    if (state.undelivLoading && !state.undelivLoaded) {
+        box.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">미전달 목록을 불러오는 중...</p>';
+        return;
+    }
+    const mg = canManage();
+    const list = undeliveredList();
+    const today = ymdOf(nowD());
+    const ago = (ds) => {
+        const n = Math.round((new Date(today + 'T00:00:00') - new Date(ds + 'T00:00:00')) / 86400000);
+        return n <= 0 ? '오늘' : n + '일 전';
+    };
+    const head = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <div style="font-size:0.85rem; font-weight:bold; color:#d35400;">📭 아직 전달되지 않은 아이템 ${list.length}건 <span style="font-weight:normal; color:#95a5a6; font-size:0.76rem;">(최근 ${UNDELIV_DAYS}일)</span></div>
+        ${actBtn('🔄 새로고침', 'Settle.reloadUndelivered()', '#5D6D7E')}
+    </div>`;
+    if (!list.length) { box.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">미전달 아이템이 없습니다. 👍</p>'; return; }
+    box.innerHTML = head + list.map(d => {
+        const pk = sid(d._pk), kk = sid(d._k);
+        const marked = d.delivered === true;                 // 전달완료로 표시됐지만 보관함에는 없는 경우
+        return `
+        <div style="border:2px solid ${marked ? '#f5cba7' : '#f0e6cc'}; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:white;">
+            <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                <div style="flex:1; min-width:150px;">
+                    <div style="font-weight:bold; color:#2c3e50;">${esc(d.itemName)} ${marked ? badge('보관함 미등록', '#e67e22') : badge('미전달', '#d35400')}</div>
+                    <div style="font-size:0.8rem; color:#666;">📅 ${esc(d.date)} (${ago(d.date)}) ⚔️ ${esc(d.bossName)}${d.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(d.bossVariant)}${d.bossVariantName ? ' · ' + esc(d.bossVariantName) : ''}</span>` : ''}</div>
+                    <div style="font-size:0.8rem; color:#666;">획득: <b>${esc(d.winner)}</b>${serverBadge(d.bossServer || d.winnerServer)}</div>
+                    ${marked ? '<div style="font-size:0.75rem; color:#e67e22; margin-top:2px;">전달완료로 표시되어 있지만 보관함에는 없습니다.' + (mg ? ' [전달 확인]을 누르면 보관함에 등록됩니다.' : '') + '</div>' : ''}
+                </div>
+                <div style="display:flex; gap:6px; align-items:center;">${mg ? actBtn('✅ 전달 확인', `Settle.confirmDelivery('${pk}', '${kk}')`, '#16a085') + actBtn('🗑️', `Settle.deleteUndelivered('${pk}', '${kk}')`, '#e74c3c') : ''}</div>
+            </div>
+        </div>`;
+    }).join('') + (mg ? '' : '<p style="font-size:0.78rem; color:#7f8c8d; margin:6px 0 0;">ℹ️ 전달 확인은 관리자·담당자만 할 수 있습니다.</p>');
+}
+
+const findUndeliv = (pk, k) => state.undeliv.find(d => sid(d._pk) === pk && sid(d._k) === k);
+
+// 전달 확인 = 담당자가 받아서 보관함에 등록 (드랍 카드의 ✅ 전달완료 체크와 같은 처리)
+async function confirmDelivery(pk, k) {
+    const d = findUndeliv(pk, k);
+    if (!d) return;
+    if (!(await requireManage())) return;
+    const st = await stFresh(d.id);
+    const base = 'boss_drops/' + d._pk + '/items/' + d._k;
+    const updates = {};
+    updates[base + '/delivered'] = true;
+    updates[base + '/inStorage'] = true;
+    if (!st) updates['boss_storage/' + d.id] = storageFromDrop(d);
+    try {
+        await db.ref().update(updates);
+        d.delivered = true; d.inStorage = true;
+        renderStorage();
+    } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+
+async function deleteUndelivered(pk, k) {
+    const d = findUndeliv(pk, k);
+    if (!d) return;
+    if (!(await requireManage())) return;
+    const st = await stFresh(d.id);
+    if (st && st.sold) { alert('판매된 아이템은 삭제할 수 없습니다.'); return; }
+    if (!confirm(`"${d.itemName}" 드랍 기록을 삭제할까요?`)) return;
+    const updates = {};
+    updates['boss_drops/' + d._pk + '/items/' + d._k] = null;
+    updates['boss_storage/' + d.id] = null;
+    try {
+        await db.ref().update(updates);
+        state.undeliv = state.undeliv.filter(x => x !== d);
+        renderStorage();
+    } catch (e) { alert('❌ 삭제 실패: ' + e.message); }
+}
+
 
 // ── 입찰/판매 ─────────────────────────────────────────────
 function openAuction(preId) {
@@ -1577,7 +1710,7 @@ function rbRenderSummary() {
 // ============================================================
 window.Settle = {
     onOpen, onModeChange, showPane, closeModal,
-    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop,
+    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
     openCalc, closeCalc, toggleRecipient, setRecipientsAll, setRecipientsServer, saveSettlement,
