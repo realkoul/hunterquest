@@ -55,7 +55,7 @@ const cbStyle = 'width:16px; height:16px; margin:0; padding:0; border:none; flex
 
 // ── 상태 ─────────────────────────────────────────────────
 const state = {
-    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow',
+    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {},
     managers: [],                 // 담당자 userId[]
     storage: [], stFilter: 'all', stServer: '',
     drops: [], dropKey: '', dropRef: null, bossItems: [],
@@ -173,7 +173,7 @@ function onOpen() {
 }
 function onModeChange() {
     syncDropBox(true);
-    if (state.inited) { refreshAll(); if (state.pane === 'reimb') rbRender(); }
+    if (state.inited) { refreshAll(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
 }
 function refreshAll() {
     renderStorage();
@@ -182,13 +182,19 @@ function refreshAll() {
 
 // 담당자/보관함 구독은 필요할 때(정산 탭 열기, 드랍 칸 펼치기)만 시작 — 출석 화면을 열 때마다 보관함 전체를 내려받지 않도록
 let listenersOn = false;
-function ensureListeners() {
-    if (listenersOn || !depsOk()) return;
-    listenersOn = true;
+// 담당자 목록은 아주 작아서 출석 탭 시작 때 구독, 보관함 "전체"는 정산 탭을 열 때만 구독
+let managersOn = false, storageOn = false;
+function ensureManagers() {
+    if (managersOn || !depsOk()) return;
+    managersOn = true;
     db.ref('hunter_config/storageManagers').on('value', snap => {
         state.managers = Object.values(snap.val() || {}).map(Number).filter(n => !isNaN(n));
         renderDrops(); renderStorage(); renderCalcActions();
     });
+}
+function ensureStorage() {
+    if (storageOn || !depsOk()) return;
+    storageOn = true;
     db.ref('boss_storage').on('value', snap => {
         const arr = [];
         snap.forEach(ch => { const v = ch.val(); if (v && typeof v === 'object') arr.push(Object.assign({}, v, { id: v.id != null ? v.id : ch.key })); });
@@ -197,6 +203,7 @@ function ensureListeners() {
         renderStorage(); renderDrops(); renderCalcActions();
     });
 }
+function ensureListeners() { ensureManagers(); ensureStorage(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -287,6 +294,8 @@ function loadDrops() {
     if (state.dropRef) { state.dropRef.off('value'); state.dropRef = null; }
     state.dropKey = key;
     state.drops = [];
+    Object.keys(state.dropStRefs).forEach(k => state.dropStRefs[k].off('value'));
+    state.dropStRefs = {}; state.dropStorage = {};
     loadBossItems(t.bossId);
     renderDrops();
     if (!key) return;
@@ -301,7 +310,29 @@ function loadDrops() {
         });
         arr.sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
         state.drops = arr;
+        syncDropStorage();
         renderDrops();
+    });
+}
+
+// 이 보스 드랍 건별로 보관함 항목만 구독 (보관함 전체를 받지 않고도 '보관중/판매완료' 표시)
+function syncDropStorage() {
+    const want = {};
+    state.drops.forEach(d => { want[sid(d.id)] = d.id; });
+    Object.keys(state.dropStRefs).forEach(k => {
+        if (!want[k]) { state.dropStRefs[k].off('value'); delete state.dropStRefs[k]; delete state.dropStorage[k]; }
+    });
+    Object.keys(want).forEach(k => {
+        if (state.dropStRefs[k]) return;
+        const ref = db.ref('boss_storage/' + want[k]);
+        state.dropStRefs[k] = ref;
+        ref.on('value', snap => {
+            if (state.dropStRefs[k] !== ref) return;
+            const v = snap.val();
+            if (v && typeof v === 'object') state.dropStorage[k] = Object.assign({}, v, { id: v.id != null ? v.id : want[k] });
+            else delete state.dropStorage[k];
+            renderDrops();
+        });
     });
 }
 
@@ -322,12 +353,12 @@ function buildDropBox() {
     box.dataset.built = '1';
     const lab = 'font-size:0.8rem; font-weight:bold; color:#555; display:block; margin:0 0 4px;';
     box.innerHTML = `
-    <details id="settle-drop-details" style="border:1px solid #e0e0e0; border-radius:10px; background:white;">
+    <details id="settle-drop-details" open style="border:1px solid #e0e0e0; border-radius:10px; background:white;">
         <summary style="padding:11px 14px; cursor:pointer; font-weight:bold; color:#2c3e50; font-size:0.92rem;">
             📦 드랍 기록 <span id="settle-drop-count" style="margin-left:6px; padding:1px 8px; border-radius:10px; background:#eef2f5; color:#5D6D7E; font-size:0.75rem;"></span>
         </summary>
         <div style="padding:2px 14px 14px;">
-            <p style="font-size:0.78rem; color:#7f8c8d; margin:0 0 10px;">보스에서 나온 아이템과 획득자를 기록합니다. 아이템 이름은 처음 입력하면 이 보스 목록에 저장되어 다음부터 선택할 수 있습니다.</p>
+            <p style="font-size:0.78rem; color:#7f8c8d; margin:0 0 10px;">보스에서 나온 아이템과 획득자를 기록합니다. 보스가 끝난 뒤에도 기록할 수 있고, 지난 보스는 "기록할 보스"에서 오늘·어제 것을 고르세요. 아이템 이름은 처음 입력하면 이 보스 목록에 저장되어 다음부터 선택할 수 있습니다.</p>
             <label style="${lab}">기록할 보스</label>
             <select id="settle-drop-target" onchange="Settle.onDropTargetChange()" style="${inputStyle} margin-bottom:8px;"></select>
             <select id="settle-drop-item" onchange="Settle.onItemSelect()" style="${inputStyle} margin-bottom:6px;"></select>
@@ -340,9 +371,6 @@ function buildDropBox() {
             <div id="settle-drops-list" style="margin-top:12px;"></div>
         </div>
     </details>`;
-    $('settle-drop-details').addEventListener('toggle', () => {
-        if ($('settle-drop-details').open) { ensureListeners(); syncDropBox(true); }
-    });
     return true;
 }
 
@@ -366,7 +394,7 @@ function syncDropBox(force) {
 }
 function initDropBox() {
     if (!depsOk() || !buildDropBox()) return;
-    const start = () => { syncDropBox(true); setInterval(() => syncDropBox(false), 1000); };
+    const start = () => { ensureManagers(); syncDropBox(true); setInterval(() => syncDropBox(false), 1000); };
     if (typeof authReadyPromise !== 'undefined' && authReadyPromise && typeof authReadyPromise.then === 'function') authReadyPromise.then(start);
     else start();
 }
@@ -483,7 +511,7 @@ function renderDrops() {
     const mg = canManage();
     box.innerHTML = `<div style="font-size:0.82rem; font-weight:bold; color:#555; margin-bottom:6px;">${esc(t.date.slice(5))} ${t.boss ? esc(t.boss.time + ' ' + t.boss.name) : ''} · 드랍 ${state.drops.length}개</div>` + state.drops.map(d => {
         const k = sid(d.id);
-        const st = stById(d.id);
+        const st = state.storageLoaded ? stById(d.id) : (state.dropStorage[k] || null);
         const mgrWinner = state.managers.includes(Number(d.winnerId));
         let status;
         if (st && st.sold) status = badge(st.settledId ? '정산완료' : '판매완료', '#27ae60');
@@ -1061,7 +1089,7 @@ function rbRenderPriceLine() {
     const p = rb.prices;
     const txt = (p.recovery || p.blessing)
         ? `지급 단가(개당): 복구 ${fmt(p.recovery)} · 축복 ${fmt(p.blessing)} ${UNIT}`
-        : '지급 단가가 아직 설정되지 않았습니다. (운영진이 설정하면 금액이 계산됩니다)';
+        : '지급 단가가 아직 설정되지 않았습니다. (운영진이 복구·축복 단가를 각각 설정하면 금액이 계산됩니다)';
     el.innerHTML = esc(txt) + (isAdmin ? ' <button onclick="Settle.rbSetPrices()" style="margin-left:6px; padding:4px 10px; border:none; border-radius:6px; background:#8e44ad; color:white; font-size:0.78rem; font-weight:bold; cursor:pointer;">⚙️ 단가 설정</button>' : '');
 }
 
@@ -1174,6 +1202,7 @@ function rbRender() {
     box.innerHTML = rb.requests.map(r => {
         const k = sid(r.id);
         const amount = rbAmount(r);
+        const pr = r.priceSnap || rb.prices;
         const isMine = myNames.includes(r.name);
         const canDelete = isAdmin || (isMine && r.status === 'pending');
         const border = r.status === 'approved' ? (r.paid ? '#a9dfbf' : '#aed6f1') : (r.status === 'rejected' ? '#f5b7b1' : '#f0e6cc');
@@ -1197,6 +1226,7 @@ function rbRender() {
                 복구 <b>${fmt(r.recoveryCnt)}</b>개 · 축복 <b>${fmt(r.blessingCnt)}</b>개
                 <span style="color:#2980b9; font-weight:bold;"> = ${fmt(amount)} ${UNIT}</span>
             </div>
+            <div style="margin-top:2px; font-size:0.76rem; color:#95a5a6;">복구 ${fmt(r.recoveryCnt)}×${fmt(pr.recovery)} + 축복 ${fmt(r.blessingCnt)}×${fmt(pr.blessing)}</div>
             ${r.memo ? `<div style="margin-top:4px; font-size:0.85rem; color:#7f8c8d;">📝 ${esc(r.memo)}</div>` : ''}
             ${r.status === 'rejected' && r.rejectReason ? `<div style="margin-top:4px; font-size:0.85rem; color:#c0392b;">반려 사유: ${esc(r.rejectReason)}</div>` : ''}
             <div style="margin-top:3px; font-size:0.76rem; color:#aaa;">${esc(new Date(r.createdAt).toLocaleString('ko-KR'))}</div>
@@ -1267,9 +1297,10 @@ function rbUpdate(r, patch) {
 async function rbApprove(k) {
     const r = rbFind(k);
     if (!r || !(await requireAdmin())) return;
-    if (!(rb.prices.recovery || rb.prices.blessing)) {
-        if (!confirm('지급 단가가 설정되지 않아 금액이 0으로 승인됩니다. 계속할까요?')) return;
-    }
+    const missing = [];
+    if ((Number(r.recoveryCnt) || 0) > 0 && !rb.prices.recovery) missing.push('복구');
+    if ((Number(r.blessingCnt) || 0) > 0 && !rb.prices.blessing) missing.push('축복');
+    if (missing.length && !confirm(missing.join('·') + ' 단가가 설정되지 않아 해당 금액이 0으로 계산됩니다. 계속 승인할까요?')) return;
     await rbUpdate(r, {
         status: 'approved', priceSnap: { recovery: rb.prices.recovery, blessing: rb.prices.blessing },
         reviewedAt: nowIso(), rejectReason: null
@@ -1339,15 +1370,29 @@ async function rbDeleteImages(k) {
 }
 async function rbSetPrices() {
     if (!(await requireAdmin())) return;
-    const a = prompt('복구 1개당 지급액 (' + UNIT + ')', rb.prices.recovery || 0);
-    if (a === null) return;
-    const b = prompt('축복 1개당 지급액 (' + UNIT + ')', rb.prices.blessing || 0);
-    if (b === null) return;
-    const ra = parseInt(a), rbv = parseInt(b);
-    if (isNaN(ra) || isNaN(rbv) || ra < 0 || rbv < 0) { alert('단가는 0 이상의 숫자여야 합니다.'); return; }
-    await db.ref('hunter_config/reimbursePrices').set({ recovery: ra, blessing: rbv })
-        .then(() => alert('✅ 단가가 저장되었습니다.\n이미 승인된 신청은 승인 당시 단가가 유지됩니다.'))
-        .catch(e => alert('❌ 저장 실패: ' + e.message));
+    const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
+    showModal(`
+        <h3 style="margin:0 0 4px; color:#2c3e50;">⚙️ 지원비 단가 설정</h3>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 4px;">복구비와 축복비는 단가가 달라서 각각 설정합니다. 신청 금액 = 수량 × 단가.</p>
+        <label style="${lab}">🩹 복구 1개당 지급액 (${UNIT})</label>
+        <input type="number" id="rb-price-recovery" min="0" step="1" value="${Number(rb.prices.recovery) || 0}" style="${inputStyle}">
+        <label style="${lab}">✨ 축복 1개당 지급액 (${UNIT})</label>
+        <input type="number" id="rb-price-blessing" min="0" step="1" value="${Number(rb.prices.blessing) || 0}" style="${inputStyle}">
+        <p style="font-size:0.76rem; color:#95a5a6; margin:10px 0 0;">이미 승인된 신청은 승인 당시 단가가 유지됩니다.</p>
+        <div style="display:flex; gap:8px; margin-top:14px;">
+            ${actBtn('저장', 'Settle.rbSavePrices()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
+        </div>`);
+}
+async function rbSavePrices() {
+    if (!(await requireAdmin())) return;                       // 저장 시점에도 관리자 확인
+    const ra = parseInt($('rb-price-recovery').value), rbv = parseInt($('rb-price-blessing').value);
+    if (isNaN(ra) || isNaN(rbv) || ra < 0 || rbv < 0) { alert('단가는 0 이상의 숫자로 입력하세요. (복구/축복 둘 다)'); return; }
+    try {
+        await db.ref('hunter_config/reimbursePrices').set({ recovery: ra, blessing: rbv });
+        closeModal();
+        alert('✅ 단가가 저장되었습니다.\n복구 ' + fmt(ra) + ' · 축복 ' + fmt(rbv) + ' ' + UNIT);
+    } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 
 // ── 주간 지급 요약 ──
@@ -1406,7 +1451,7 @@ window.Settle = {
     openCalc, closeCalc, toggleRecipient, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbHandleFiles, rbRemovePending, rbSubmit, rbShowImages, rbOpenImage,
-    rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices
+    rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
 };
 
 initDropBox();   // 출석 탭의 드랍 칸 시작
