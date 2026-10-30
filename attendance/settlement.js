@@ -358,7 +358,7 @@ function buildDropBox() {
             📦 드랍 기록 <span id="settle-drop-count" style="margin-left:6px; padding:1px 8px; border-radius:10px; background:#eef2f5; color:#5D6D7E; font-size:0.75rem;"></span>
         </summary>
         <div style="padding:2px 14px 14px;">
-            <p style="font-size:0.78rem; color:#7f8c8d; margin:0 0 10px;">보스에서 나온 아이템과 획득자를 기록합니다. 보스가 끝난 뒤에도 기록할 수 있고, 지난 보스는 "기록할 보스"에서 오늘·어제 것을 고르세요. 아이템 이름은 처음 입력하면 이 보스 목록에 저장되어 다음부터 선택할 수 있습니다.</p>
+            <p style="font-size:0.78rem; color:#7f8c8d; margin:0 0 10px;">보스에서 나온 아이템과 획득자를 기록하고, 담당자에게 전달되면 ✅ 전달완료를 체크하세요(보관함에 등록됩니다). 보스가 끝난 뒤에도 기록할 수 있고, 지난 보스는 "기록할 보스"에서 오늘·어제 것을 고르세요. 아이템 이름은 처음 입력하면 이 보스 목록에 저장되어 다음부터 선택할 수 있습니다.</p>
             <label style="${lab}">기록할 보스</label>
             <select id="settle-drop-target" onchange="Settle.onDropTargetChange()" style="${inputStyle} margin-bottom:8px;"></select>
             <select id="settle-drop-item" onchange="Settle.onItemSelect()" style="${inputStyle} margin-bottom:6px;"></select>
@@ -521,10 +521,7 @@ function renderDrops() {
         const controls = mg ? `
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
                 <label style="display:flex; align-items:center; gap:4px; padding:5px 9px; background:${d.delivered ? '#d5f4e6' : '#fef9e7'}; border-radius:6px; cursor:pointer; font-size:0.82rem; font-weight:bold; white-space:nowrap;">
-                    <input type="checkbox" style="${cbStyle}" ${d.delivered ? 'checked' : ''} onchange="Settle.toggleDelivered('${k}', this.checked)"> ✅ 전달완료
-                </label>
-                <label style="display:flex; align-items:center; gap:4px; padding:5px 9px; background:${d.inStorage ? '#fdebd0' : '#f4f6f7'}; border-radius:6px; font-size:0.82rem; font-weight:bold; white-space:nowrap; ${d.delivered ? 'cursor:pointer;' : 'opacity:0.5;'}">
-                    <input type="checkbox" style="${cbStyle}" ${d.inStorage ? 'checked' : ''} ${d.delivered ? '' : 'disabled'} onchange="Settle.toggleStorage('${k}', this.checked)"> 🏪 보관함
+                    <input type="checkbox" style="${cbStyle}" ${d.delivered ? 'checked' : ''} onchange="Settle.toggleDelivered('${k}', this.checked)"> ✅ 전달완료 (보관함 등록)
                 </label>
                 ${actBtn('🗑️', `Settle.deleteDrop('${k}')`, '#e74c3c')}
             </div>` : '';
@@ -543,37 +540,21 @@ function renderDrops() {
     }).join('');
 }
 
+// 전달완료 체크 = 담당자에게 전달되어 보관함에 들어간 것 (체크하면 보관함에 등록, 해제하면 보관함에서 제거)
 async function toggleDelivered(k, checked) {
     const d = findDrop(k);
     if (!d) return;
     if (!(await requireManage())) { renderDrops(); return; }
     const st = await stFresh(d.id);
-    if (!checked && st && st.sold) { alert('이미 판매된 아이템입니다. 보관함에서 판매 취소를 먼저 해주세요.'); renderDrops(); return; }
+    if (!checked && st && st.sold) { alert('이미 판매된 아이템입니다. 정산 탭 보관함에서 판매 취소를 먼저 해주세요.'); renderDrops(); return; }
     const base = 'boss_drops/' + state.dropKey + '/items/' + d._k;
     const updates = {};
     updates[base + '/delivered'] = !!checked;
-    if (!checked) {                                  // 전달 취소 → 보관함에서도 함께 뺌
-        updates[base + '/inStorage'] = false;
-        updates['boss_storage/' + d.id] = null;
-    }
-    try { await db.ref().update(updates); } catch (e) { alert('❌ 저장 실패: ' + e.message); renderDrops(); }
-}
-
-async function toggleStorage(k, checked) {
-    const d = findDrop(k);
-    if (!d) return;
-    if (!(await requireManage())) { renderDrops(); return; }
-    if (!d.delivered) { alert('전달완료를 먼저 체크하세요.'); renderDrops(); return; }
-    const st = await stFresh(d.id);
-    if (!checked && st && st.sold) { alert('이미 판매된 아이템입니다. 보관함에서 판매 취소를 먼저 해주세요.'); renderDrops(); return; }
-    const base = 'boss_drops/' + state.dropKey + '/items/' + d._k;
-    const updates = {};
     updates[base + '/inStorage'] = !!checked;
     if (checked) { if (!st) updates['boss_storage/' + d.id] = storageFromDrop(d); }
     else updates['boss_storage/' + d.id] = null;
     try { await db.ref().update(updates); } catch (e) { alert('❌ 저장 실패: ' + e.message); renderDrops(); }
 }
-
 async function deleteDrop(k) {
     const d = findDrop(k);
     if (!d) return;
@@ -712,7 +693,7 @@ async function openManagers() {
     const list = getUsers().slice().sort((a, b) => koCmp(a.name, b.name));
     showModal(`
         <h3 style="margin:0 0 4px; color:#2c3e50;">👤 보관함 담당자 설정</h3>
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px;">담당자가 아이템을 획득하면 전달완료 + 보관함 등록이 자동 처리되고, 담당자는 전달·입찰·정산을 직접 처리할 수 있습니다.</p>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px;">담당자가 아이템을 획득하면 전달완료(보관함 등록)가 자동 처리되고, 담당자는 전달 확인·입찰·정산을 직접 처리할 수 있습니다.</p>
         <input type="text" id="settle-mgr-search" placeholder="이름 검색" oninput="Settle.filterManagerRows()" style="${inputStyle} margin-bottom:8px;">
         <div id="settle-mgr-list" style="max-height:46vh; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
             ${list.map(u => `<label class="settle-mgr-row" data-name="${esc(u.name)}" style="display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid #f3f3f3; cursor:pointer;">
@@ -1445,7 +1426,7 @@ function rbRenderSummary() {
 // ============================================================
 window.Settle = {
     onOpen, onModeChange, showPane, closeModal,
-    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onItemSelect, addDrop, toggleDelivered, toggleStorage, deleteDrop,
+    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onItemSelect, addDrop, toggleDelivered, deleteDrop,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
     openCalc, closeCalc, toggleRecipient, setRecipientsAll, setRecipientsServer, saveSettlement,
