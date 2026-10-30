@@ -145,8 +145,6 @@ function buildRoot() {
             <div id="settle-history-area"></div>
         </div>
 
-        <!-- 구글시트 자동 백업 (관리자) -->
-        <div class="card" id="settle-backup-card" style="display:none;"></div>
     </div>
 
     <div id="settle-pane-reimb" style="display:none;"></div>`;
@@ -208,13 +206,13 @@ function onModeChange() {
     syncDropBox(true);
     updateNav();
     myAttTick();
+    renderBackupCard();
     if (state.inited) { refreshAll(); renderSeg(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
     rbRenderUser();
 }
 function refreshAll() {
     renderStorage();
     renderCalcActions();
-    renderBackupCard();
     if (state.stFilter === 'undelivered' && (!state.undelivLoaded || state.undelivStale) && !state.undelivLoading) loadUndelivered();
 }
 
@@ -251,7 +249,7 @@ function ensureSupportTeam() {
         if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
     });
 }
-function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureBackupStatus(); ensureStorage(); }
+function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureStorage(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -738,6 +736,7 @@ async function adminOpen() {
     if (!depsOk() || state.admLoading) return;
     state.admLoading = true;
     ensureCatRules(); ensureItemTags();                      // 아이템별 분류 선택칸에 쓸 분류 목록과 지정 내용
+    ensureBackupStatus(); renderBackupCard();                // 아이템/정산 구글 백업 카드의 상태
     try { state.admVariants = (await db.ref('boss_variants').once('value')).val() || {}; }
     catch (e) { state.admVariants = {}; }
     state.admLoading = false;
@@ -1778,34 +1777,53 @@ function ensureBackupStatus() {
 }
 const BK_SRC = { trigger: '자동 실행', manual: '직접 실행', web: '사이트에서 요청', setup: '처음 설정' };
 function renderBackupCard() {
-    const box = $('settle-backup-card');
-    if (!box) return;
-    if (!isAdmin) { box.style.display = 'none'; return; }
-    box.style.display = 'block';
+    const acc = $('acc-backup'), box = $('settle-backup-body'), badge = $('settle-backup-badge');
+    if (!acc || !box) return;
+    if (!isAdmin) { acc.style.display = 'none'; return; }
+    acc.style.display = '';
     const st = state.backupStatus, cfg = backupCfg();
     const when = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('ko-KR'); };
-    let line, tone = '#7f8c8d';
+    let line, tone = '#7f8c8d', mark = '', days = 0;
     if (!st) {
         line = '아직 백업 기록이 없습니다. 구글 Apps Script를 설치하면 매주 수요일 오전 6시에 복구비·아이템·정산이 시트에 자동으로 정리됩니다. (설치 방법: 설치방법.md)';
+        mark = '미설정';
     } else if (st.ok) {
         const rows = st.rows || {};
         const link = /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+/.test(String(st.sheetUrl || ''))
             ? ` <a href="${esc(st.sheetUrl)}" target="_blank" rel="noopener noreferrer" style="color:#2980b9; font-weight:bold; white-space:nowrap;">📄 시트 열기</a>` : '';
-        const days = Math.floor((Date.now() - new Date(st.at).getTime()) / 86400000);
+        days = Math.floor((Date.now() - new Date(st.at).getTime()) / 86400000);
         line = `✅ 마지막 백업 <b>${esc(when(st.at))}</b> (${esc(BK_SRC[st.source] || '')}) · ${st.mode === 'all' ? '전체 기간' : '최근 ' + (Number(st.weeks) || 0) + '주'} · 복구비 ${fmt(rows.reimb)}행 · 아이템 ${fmt(rows.items)}개 · 정산 ${fmt(rows.settle)}건${link}`;
         if (days >= 9) line += `<div style="color:#d35400; margin-top:4px;">⚠️ 마지막 백업이 ${days}일 전입니다. 매주 자동 실행이 멈추지 않았는지 확인하세요. (Apps Script → 트리거)</div>`;
         tone = '#27ae60';
+        mark = days >= 9 ? '⚠️ ' + days + '일 전' : '✅ ' + (new Date(st.at).getMonth() + 1) + '/' + new Date(st.at).getDate();
     } else {
         line = `❌ 마지막 시도 <b>${esc(when(st.at))}</b> 실패: ${esc(String(st.error || '알 수 없는 오류').slice(0, 300))}`;
         tone = '#c0392b';
+        mark = '❌ 실패';
     }
+    if (badge) { badge.textContent = mark; badge.style.color = tone; }                 // 접어 둔 상태에서도 제목 옆에서 상태를 알 수 있게
     box.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
-            <h2 style="font-size:1.05rem; margin:0;">☁️ 구글시트 자동 백업</h2>
-            <div style="display:flex; gap:6px;">${actBtn('📤 지금 백업', 'Settle.backupNowRequest()', '#27ae60')}${actBtn('⚙️ 설정', 'Settle.openBackupSettings()', '#8e44ad')}</div>
-        </div>
+        <div style="display:flex; gap:6px; margin:15px 0 10px;">${actBtn('📤 지금 백업', 'Settle.backupNowRequest()', '#27ae60')}${actBtn('⚙️ 설정', 'Settle.openBackupSettings()', '#8e44ad')}</div>
         <div style="font-size:0.85rem; line-height:1.6; color:${tone};">${line}</div>
         <p style="font-size:0.76rem; color:#95a5a6; margin:8px 0 0; line-height:1.5;">매주 수요일 오전 6시에 복구비·아이템 드랍/판매·정산이 주 단위로 정리됩니다. 확정·지급·판매 같은 상태는 나중에 바뀌므로 최근 4주를 매번 다시 정리합니다.${cfg.url && cfg.key ? '' : ' [지금 백업] 버튼은 ⚙️ 설정에서 웹 앱 주소와 키를 한 번 입력하면 쓸 수 있습니다.'}</p>`;
+}
+// 관리 탭에 "아이템/정산 구글 백업" 접이식 카드를 만듦 ("통계 내보내기" 카드 바로 아래, app.js·index.html 수정 없이)
+function initBackupAdmin() {
+    if ($('acc-backup')) return;
+    const anchor = $('acc-export') || $('acc-items');
+    if (!anchor) return;
+    const acc = document.createElement('div');
+    acc.className = 'accordion-card';
+    acc.id = 'acc-backup';
+    acc.style.display = 'none';
+    acc.innerHTML = `
+        <div class="accordion-header" onclick="toggleAccordion('acc-backup')">
+            <h2>☁️ 아이템/정산 구글 백업 <span id="settle-backup-badge" style="font-size:0.78rem; font-weight:normal; margin-left:6px;"></span></h2>
+            <span class="accordion-arrow">▼</span>
+        </div>
+        <div class="accordion-body"><div id="settle-backup-body"></div></div>`;
+    anchor.insertAdjacentElement('afterend', acc);
+    renderBackupCard();
 }
 async function openBackupSettings() {
     if (!(await requireAdmin())) return;
@@ -3303,5 +3321,6 @@ initDropBox();   // 출석 탭의 드랍 칸 시작
 initAdminItems(); // 관리 탭의 [보스 아이템 설정] 편집기
 initUserReimb();  // 사용자용 [복구비] 탭
 initMyAtt();      // 출석 탭의 [내 출석]
+initBackupAdmin(); // 관리 탭의 [아이템/정산 구글 백업]
 updateNav();      // 정산 메뉴는 관리자·담당자에게만
 })();
