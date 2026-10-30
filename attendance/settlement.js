@@ -60,7 +60,8 @@ const state = {
     storage: [], stFilter: 'all', stServer: '',
     drops: [], dropKey: '', dropRef: null, bossItems: [],
     settlements: [], recipients: new Set(), calcItemIds: [],
-    calcMode: 'equal', calcRatios: { jingir: 0, pandora: 0, support: 0, other: 0 }, calcFixed: {}      // 정산 계산: 분배 방식 / 서버별 비율(%) / 직접 지정 금액
+    calcMode: 'equal', calcRatios: { jingir: 0, pandora: 0, support: 0, other: 0 }, calcFixed: {},     // 정산 계산: 분배 방식 / 서버별 비율(%) / 직접 지정 금액
+    supportTeam: [], calcSupportPct: 50                                                                  // 지원조 명단(userId[], 관리자만 설정) / 지원조 몫(%)
 };
 
 function depsOk() {
@@ -224,7 +225,17 @@ function ensureStorage() {
         renderStorage(); renderDrops(); renderCalcActions();
     });
 }
-function ensureListeners() { ensureManagers(); ensureStorage(); }
+let supportOn = false;
+function ensureSupportTeam() {
+    if (supportOn || !depsOk()) return;
+    supportOn = true;
+    db.ref('hunter_config/supportTeam').on('value', snap => {
+        state.supportTeam = Object.values(snap.val() || {}).map(Number).filter(n => !isNaN(n));
+        renderCalcActions();
+        if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
+    });
+}
+function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureStorage(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -1321,6 +1332,37 @@ async function saveManagers() {
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 
+// ── 지원조 설정 (관리자 전용) ───────────────────────────────
+async function openSupportTeam() {
+    if (!(await requireAdmin())) return;
+    const list = getUsers().slice().sort((a, b) => koCmp(a.name, b.name));
+    showModal(`
+        <h3 style="margin:0 0 4px; color:#2c3e50;">🤝 지원조 설정</h3>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px; line-height:1.5;">정산 계산에서 [지원조 비율]을 고르면, 여기서 지정한 사람들이 정해진 비율(%)만큼을 받고 나머지 인원은 그 비율을 뺀 나머지를 나눠 받습니다. 지원조 명단은 관리자만 바꿀 수 있습니다.</p>
+        <input type="text" id="settle-sup-search" placeholder="이름 검색" oninput="Settle.filterSupportRows()" style="${inputStyle} margin-bottom:8px;">
+        <div id="settle-sup-list" style="max-height:46vh; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
+            ${list.map(u => `<label class="settle-sup-row" data-name="${esc(u.name)}" style="display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid #f3f3f3; cursor:pointer;">
+                <input type="checkbox" style="${cbStyle}" value="${Number(u.id)}" ${state.supportTeam.includes(Number(u.id)) ? 'checked' : ''}> ${esc(u.name)}${serverBadge(u.server)}</label>`).join('')}
+        </div>
+        <div style="display:flex; gap:8px; margin-top:14px;">
+            ${actBtn('저장', 'Settle.saveSupportTeam()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
+        </div>`);
+}
+function filterSupportRows() {
+    const q = ($('settle-sup-search').value || '').trim();
+    document.querySelectorAll('#settle-sup-list .settle-sup-row').forEach(r => { r.style.display = !q || r.dataset.name.indexOf(q) >= 0 ? 'flex' : 'none'; });
+}
+async function saveSupportTeam() {
+    if (!(await requireAdmin())) return;                       // 저장 시점에도 관리자 확인
+    const ids = Array.from(document.querySelectorAll('#settle-sup-list input[type=checkbox]')).filter(c => c.checked).map(c => Number(c.value));
+    try {
+        await db.ref('hunter_config/supportTeam').set(ids.length ? ids : null);
+        closeModal();
+    } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+
+
 // ============================================================
 // 📊 정산 (균등 배분 / 대상자 선택 / 중복 정산 방지)
 // ============================================================
@@ -1341,10 +1383,10 @@ const RATIO_GROUPS = [['jingir', '진기르'], ['pandora', '판도라'], ['suppo
 const groupOf = (u) => (SERVERS[u.server] ? u.server : 'other');
 const sumOf = (arr) => arr.reduce((a, b) => a + b, 0);
 
-function computeSplit(total, recips, mode, ratios, fixed) {
+function computeSplit(total, recips, mode, ratios, fixed, opts) {
     const warnings = [], errors = [];
     const rows = recips.slice().sort((a, b) => koCmp(a.name, b.name))
-        .map(u => ({ userId: Number(u.id), name: u.name, server: u.server || '', group: groupOf(u), amount: 0, fixed: false }));
+        .map(u => ({ userId: Number(u.id), name: u.name, server: u.server || '', group: groupOf(u), team: !!(opts && opts.supportIds && opts.supportIds.has(Number(u.id))), amount: 0, fixed: false }));
     let fixedSum = 0;
     rows.forEach(r => {
         const f = fixed ? fixed[r.userId] : undefined;
@@ -1358,11 +1400,11 @@ function computeSplit(total, recips, mode, ratios, fixed) {
     if (rows.length && !auto.length) {
         unallocated = pool;
         if (pool > 0) warnings.push(`전원 금액을 직접 지정해서 남은 ${fmt(pool)} ${UNIT}은 배분되지 않습니다. (미배분)`);
-    } else if (auto.length && mode !== 'ratio') {
+    } else if (auto.length && mode !== 'ratio' && mode !== 'support') {
         const base = Math.floor(pool / auto.length);
         let rem = pool - base * auto.length;
         auto.forEach(r => { r.amount = base + (rem-- > 0 ? 1 : 0); });
-    } else if (auto.length) {
+    } else if (auto.length && mode === 'ratio') {
         if (Math.abs(ratioSum - 100) > 0.01) errors.push(`서버별 비율의 합계가 ${Math.round(ratioSum * 100) / 100}%입니다. 100%로 맞춰주세요.`);
         const gs = RATIO_GROUPS.map(([g]) => g);
         const exact = gs.map(g => pool * (Number(ratios[g]) || 0) / 100);
@@ -1383,7 +1425,28 @@ function computeSplit(total, recips, mode, ratios, fixed) {
             const base = Math.floor(share / members.length);
             let rem = share - base * members.length;
             members.forEach(r => { r.amount = base + (rem-- > 0 ? 1 : 0); });
-            if (share === 0 && members.length) warnings.push(`${RATIO_GROUPS[gi][1]} ${members.length}명은 비율이 0%라 받는 금액이 없습니다.`);
+            if (share === 0 && pool > 0 && members.length) warnings.push(`${RATIO_GROUPS[gi][1]} ${members.length}명은 비율이 0%라 받는 금액이 없습니다.`);
+        });
+    }
+    if (auto.length && mode === 'support') {                        // 지원조 몫(%) / 나머지 인원은 나머지(100−%)에서 균등 — 직접 지정 금액을 뺀 뒤의 금액 기준
+        const raw = Number(opts && opts.supportPct);
+        if (isNaN(raw) || raw < 0 || raw > 100) errors.push('지원조 비율은 0~100% 사이로 입력하세요.');
+        const tp = Math.min(100, Math.max(0, isNaN(raw) ? 0 : raw));
+        const exact = [pool * tp / 100, pool * (100 - tp) / 100];
+        const pools = exact.map(Math.floor);
+        let left = pool - pools[0] - pools[1];                              // 소수점 정리: 소수 부분이 큰 쪽부터 1씩
+        const ord = [0, 1].filter(i => exact[i] > 0).sort((a, b) => (exact[b] - pools[b]) - (exact[a] - pools[a]) || a - b);
+        for (let k = 0; left > 0 && ord.length; k++, left--) pools[ord[k % ord.length]]++;
+        [[0, '지원조', auto.filter(r => r.team)], [1, '나머지 인원', auto.filter(r => !r.team)]].forEach(([i, nm, members]) => {
+            const share = pools[i];
+            if (!members.length) {
+                if (share > 0) { unallocated += share; warnings.push(`${nm} 몫 ${fmt(share)} ${UNIT}은 받을 사람이 없어 미배분입니다.`); }
+                return;
+            }
+            const base = Math.floor(share / members.length);
+            let rem = share - base * members.length;
+            members.forEach(r => { r.amount = base + (rem-- > 0 ? 1 : 0); });
+            if (share === 0 && pool > 0) warnings.push(`${nm} ${members.length}명은 비율이 0%라 받는 금액이 없습니다.`);
         });
     }
     const paid = sumOf(rows.map(r => r.amount));
@@ -1393,9 +1456,12 @@ function computeSplit(total, recips, mode, ratios, fixed) {
 function calcCurrent() {
     const { items, total } = calcItems();
     const recips = getUsers().filter(u => state.recipients.has(Number(u.id)));
-    return Object.assign({ items: items, total: total, recips: recips }, computeSplit(total, recips, state.calcMode, state.calcRatios, state.calcFixed));
+    const opts = { supportIds: new Set(state.supportTeam.map(Number)), supportPct: state.calcSupportPct };
+    return Object.assign({ items: items, total: total, recips: recips }, computeSplit(total, recips, state.calcMode, state.calcRatios, state.calcFixed, opts));
 }
-const calcModeText = (mode, ratios) => mode === 'ratio'
+const calcModeText = (mode, ratios, supportPct) => mode === 'support'
+    ? '지원조 비율 (지원조 ' + (Math.round(Number(supportPct) * 100) / 100) + '% · 나머지 ' + (Math.round((100 - Number(supportPct)) * 100) / 100) + '%)'
+    : mode === 'ratio'
     ? '서버별 비율 (' + RATIO_GROUPS.filter(([g]) => Number((ratios || {})[g]) > 0).map(([g, n]) => n + ' ' + (Math.round(Number(ratios[g]) * 100) / 100) + '%').join(' · ') + ')'
     : '균등 배분';
 
@@ -1404,7 +1470,8 @@ function renderCalcActions() {
     if (!box) return;
     const n = unsettledItems().length;
     box.innerHTML = (canManage() ? actBtn('📊 정산 계산' + (n ? ' (' + n + ')' : ''), 'Settle.openCalc()', '#27ae60') : '')
-                  + actBtn('📋 정산 내역', 'Settle.showHistory()', '#3498db');
+                  + actBtn('📋 정산 내역', 'Settle.showHistory()', '#3498db')
+                  + (isAdmin ? actBtn('🤝 지원조 설정' + (state.supportTeam.length ? ' (' + state.supportTeam.length + '명)' : ''), 'Settle.openSupportTeam()', '#8e44ad') : '');
 }
 
 function openCalc() {
@@ -1413,7 +1480,7 @@ function openCalc() {
     if (!items.length) { alert('정산할 아이템이 없습니다.\n(판매 완료 상태이고 아직 정산되지 않은 아이템만 대상입니다)'); return; }
     state.calcItemIds = items.map(i => String(i.id));
     state.recipients = new Set(getUsers().map(u => Number(u.id)));     // 기본: 전원
-    state.calcMode = 'equal'; state.calcRatios = { jingir: 0, pandora: 0, support: 0, other: 0 }; state.calcFixed = {};
+    state.calcMode = 'equal'; state.calcRatios = { jingir: 0, pandora: 0, support: 0, other: 0 }; state.calcFixed = {}; state.calcSupportPct = 50;
     renderCalc();
 }
 function closeCalc() { const b = $('settle-calc-area'); if (b) b.innerHTML = ''; }
@@ -1438,7 +1505,14 @@ function renderCalc() {
             <div style="font-size:0.85rem; font-weight:bold; margin:6px 0;">⚖️ 분배 방식</div>
             <div style="display:flex; gap:6px; margin-bottom:6px;">
                 <button id="settle-mode-equal" onclick="Settle.setCalcMode('equal')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;">균등 배분</button>
+                <button id="settle-mode-support" onclick="Settle.setCalcMode('support')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;">지원조 비율</button>
                 <button id="settle-mode-ratio" onclick="Settle.setCalcMode('ratio')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;">서버별 비율</button>
+            </div>
+            <div id="settle-support-box" style="display:none; background:#f8f9fa; border-radius:8px; padding:8px 10px; margin-bottom:6px;">
+                <div style="font-size:0.78rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">지원조는 정산 금액의 아래 비율만큼 받고, 나머지 인원은 그 비율을 뺀 나머지를 나눠 받습니다. (각 몫 안에서는 균등)</div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:0.85rem;"><span>🤝 지원조 몫</span><span><input type="number" id="settle-support-pct" min="0" max="100" step="0.5" value="${Number(state.calcSupportPct) || 0}" oninput="Settle.setSupportPct(this.value)" style="${inp}"> %</span></div>
+                <div id="settle-support-info" style="font-size:0.8rem; color:#555; margin-top:6px; line-height:1.6;"></div>
+                <div style="font-size:0.74rem; color:#95a5a6; margin-top:4px;">지원조 명단은 관리자만 설정할 수 있습니다.${isAdmin ? ' ' + actBtn('🤝 지원조 설정', 'Settle.openSupportTeam()', '#8e44ad') : ''}</div>
             </div>
             <div id="settle-ratio-box" style="display:none; background:#f8f9fa; border-radius:8px; padding:8px 10px; margin-bottom:6px;">
                 <div style="font-size:0.78rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">서버마다 몫(%)을 정하면, 각 서버 몫을 그 서버 대상자끼리 균등하게 나눕니다.</div>
@@ -1455,7 +1529,7 @@ function renderCalc() {
             <div id="settle-rcpt-list" style="max-height:240px; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
                 ${us.map(u => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 10px; border-bottom:1px solid #f5f5f5;">
                     <label style="display:flex; align-items:center; gap:8px; cursor:pointer; flex:1; min-width:0;">
-                        <input type="checkbox" style="${cbStyle}" data-uid="${Number(u.id)}" ${state.recipients.has(Number(u.id)) ? 'checked' : ''} onchange="Settle.toggleRecipient(${Number(u.id)}, this.checked)"> <span>${esc(u.name)}${serverBadge(u.server)}</span></label>
+                        <input type="checkbox" style="${cbStyle}" data-uid="${Number(u.id)}" ${state.recipients.has(Number(u.id)) ? 'checked' : ''} onchange="Settle.toggleRecipient(${Number(u.id)}, this.checked)"> <span>${esc(u.name)}${serverBadge(u.server)}${state.supportTeam.includes(Number(u.id)) ? ' <span class="settle-team-badge" style="display:none; padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.7rem; font-weight:bold;">지원조</span>' : ''}</span></label>
                     <input type="number" data-fix="${Number(u.id)}" min="0" step="1" oninput="Settle.setFixed(${Number(u.id)}, this.value)" style="${inp} width:96px;" title="이 사람에게 줄 금액을 직접 지정">
                 </div>`).join('')}
             </div>
@@ -1472,17 +1546,23 @@ function renderCalc() {
 
 function renderCalcModeUi() {
     const on = 'background:#2c3e50; color:white; border:2px solid #2c3e50;', off = 'background:white; color:#2c3e50; border:2px solid #d5d8dc;';
-    const be = $('settle-mode-equal'), br = $('settle-mode-ratio');
-    if (be) be.style.cssText = (state.calcMode === 'equal' ? on : off) + ' flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;';
-    if (br) br.style.cssText = (state.calcMode === 'ratio' ? on : off) + ' flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;';
-    const rb2 = $('settle-ratio-box');
+    const css = ' flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;';
+    ['equal', 'support', 'ratio'].forEach(m => { const b = $('settle-mode-' + m); if (b) b.style.cssText = (state.calcMode === m ? on : off) + css; });
+    const rb2 = $('settle-ratio-box'), sb = $('settle-support-box');
     if (rb2) rb2.style.display = state.calcMode === 'ratio' ? 'block' : 'none';
+    if (sb) sb.style.display = state.calcMode === 'support' ? 'block' : 'none';
+    document.querySelectorAll('.settle-team-badge').forEach(b => { b.style.display = state.calcMode === 'support' ? 'inline' : 'none'; });
     RATIO_GROUPS.forEach(([g]) => { const el = $('settle-ratio-' + g); if (el && document.activeElement !== el) el.value = Number(state.calcRatios[g]) || 0; });
+    const sp = $('settle-support-pct'); if (sp && document.activeElement !== sp) sp.value = Number(state.calcSupportPct) || 0;
 }
 function setCalcMode(m) {
-    state.calcMode = m === 'ratio' ? 'ratio' : 'equal';
+    state.calcMode = (m === 'ratio' || m === 'support') ? m : 'equal';
     if (state.calcMode === 'ratio' && RATIO_GROUPS.every(([g]) => !Number(state.calcRatios[g]))) fillRatioByHeadcount();
     renderCalcModeUi();
+    renderCalcPreview();
+}
+function setSupportPct(v) {
+    state.calcSupportPct = (v === '' || v === null) ? 0 : Math.max(0, Number(v) || 0);
     renderCalcPreview();
 }
 function fillRatioByHeadcount() {                              // 선택된 대상자 수에 비례 (결과는 균등 배분과 같아짐) → 여기서 숫자만 고쳐 쓰면 됨
@@ -1523,6 +1603,11 @@ function renderCalcPreview() {
         if (document.activeElement !== i) i.value = r.fixed ? String(r.amount) : '';     // 입력 중이 아닐 때는 칸 표시를 실제 계산과 항상 일치시킴
     });
     RATIO_GROUPS.forEach(([g]) => { const el = $('settle-ratio-' + g); if (el && document.activeElement !== el) el.value = Number(state.calcRatios[g]) || 0; });
+    const inf = $('settle-support-info');
+    if (inf) {
+        const tn = c.rows.filter(r => r.team).length, rn = c.rows.length - tn, p = Math.min(100, Math.max(0, Number(state.calcSupportPct) || 0));
+        inf.innerHTML = `지원조 <b>${p}%</b> · 나머지 인원 <b>${Math.round((100 - p) * 100) / 100}%</b><br>선택한 대상자 중 지원조 <b>${tn}명</b> · 나머지 <b>${rn}명</b>${state.supportTeam.length === 0 ? '<br><span style="color:#c0392b;">⚠️ 지원조 명단이 비어 있습니다. 관리자가 먼저 설정해야 합니다.</span>' : ''}`;
+    }
     const sumEl = $('settle-ratio-sum');
     if (sumEl) {
         const okSum = Math.abs(c.ratioSum - 100) <= 0.01;
@@ -1534,9 +1619,13 @@ function renderCalcPreview() {
     const auto = c.rows.filter(r => !r.fixed);
     let line;
     if (!auto.length) line = '직접 지정한 금액만 지급합니다.';
-    else if (state.calcMode !== 'ratio') {
+    else if (state.calcMode === 'equal') {
         const base = Math.floor(c.pool / auto.length), rem = c.pool - base * auto.length;
         line = `1인당 <b style="color:#27ae60;">${fmt(base)} ${UNIT}</b>${rem ? `<span style="color:#7f8c8d; font-size:0.8rem;"> (남는 ${rem} ${UNIT}은 이름순 앞 ${rem}명에게 1씩)</span>` : ''}${c.fixedSum ? ` <span style="color:#7f8c8d; font-size:0.8rem;">· 자동 분배 ${auto.length}명</span>` : ''}`;
+    } else if (state.calcMode === 'support') {
+        const range = (arr) => arr.length ? fmt(Math.min.apply(null, arr)) + (Math.min.apply(null, arr) !== Math.max.apply(null, arr) ? ' ~ ' + fmt(Math.max.apply(null, arr)) : '') : '-';
+        const tm = auto.filter(r => r.team), rs = auto.filter(r => !r.team);
+        line = `🤝 지원조 ${tm.length}명: 1인당 <b style="color:#27ae60;">${range(tm.map(r => r.amount))}</b> · 나머지 ${rs.length}명: 1인당 <b style="color:#27ae60;">${range(rs.map(r => r.amount))}</b> ${UNIT}`;
     } else {
         const amts = auto.map(r => r.amount);
         line = `자동 분배 ${auto.length}명: 1인당 <b style="color:#27ae60;">${fmt(Math.min.apply(null, amts))}${Math.min.apply(null, amts) !== Math.max.apply(null, amts) ? ' ~ ' + fmt(Math.max.apply(null, amts)) : ''} ${UNIT}</b>`;
@@ -1577,7 +1666,7 @@ async function saveSettlement() {
     const dist = c.rows;
     const fixedN = dist.filter(d => d.fixed).length;
     if (c.unallocated > 0 && !confirm(`미배분 금액이 ${fmt(c.unallocated)} ${UNIT} 있습니다. (받을 사람이 없는 몫)\n이 금액은 누구에게도 지급되지 않습니다. 그대로 저장할까요?`)) return;
-    if (!confirm(`아이템 ${items.length}개, 총 ${fmt(total)} ${UNIT}을(를) ${dist.length}명에게 배분하고 정산을 확정할까요?\n방식: ${calcModeText(state.calcMode, state.calcRatios)}${fixedN ? ' · 직접 지정 ' + fixedN + '명' : ''}\n(확정 후에는 같은 아이템이 다시 정산되지 않습니다)`)) return;
+    if (!confirm(`아이템 ${items.length}개, 총 ${fmt(total)} ${UNIT}을(를) ${dist.length}명에게 배분하고 정산을 확정할까요?\n방식: ${calcModeText(state.calcMode, state.calcRatios, state.calcSupportPct)}${fixedN ? ' · 직접 지정 ' + fixedN + '명' : ''}\n(확정 후에는 같은 아이템이 다시 정산되지 않습니다)`)) return;
 
     try {
         // 다른 사람이 먼저 정산했는지 서버 값으로 재확인
@@ -1589,14 +1678,16 @@ async function saveSettlement() {
         dist.forEach(d => {
             recMap['u' + d.userId] = { userId: d.userId, name: d.name, server: d.server, amount: d.amount, received: false };
             if (d.fixed) recMap['u' + d.userId].fixed = true;                       // 운영진이 금액을 직접 지정한 사람
+            if (state.calcMode === 'support' && d.team) recMap['u' + d.userId].team = true;   // 정산 당시 지원조였던 사람 (이후 명단이 바뀌어도 기록 유지)
         });
         const record = {
             id: sidv, createdAt: nowIso(), totalAmount: total, count: dist.length,
-            mode: state.calcMode === 'ratio' ? 'ratio' : 'equal',
+            mode: state.calcMode === 'ratio' ? 'ratio' : (state.calcMode === 'support' ? 'support' : 'equal'),
             items: items.map(i => ({ id: String(i.id), itemName: i.itemName, bossName: i.bossName, bossServer: i.bossServer || '', bossVariant: i.bossVariant || '', date: i.date, buyer: i.buyer, bidPrice: i.bidPrice })),
             recipients: recMap
         };
         if (state.calcMode === 'ratio') { record.ratios = {}; RATIO_GROUPS.forEach(([g]) => { record.ratios[g] = Number(state.calcRatios[g]) || 0; }); }
+        if (state.calcMode === 'support') record.supportPct = Number(state.calcSupportPct) || 0;
         if (c.fixedSum) record.fixedTotal = c.fixedSum;
         if (c.unallocated) record.unallocated = c.unallocated;
         const updates = {};
@@ -1651,7 +1742,7 @@ function renderHistory() {
                     <span style="font-size:0.8rem; color:#7f8c8d;"> 아이템 ${its.length}개 · ${rc.length}명</span></div>
                 <b style="color:#2980b9;">${fmt(r.totalAmount)} ${UNIT}</b>
             </div>
-            <div style="font-size:0.78rem; color:#7f8c8d; margin-top:3px;">분배: ${esc(calcModeText(r.mode, r.ratios))}${rc.filter(x => x.fixed).length ? ' · 직접 지정 ' + rc.filter(x => x.fixed).length + '명' : ''}${Number(r.unallocated) ? ' · <span style="color:#c0392b;">미배분 ' + fmt(r.unallocated) + '</span>' : ''}</div>
+            <div style="font-size:0.78rem; color:#7f8c8d; margin-top:3px;">분배: ${esc(calcModeText(r.mode, r.ratios, r.supportPct))}${rc.filter(x => x.fixed).length ? ' · 직접 지정 ' + rc.filter(x => x.fixed).length + '명' : ''}${Number(r.unallocated) ? ' · <span style="color:#c0392b;">미배분 ' + fmt(r.unallocated) + '</span>' : ''}</div>
             <div id="settle-hist-prog-${rid}" style="font-size:0.78rem; color:#7f8c8d; margin-top:3px;">수령 확인 ${done}/${rc.length}</div>
             <details style="margin-top:6px;">
                 <summary style="cursor:pointer; font-size:0.85rem; color:#2c3e50;">낙찰 아이템 / 대상자 보기</summary>
@@ -1660,7 +1751,7 @@ function renderHistory() {
                 </div>
                 <div style="max-height:220px; overflow-y:auto; border:1px solid #eee; border-radius:6px;">
                     ${rc.map(x => `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 10px; border-bottom:1px solid #f3f3f3; font-size:0.85rem;">
-                        <span>${esc(x.name)}${serverBadge(x.server)}${x.fixed ? ' <span style="padding:1px 6px; background:#fdebd0; color:#d35400; border-radius:4px; font-size:0.7rem;">직접 지정</span>' : ''}</span>
+                        <span>${esc(x.name)}${serverBadge(x.server)}${x.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.7rem;">지원조</span>' : ''}${x.fixed ? ' <span style="padding:1px 6px; background:#fdebd0; color:#d35400; border-radius:4px; font-size:0.7rem;">직접 지정</span>' : ''}</span>
                         <span style="display:flex; align-items:center; gap:8px;"><b style="color:#27ae60;">${fmt(x.amount)}</b>
                         ${mg ? `<input type="checkbox" style="${cbStyle}" ${x.received ? 'checked' : ''} onchange="Settle.toggleReceived('${rid}', '${sid(x._key)}', this.checked)" title="수령 확인">`
                              : (x.received ? '<span style="color:#27ae60; font-size:0.75rem;">수령</span>' : '')}</span>
@@ -1706,7 +1797,7 @@ async function cancelSettlement(rid) {
 // ============================================================
 const RB_MAX_IMAGES = 3;
 const rb = {
-    inited: false, week: '', requests: [], prices: { recovery: 0, blessing: 0 },
+    inited: false, week: '', requests: [], prices: { recovery: 0, blessing: 0, transfer: 0 },
     shots: [], shotSeq: 0, ocrQ: Promise.resolve(), workerP: null,
     uInited: false, userData: {}, userRefs: {}, weekCb: null,          // 사용자 탭: 최근 3주 데이터
     weekRef: null, priceBound: false, imgCache: {}, open: new Set()
@@ -1760,10 +1851,16 @@ function rbUserAll() {
 }
 const rbMine = () => rbUserAll().filter(rbIsMine).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 const rbFind = (k) => rb.requests.find(r => sid(r.id) === k) || rbUserAll().find(r => sid(r.id) === k) || null;
-function rbAmount(r) {
+// 신청 금액 = 복구 횟수×단가 + 축복 횟수×단가 + 이전 횟수×단가 + (운영진이 직접 기입한) 추가비용. 확정된 신청은 확정 당시 단가(priceSnap) 기준
+function rbParts(r) {
     const p = r.priceSnap || rb.prices;
-    return (Number(r.recoveryCnt) || 0) * (Number(p.recovery) || 0) + (Number(r.blessingCnt) || 0) * (Number(p.blessing) || 0);
+    const base = (Number(r.recoveryCnt) || 0) * (Number(p.recovery) || 0) + (Number(r.blessingCnt) || 0) * (Number(p.blessing) || 0);
+    const tr = (Number(r.transferCnt) || 0) * (Number(p.transfer) || 0);
+    const ex = Number(r.extraAmount) || 0;
+    return { base: base, transfer: tr, extra: ex, total: base + tr + ex };
 }
+function rbAmount(r) { return rbParts(r).total; }
+const rbCntText = (o) => '복구 ' + fmt(o.recoveryCnt) + '회 · 축복 ' + fmt(o.blessingCnt) + '회' + (Number(o.transferCnt) > 0 ? ' · 이전 ' + fmt(o.transferCnt) + '회' : '');
 
 // 관리자 화면 (정산 탭 > 복구비 관리): 전체 신청 목록 · 확정/반려/지급 · 단가 · 주간 지급 요약
 function rbBuildAdmin() {
@@ -1814,6 +1911,12 @@ function rbBuildUser() {
             <div id="rb-shots" style="margin-top:10px;"></div>
             <div id="rb-totals" style="font-size:0.9rem; color:#2c3e50; margin-top:2px;"></div>
         </div>
+        <div style="margin-bottom:12px;">
+            <label style="${lab}">🚚 이전 횟수 <span id="rbu-transfer-price" style="font-weight:normal; color:#7f8c8d;"></span></label>
+            <input type="number" id="rb-transfer" min="0" step="1" placeholder="0" oninput="Settle.rbTransferInput()" style="${inputStyle} margin-bottom:4px;">
+            <div style="font-size:0.76rem; color:#7f8c8d; line-height:1.5;">이전한 횟수를 직접 입력하세요. (사진은 필요 없습니다) 금액 = 횟수 × 이전 단가</div>
+            <div id="rb-transfer-amt" style="font-size:0.82rem; color:#2980b9; font-weight:bold; margin-top:2px;"></div>
+        </div>
         <div style="margin-bottom:12px;"><label style="${lab}">메모 (선택)</label><input type="text" id="rb-memo" maxlength="100" placeholder="예: 본캐·부캐 합산" style="${inputStyle}"></div>
         <button class="btn btn-primary" id="rb-submit-btn" onclick="Settle.rbSubmit()" style="width:100%; padding:12px; font-size:1rem;">📤 제출</button>
     </div>
@@ -1830,7 +1933,7 @@ function rbEnsurePrices() {
     rb.priceBound = true;
     db.ref('hunter_config/reimbursePrices').on('value', snap => {
         const v = snap.val() || {};
-        rb.prices = { recovery: Number(v.recovery) || 0, blessing: Number(v.blessing) || 0 };
+        rb.prices = { recovery: Number(v.recovery) || 0, blessing: Number(v.blessing) || 0, transfer: Number(v.transfer) || 0 };
         rbRenderPriceLine(); rbRender(); rbRenderUser();
     });
 }
@@ -2147,13 +2250,23 @@ function rbLoadWeek() {
 
 function rbRenderPriceLine() {
     const p = rb.prices;
-    const txt = (p.recovery || p.blessing)
-        ? `지급 단가(회당): 복구 ${fmt(p.recovery)} · 축복 ${fmt(p.blessing)} ${UNIT}`
-        : '지급 단가가 아직 설정되지 않았습니다. (운영진이 복구·축복 단가를 각각 설정하면 금액이 계산됩니다)';
+    const has = p.recovery || p.blessing || p.transfer;
+    const txt = has
+        ? `지급 단가(회당): 복구 ${fmt(p.recovery)} · 축복 ${fmt(p.blessing)} · 이전 ${fmt(p.transfer)} ${UNIT}`
+        : '지급 단가가 아직 설정되지 않았습니다. (운영진이 복구·축복·이전 단가를 각각 설정하면 금액이 계산됩니다)';
     const adm = $('rb-price-line');
     if (adm) adm.innerHTML = esc(txt) + (isAdmin ? ' <button onclick="Settle.rbSetPrices()" style="margin-left:6px; padding:4px 10px; border:none; border-radius:6px; background:#8e44ad; color:white; font-size:0.78rem; font-weight:bold; cursor:pointer;">⚙️ 단가 설정</button>' : '');
     const usr = $('rbu-price-line');
     if (usr) usr.textContent = txt;
+    const tp = $('rbu-transfer-price');
+    if (tp) tp.textContent = p.transfer ? '(1회당 ' + fmt(p.transfer) + ' ' + UNIT + ')' : '(단가 미설정)';
+    rbRenderTransferPreview();
+}
+function rbRenderTransferPreview() {
+    const el = $('rb-transfer-amt'), inp = $('rb-transfer');
+    if (!el || !inp) return;
+    const n = Number(inp.value) || 0;
+    el.textContent = n > 0 ? '예상 이전비: ' + fmt(n) + ' × ' + fmt(rb.prices.transfer) + ' = ' + fmt(n * (Number(rb.prices.transfer) || 0)) + ' ' + UNIT : '';
 }
 
 // ── 이미지 선택/압축 ──
@@ -2166,7 +2279,10 @@ async function rbSubmit() {
     if (!user)    { alert('신청자를 선택하세요.'); return; }
     const localMine = (rb.userData[week] || []).filter(r => Number(r.userId) === Number(user.id));
     if (localMine.some(r => r.status === 'approved')) { alert(rbLockMsg(user.name)); return; }          // 확정된 주차는 제출 불가
-    if (rb.shots.length === 0) { alert('호칭 화면 사진을 1장 이상 올려주세요.'); return; }
+    const trRaw = ($('rb-transfer') ? $('rb-transfer').value : '').trim();
+    const transfer = trRaw === '' ? 0 : Number(trRaw);
+    if (!Number.isInteger(transfer) || transfer < 0) { alert('이전 횟수는 0 이상의 정수로 입력하세요.'); return; }
+    if (rb.shots.length === 0 && transfer <= 0) { alert('호칭 화면 사진을 1장 이상 올려주세요. (이전 횟수만 신청하는 경우에는 이전 횟수를 입력하세요)'); return; }
     if (rb.shots.some(x => x.status === 'reading' && !x.manual)) { alert('사진을 읽는 중입니다. 잠시 뒤에 다시 눌러주세요. (횟수를 직접 입력해도 됩니다)'); return; }
     for (let i = 0; i < rb.shots.length; i++) {
         const x = rb.shots[i];
@@ -2175,7 +2291,7 @@ async function rbSubmit() {
     }
     if (rbCountKind('recovery') > RB_MAX_PER_KIND || rbCountKind('blessing') > RB_MAX_PER_KIND) { alert('복구·축복 사진은 각각 ' + RB_MAX_PER_KIND + '장까지입니다.'); return; }
     const t = rbTotals();
-    if (t.recovery + t.blessing <= 0) { alert('복구 또는 축복 횟수가 0입니다. 횟수를 확인하세요.'); return; }
+    if (t.recovery + t.blessing + transfer <= 0) { alert('복구·축복·이전 횟수가 모두 0입니다. 횟수를 확인하세요.'); return; }
     // 같은 사진을 두 번 올렸는지
     for (const kind of ['recovery', 'blessing']) {
         const same = rb.shots.filter(x => x.kind === kind);
@@ -2187,7 +2303,7 @@ async function rbSubmit() {
     try { existing = Object.values((await db.ref('boss_reimburse/' + week).once('value')).val() || {}).filter(r => r && Number(r.userId) === Number(user.id)); } catch (e) { /* 화면에 있는 값으로 확인 */ }
     if (existing.some(r => r.status === 'approved')) { alert(rbLockMsg(user.name)); return; }
     const old = existing;
-    if (old.length && !confirm(`${user.name}님의 이 주차 신청이 이미 있습니다.\n(${old[0].status === 'rejected' ? '반려' : '확인 대기'}: 복구 ${fmt(old[0].recoveryCnt)}회 · 축복 ${fmt(old[0].blessingCnt)}회)\n\n새 내용으로 재신청하면 기존 신청과 증빙 사진은 삭제됩니다. 계속할까요?`)) return;
+    if (old.length && !confirm(`${user.name}님의 이 주차 신청이 이미 있습니다.\n(${old[0].status === 'rejected' ? '반려' : '확인 대기'}: ${rbCntText(old[0])})\n\n새 내용으로 재신청하면 기존 신청과 증빙 사진은 삭제됩니다. 계속할까요?`)) return;
     try {
         for (const o of old) {                                                    // 교체 직전, 그 사이 운영진이 확정하지 않았는지 한 번 더 확인
             const res = await db.ref('boss_reimburse/' + week + '/' + o.id).transaction(cur => (cur && cur.status === 'approved') ? undefined : cur);
@@ -2200,20 +2316,23 @@ async function rbSubmit() {
     const id = Date.now() + '_' + Number(user.id);
     const req = {
         id: id, userId: Number(user.id), name: user.name,
-        recoveryCnt: t.recovery, blessingCnt: t.blessing,
+        recoveryCnt: t.recovery, blessingCnt: t.blessing, transferCnt: transfer,
         shots: rb.shots.map(x => ({ kind: x.kind, cnt: Number(x.cnt) || 0, auto: x.auto === null ? null : x.auto })),   // 사진별 횟수 + 자동 인식값(수정 여부 확인용)
         memo: memo, imgCount: rb.shots.length, status: 'pending', paid: false, by: deviceId(), createdAt: nowIso()
     };
+    const keep = old.find(o => Number(o.extraAmount) > 0);                  // 운영진이 넣어 둔 추가비용은 재신청해도 유지
+    if (keep) { req.extraAmount = Number(keep.extraAmount); if (keep.extraNote) req.extraNote = keep.extraNote; }
     const updates = {};
     old.forEach(o => { updates['boss_reimburse/' + week + '/' + o.id] = null; updates['boss_reimburse_img/' + o.id] = null; });
     updates['boss_reimburse/' + week + '/' + id] = req;
-    updates['boss_reimburse_img/' + id] = rb.shots.map(x => x.data);
+    if (rb.shots.length) updates['boss_reimburse_img/' + id] = rb.shots.map(x => x.data);          // 사진이 없는 신청(이전만)은 사진 경로를 만들지 않음
     try {
         await db.ref().update(updates);
         old.forEach(o => { delete rb.imgCache[o.id]; rb.open.delete(sid(o.id)); });
         rb.shots = [];
         rbRenderShots();
         $('rb-memo').value = '';
+        if ($('rb-transfer')) { $('rb-transfer').value = ''; rbRenderTransferPreview(); }
         alert(old.length ? '✅ 재신청이 완료되었습니다. 기존 신청이 새 내용으로 바뀌었습니다.' : '✅ 제출되었습니다. 운영진 확인 후 확정되면 지급됩니다.');
     } catch (e) {
         alert('❌ 제출 실패: ' + e.message);
@@ -2246,6 +2365,7 @@ function rbCardHtml(r, mode) {
     if (adminView && isAdmin) {
         if (!locked) btns.push(actBtn('✅ 확정', `Settle.rbApprove('${k}')`, '#2980b9'));
         if (r.status === 'pending') btns.push(actBtn('❌ 반려', `Settle.rbReject('${k}')`, '#c0392b'));
+        if (!r.paid && (r.status === 'pending' || locked)) btns.push(actBtn(Number(r.extraAmount) > 0 ? '➕ 추가비용 수정' : '➕ 추가비용', `Settle.rbExtra('${k}')`, '#d35400'));
         if (locked) btns.push(actBtn(r.paid ? '↩️ 지급 취소' : '💵 지급완료', `Settle.rbTogglePaid('${k}')`, '#27ae60'));
         if (locked && !r.paid) btns.push(actBtn('↩️ 확정 취소', `Settle.rbUnconfirm('${k}')`, '#7f8c8d'));
         if (r.paid && r.imgCount > 0) btns.push(actBtn('🧹 증빙 삭제', `Settle.rbDeleteImages('${k}')`, '#95a5a6'));
@@ -2261,10 +2381,11 @@ function rbCardHtml(r, mode) {
             ${rbStatusBadge(r)}
         </div>
         <div style="margin-top:6px; font-size:0.92rem; color:#555;">
-            복구 <b>${fmt(r.recoveryCnt)}</b>회 · 축복 <b>${fmt(r.blessingCnt)}</b>회
+            복구 <b>${fmt(r.recoveryCnt)}</b>회 · 축복 <b>${fmt(r.blessingCnt)}</b>회${Number(r.transferCnt) > 0 ? ` · 이전 <b>${fmt(r.transferCnt)}</b>회` : ''}
             <span style="color:#2980b9; font-weight:bold;"> = ${fmt(amount)} ${UNIT}</span>${r.edited ? ' <span style="color:#8e44ad; font-size:0.76rem;">✏️수정됨</span>' : ''}
         </div>
-        <div style="margin-top:2px; font-size:0.76rem; color:#95a5a6;">복구 ${fmt(r.recoveryCnt)}×${fmt(pr.recovery)} + 축복 ${fmt(r.blessingCnt)}×${fmt(pr.blessing)}${r.status === 'pending' && (pr.recovery || pr.blessing) ? ' (예상 · 확정 때 단가로 정해짐)' : ''}</div>
+        <div style="margin-top:2px; font-size:0.76rem; color:#95a5a6;">복구 ${fmt(r.recoveryCnt)}×${fmt(pr.recovery)} + 축복 ${fmt(r.blessingCnt)}×${fmt(pr.blessing)}${Number(r.transferCnt) > 0 ? ` + 이전 ${fmt(r.transferCnt)}×${fmt(pr.transfer)}` : ''}${Number(r.extraAmount) > 0 ? ` + 추가 ${fmt(r.extraAmount)}` : ''}${r.status === 'pending' && (pr.recovery || pr.blessing) ? ' (예상 · 확정 때 단가로 정해짐)' : ''}</div>
+        ${Number(r.extraAmount) > 0 ? `<div style="margin-top:4px; font-size:0.85rem; color:#d35400; font-weight:bold;">➕ 추가비용 +${fmt(r.extraAmount)} ${UNIT}${r.extraNote ? ' <span style="font-weight:normal;">(' + esc(r.extraNote) + ')</span>' : ''}</div>` : ''}
         ${shotsLine ? `<div style="margin-top:2px; font-size:0.76rem; color:#7f8c8d;">${esc(shotsLine)}</div>` : ''}
         ${r.memo ? `<div style="margin-top:4px; font-size:0.85rem; color:#7f8c8d;">📝 ${esc(r.memo)}</div>` : ''}
         ${r.status === 'rejected' && r.rejectReason ? `<div style="margin-top:4px; font-size:0.85rem; color:#c0392b;">반려 사유: ${esc(r.rejectReason)}</div>` : ''}
@@ -2312,12 +2433,12 @@ function rbRenderSubmitState() {
     const done = mine.find(r => r.status === 'approved');
     if (done) {
         note.style.cssText = 'display:block; margin:-4px 0 12px; padding:9px 12px; border-radius:8px; font-size:0.84rem; line-height:1.5; background:#eaf2f8; color:#1f618d; border:1px solid #aed6f1;';
-        note.innerHTML = '🔒 ' + esc(rbLockMsg(user.name)) + '<br><span style="font-size:0.78rem;">확정 내용: 복구 ' + fmt(done.recoveryCnt) + '회 · 축복 ' + fmt(done.blessingCnt) + '회</span>';
+        note.innerHTML = '🔒 ' + esc(rbLockMsg(user.name)) + '<br><span style="font-size:0.78rem;">확정 내용: ' + rbCntText(done) + '</span>';
         btn.textContent = '🔒 확정됨 — 제출 불가'; lock(true);
     } else if (mine.length) {
         const o = mine[0];
         note.style.cssText = 'display:block; margin:-4px 0 12px; padding:9px 12px; border-radius:8px; font-size:0.84rem; line-height:1.5; background:#fef5e7; color:#a04000; border:1px solid #f5cba7;';
-        note.innerHTML = '🔄 이 주차에 이미 신청이 있습니다 (' + (o.status === 'rejected' ? '반려' : '확인 대기') + ': 복구 ' + fmt(o.recoveryCnt) + '회 · 축복 ' + fmt(o.blessingCnt) + '회).<br><span style="font-size:0.78rem;">다시 제출하면 기존 신청이 새 내용으로 바뀝니다. 확정되기 전까지 몇 번이든 재신청할 수 있습니다.</span>';
+        note.innerHTML = '🔄 이 주차에 이미 신청이 있습니다 (' + (o.status === 'rejected' ? '반려' : '확인 대기') + ': ' + rbCntText(o) + ').<br><span style="font-size:0.78rem;">다시 제출하면 기존 신청이 새 내용으로 바뀝니다. 확정되기 전까지 몇 번이든 재신청할 수 있습니다.</span>';
         btn.textContent = '🔄 재신청'; lock(false);
     } else {
         note.style.display = 'none'; note.innerHTML = '';
@@ -2333,11 +2454,14 @@ function rbRenderMoney() {
     const waiting = sum(r => r.status === 'approved' && !r.paid);
     const paid = sum(r => r.status === 'approved' && r.paid);
     const est = sum(r => r.status === 'pending');
+    const wp = mine.filter(r => r.status === 'approved' && !r.paid).reduce((a, r) => { const q = rbParts(r); a.base += q.base; a.tr += q.transfer; a.ex += q.extra; return a; }, { base: 0, tr: 0, ex: 0 });
+    const detail = (wp.tr || wp.ex) ? `<div style="font-size:0.78rem; color:#555; margin-top:4px;">복구·축복 ${fmt(wp.base)} + 이전 ${fmt(wp.tr)}${wp.ex ? ' + 추가비용 ' + fmt(wp.ex) : ''}</div>` : '';
     const tile = (label, val, bg, color) => `<div style="flex:1; background:${bg}; border-radius:8px; padding:8px; text-align:center;"><div style="font-size:0.72rem; color:#7f8c8d;">${label}</div><div style="font-size:0.98rem; font-weight:bold; color:${color};">${fmt(val)} ${UNIT}</div></div>`;
     el.innerHTML = `
         <div style="text-align:center; padding:4px 0 10px;">
             <div style="font-size:0.8rem; color:#7f8c8d;">지급 대기 (확정됨)</div>
             <div style="font-size:1.8rem; font-weight:bold; color:#2980b9;">${fmt(waiting)} <span style="font-size:1rem;">${UNIT}</span></div>
+            ${detail}
             <div style="font-size:0.76rem; color:#7f8c8d;">${waiting ? '운영진이 확정한 금액입니다. 곧 지급됩니다.' : (est ? '운영진이 확정하면 이곳에 표시됩니다.' : '확정된 금액이 없습니다.')}</div>
         </div>
         <div style="display:flex; gap:8px;">${tile('확인 대기 (예상)', est, '#fef9e7', '#d35400')}${tile('지급 완료', paid, '#d5f4e6', '#27ae60')}</div>
@@ -2423,13 +2547,14 @@ async function rbApprove(k) {
     const missing = [];
     if ((Number(r.recoveryCnt) || 0) > 0 && !rb.prices.recovery) missing.push('복구');
     if ((Number(r.blessingCnt) || 0) > 0 && !rb.prices.blessing) missing.push('축복');
+    if ((Number(r.transferCnt) || 0) > 0 && !rb.prices.transfer) missing.push('이전');
     if (missing.length && !confirm(missing.join('·') + ' 단가가 설정되지 않아 해당 금액이 0으로 계산됩니다. 계속 확정할까요?')) return;
     const imgN = Number(r.imgCount) || 0;
-    if (!confirm(`${r.name}님 신청을 확정할까요?\n복구 ${fmt(r.recoveryCnt)}회 · 축복 ${fmt(r.blessingCnt)}회\n\n확정하면 횟수를 수정할 수 없고${imgN ? ', 증빙 사진 ' + imgN + '장은 삭제됩니다.' : '.'}`)) return;
+    if (!confirm(`${r.name}님 신청을 확정할까요?\n${rbCntText(r)}${Number(r.extraAmount) > 0 ? ' · 추가비용 ' + fmt(r.extraAmount) : ''}\n\n확정하면 횟수를 수정할 수 없고${imgN ? ', 증빙 사진 ' + imgN + '장은 삭제됩니다.' : '.'}`)) return;
     const base = 'boss_reimburse/' + rbWeekOf(r) + '/' + r.id;
     const updates = {};
     updates[base + '/status'] = 'approved';
-    updates[base + '/priceSnap'] = { recovery: rb.prices.recovery, blessing: rb.prices.blessing };
+    updates[base + '/priceSnap'] = { recovery: rb.prices.recovery, blessing: rb.prices.blessing, transfer: rb.prices.transfer };
     updates[base + '/reviewedAt'] = nowIso();
     updates[base + '/rejectReason'] = null;
     updates[base + '/imgCount'] = 0;
@@ -2463,6 +2588,8 @@ async function rbEdit(k) {
         <input type="number" id="rb-edit-rec" min="0" step="1" value="${Number(r.recoveryCnt) || 0}" style="${inputStyle}">
         <label style="${lab}">축복 횟수</label>
         <input type="number" id="rb-edit-bls" min="0" step="1" value="${Number(r.blessingCnt) || 0}" style="${inputStyle}">
+        <label style="${lab}">이전 횟수</label>
+        <input type="number" id="rb-edit-trf" min="0" step="1" value="${Number(r.transferCnt) || 0}" style="${inputStyle}">
         <p style="font-size:0.76rem; color:#95a5a6; margin:10px 0 0;">운영진이 확정하면 더 이상 수정할 수 없습니다.${r.status === 'rejected' ? ' 수정하면 다시 "확인 대기"로 돌아갑니다.' : ''}</p>
         <div style="display:flex; gap:8px; margin-top:14px;">
             ${actBtn('저장', `Settle.rbSaveEdit('${sid(r.id)}')`, '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
@@ -2472,15 +2599,15 @@ async function rbEdit(k) {
 async function rbSaveEdit(k) {
     const r = rbFind(k);
     if (!r) return;
-    const rn = parseInt($('rb-edit-rec').value), bn = parseInt($('rb-edit-bls').value);
-    if (isNaN(rn) || isNaN(bn) || rn < 0 || bn < 0) { alert('횟수는 0 이상의 숫자여야 합니다. (복구/축복 둘 다)'); return; }
+    const rn = parseInt($('rb-edit-rec').value), bn = parseInt($('rb-edit-bls').value), tn = $('rb-edit-trf').value === '' ? 0 : parseInt($('rb-edit-trf').value);
+    if (isNaN(rn) || isNaN(bn) || isNaN(tn) || rn < 0 || bn < 0 || tn < 0) { alert('횟수는 0 이상의 숫자여야 합니다. (복구/축복/이전)'); return; }
     if (!isAdmin && !rbIsMine(r)) { if (!(await requireAdmin())) return; }
     try {
         // 그 사이 운영진이 확정했다면 저장하지 않도록 서버 값으로 한 번 더 확인
         const res = await db.ref('boss_reimburse/' + rbWeekOf(r) + '/' + r.id).transaction(cur => {
             if (cur === null) return cur;
             if (cur.status === 'approved') return;                         // 중단
-            cur.recoveryCnt = rn; cur.blessingCnt = bn;
+            cur.recoveryCnt = rn; cur.blessingCnt = bn; cur.transferCnt = tn;
             cur.status = 'pending'; delete cur.rejectReason;
             cur.edited = true; cur.editedAt = nowIso();
             return cur;
@@ -2489,6 +2616,47 @@ async function rbSaveEdit(k) {
         if (res && res.committed === false) alert('이미 확정되어 수정할 수 없습니다.');
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
+
+// 운영진이 직접 기입하는 추가비용 (지급 전까지 수정 가능, 0으로 두면 삭제). 단가와 무관한 금액이라 확정 후에도 지급 전에는 바꿀 수 있음
+async function rbExtra(k) {
+    const r = rbFind(k);
+    if (!r) return;
+    if (!(await requireAdmin())) return;
+    if (r.paid) { alert('이미 지급 완료된 신청은 추가비용을 바꿀 수 없습니다. (지급 취소 후 수정하세요)'); return; }
+    const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
+    showModal(`
+        <h3 style="margin:0 0 4px; color:#2c3e50;">➕ 추가비용</h3>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0;"><b>${esc(r.name)}</b>님의 이번 신청에 더해 줄 금액을 직접 기입합니다.</p>
+        <label style="${lab}">추가비용 (${UNIT})</label>
+        <input type="number" id="rb-extra-amt" min="0" step="1" value="${Number(r.extraAmount) || ''}" placeholder="0" style="${inputStyle}">
+        <label style="${lab}">사유 (선택)</label>
+        <input type="text" id="rb-extra-note" maxlength="40" value="${esc(r.extraNote || '')}" placeholder="예: 이벤트 보상" style="${inputStyle}">
+        <p style="font-size:0.76rem; color:#95a5a6; margin:10px 0 0;">내 신청 금액과 [내가 받을 돈]에 그대로 더해집니다. 0으로 저장하면 삭제됩니다.</p>
+        <div style="display:flex; gap:8px; margin-top:14px;">
+            ${actBtn('저장', `Settle.rbSaveExtra('${sid(r.id)}')`, '#d35400').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
+        </div>`);
+}
+async function rbSaveExtra(k) {
+    const r = rbFind(k);
+    if (!r) return;
+    if (!(await requireAdmin())) return;                       // 저장 시점에도 관리자 확인
+    const raw = $('rb-extra-amt').value.trim();
+    const amt = raw === '' ? 0 : Number(raw);
+    if (!Number.isInteger(amt) || amt < 0) { alert('추가비용은 0 이상의 정수로 입력하세요.'); return; }
+    try {
+        const res = await db.ref('boss_reimburse/' + rbWeekOf(r) + '/' + r.id).transaction(cur => {
+            if (cur === null) return cur;
+            if (cur.paid) return;                              // 그 사이 지급 완료되었다면 중단
+            if (amt > 0) { cur.extraAmount = amt; const nt = $('rb-extra-note').value.trim(); if (nt) cur.extraNote = nt; else delete cur.extraNote; }
+            else { delete cur.extraAmount; delete cur.extraNote; }
+            return cur;
+        });
+        closeModal();
+        if (res && res.committed === false) alert('이미 지급 완료되어 추가비용을 바꿀 수 없습니다.');
+    } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+
 async function rbReject(k) {
     const r = rbFind(k);
     if (!r || !(await requireAdmin())) return;
@@ -2545,11 +2713,13 @@ async function rbSetPrices() {
     const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
     showModal(`
         <h3 style="margin:0 0 4px; color:#2c3e50;">⚙️ 지원비 단가 설정</h3>
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 4px;">복구비와 축복비는 단가가 달라서 각각 설정합니다. 신청 금액 = 횟수 × 단가.</p>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 4px;">복구비·축복비·이전비는 단가가 달라서 각각 설정합니다. 신청 금액 = 횟수 × 단가.</p>
         <label style="${lab}">🩹 복구 1회당 지급액 (${UNIT})</label>
         <input type="number" id="rb-price-recovery" min="0" step="1" value="${Number(rb.prices.recovery) || 0}" style="${inputStyle}">
         <label style="${lab}">✨ 축복 1회당 지급액 (${UNIT})</label>
         <input type="number" id="rb-price-blessing" min="0" step="1" value="${Number(rb.prices.blessing) || 0}" style="${inputStyle}">
+        <label style="${lab}">🚚 이전 1회당 지급액 (${UNIT})</label>
+        <input type="number" id="rb-price-transfer" min="0" step="1" value="${Number(rb.prices.transfer) || 0}" style="${inputStyle}">
         <p style="font-size:0.76rem; color:#95a5a6; margin:10px 0 0;">이미 확정된 신청은 확정 당시 단가가 유지됩니다.</p>
         <div style="display:flex; gap:8px; margin-top:14px;">
             ${actBtn('저장', 'Settle.rbSavePrices()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
@@ -2558,12 +2728,12 @@ async function rbSetPrices() {
 }
 async function rbSavePrices() {
     if (!(await requireAdmin())) return;                       // 저장 시점에도 관리자 확인
-    const ra = parseInt($('rb-price-recovery').value), rbv = parseInt($('rb-price-blessing').value);
-    if (isNaN(ra) || isNaN(rbv) || ra < 0 || rbv < 0) { alert('단가는 0 이상의 숫자로 입력하세요. (복구/축복 둘 다)'); return; }
+    const ra = parseInt($('rb-price-recovery').value), rbv = parseInt($('rb-price-blessing').value), rt = parseInt($('rb-price-transfer').value);
+    if (isNaN(ra) || isNaN(rbv) || isNaN(rt) || ra < 0 || rbv < 0 || rt < 0) { alert('단가는 0 이상의 숫자로 입력하세요. (복구/축복/이전 모두)'); return; }
     try {
-        await db.ref('hunter_config/reimbursePrices').set({ recovery: ra, blessing: rbv });
+        await db.ref('hunter_config/reimbursePrices').set({ recovery: ra, blessing: rbv, transfer: rt });
         closeModal();
-        alert('✅ 단가가 저장되었습니다.\n복구 ' + fmt(ra) + ' · 축복 ' + fmt(rbv) + ' ' + UNIT);
+        alert('✅ 단가가 저장되었습니다.\n복구 ' + fmt(ra) + ' · 축복 ' + fmt(rbv) + ' · 이전 ' + fmt(rt) + ' ' + UNIT);
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 
@@ -2575,10 +2745,12 @@ function rbRenderSummary() {
     const pendingCnt = rb.requests.filter(r => r.status === 'pending').length;
     const byUser = {};
     approved.forEach(r => {
-        const u = byUser[r.userId] || (byUser[r.userId] = { userId: r.userId, name: r.name, rec: 0, bless: 0, amount: 0, unpaid: 0 });
+        const u = byUser[r.userId] || (byUser[r.userId] = { userId: r.userId, name: r.name, rec: 0, bless: 0, trf: 0, extra: 0, amount: 0, unpaid: 0 });
         const a = rbAmount(r);
         u.rec += Number(r.recoveryCnt) || 0;
         u.bless += Number(r.blessingCnt) || 0;
+        u.trf += Number(r.transferCnt) || 0;
+        u.extra += Number(r.extraAmount) || 0;
         u.amount += a;
         if (!r.paid) u.unpaid += a;
     });
@@ -2598,7 +2770,7 @@ function rbRenderSummary() {
         html += rows.map(u => `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 12px; border:1px solid #e5e8ea; border-radius:8px; margin-bottom:6px; background:white;">
             <div><div style="font-weight:bold; color:#2c3e50;">${esc(u.name)}</div>
-                 <div style="font-size:0.8rem; color:#7f8c8d;">복구 ${fmt(u.rec)} · 축복 ${fmt(u.bless)}</div></div>
+                 <div style="font-size:0.8rem; color:#7f8c8d;">복구 ${fmt(u.rec)} · 축복 ${fmt(u.bless)}${u.trf ? ' · 이전 ' + fmt(u.trf) : ''}${u.extra ? ' · 추가 ' + fmt(u.extra) : ''}</div></div>
             <div style="text-align:right;">
                 <div style="font-weight:bold; color:#2980b9;">${fmt(u.amount)} ${UNIT}</div>
                 ${u.unpaid === 0
@@ -2620,9 +2792,9 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, toggleRecipient, setCalcMode, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
-    rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
+    rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
 };
 
