@@ -73,6 +73,9 @@
         <button class="bottom-nav-item" id="nav-stats" onclick="switchTab('stats')">
             <span class="nav-icon">📈</span>통계
         </button>
+        <button class="bottom-nav-item" id="nav-settle" onclick="switchTab('settle')">
+            <span class="nav-icon">💰</span>정산
+        </button>
         <button class="bottom-nav-item admin-only" id="nav-users" onclick="switchTab('users')" style="display:none;">
             <span class="nav-icon">⚙️</span>관리
         </button>
@@ -231,6 +234,11 @@
         </div>
     </div>
     
+    <!-- 💰 정산 (아이템 드랍·보관함·정산 / 복구·축복 지원비) — 화면은 settlement.js 가 채움 -->
+    <div id="tab-settle" class="tab-content">
+        <div id="settle-root"></div>
+    </div>
+
     <!-- Tab 4: 명단 관리 -->
     <div id="tab-users" class="tab-content admin-only">
 
@@ -862,6 +870,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
+<script src="settlement.js"></script>
 
 
 </body>

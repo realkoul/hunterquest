@@ -196,6 +196,8 @@ function applyMode() {
     populateBossSelector();
     renderAttendanceTable();
     loadWeeklyScheduleImage();
+
+    if (window.Settle) Settle.onModeChange();   // 💰 정산 탭 (settlement.js)
 }
 
 async function toggleAdminMode() {
@@ -430,6 +432,7 @@ function switchTab(tab) {
     if (navBtn) navBtn.classList.add('active');
     
     if (tab === 'stats') loadStats();
+    if (tab === 'settle' && window.Settle) Settle.onOpen();   // 💰 정산 탭 (settlement.js)
     if (tab === 'users') {
         renderUserList();
         populateAdminBossSelector();
