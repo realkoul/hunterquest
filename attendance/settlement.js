@@ -55,7 +55,7 @@ const cbStyle = 'width:16px; height:16px; margin:0; padding:0; border:none; flex
 
 // ── 상태 ─────────────────────────────────────────────────
 const state = {
-    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {},
+    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {}, variants: [], variantSel: '', variantMem: {},
     managers: [],                 // 담당자 userId[]
     storage: [], stFilter: 'all', stServer: '',
     drops: [], dropKey: '', dropRef: null, bossItems: [],
@@ -189,7 +189,7 @@ function ensureManagers() {
     managersOn = true;
     db.ref('hunter_config/storageManagers').on('value', snap => {
         state.managers = Object.values(snap.val() || {}).map(Number).filter(n => !isNaN(n));
-        renderDrops(); renderStorage(); renderCalcActions();
+        renderDrops(); renderStorage(); renderCalcActions(); renderVariantSelect();
     });
 }
 function ensureStorage() {
@@ -296,7 +296,7 @@ function loadDrops() {
     state.drops = [];
     Object.keys(state.dropStRefs).forEach(k => state.dropStRefs[k].off('value'));
     state.dropStRefs = {}; state.dropStorage = {};
-    loadBossItems(t.bossId);
+    loadVariants(t.bossId);
     renderDrops();
     if (!key) return;
     const ref = db.ref('boss_drops/' + key + '/items');
@@ -361,6 +361,11 @@ function buildDropBox() {
             <p style="font-size:0.78rem; color:#7f8c8d; margin:0 0 10px;">보스에서 나온 아이템과 획득자를 기록하고, 담당자에게 전달되면 ✅ 전달완료를 체크하세요(보관함에 등록됩니다). 보스가 끝난 뒤에도 기록할 수 있고, 지난 보스는 "기록할 보스"에서 오늘·어제 것을 고르세요. 아이템 이름은 처음 입력하면 이 보스 목록에 저장되어 다음부터 선택할 수 있습니다.</p>
             <label style="${lab}">기록할 보스</label>
             <select id="settle-drop-target" onchange="Settle.onDropTargetChange()" style="${inputStyle} margin-bottom:8px;"></select>
+            <div id="settle-drop-variant-wrap" style="display:none; margin-bottom:8px;">
+                <label style="${lab}">어떤 보스를 잡았나요?</label>
+                <select id="settle-drop-variant" onchange="Settle.onVariantChange()" style="${inputStyle}"></select>
+            </div>
+            <div id="settle-var-edit" style="text-align:right; margin:-2px 0 8px;"></div>
             <select id="settle-drop-item" onchange="Settle.onItemSelect()" style="${inputStyle} margin-bottom:6px;"></select>
             <input type="text" id="settle-drop-item-direct" maxlength="60" placeholder="아이템 이름을 직접 입력" style="${inputStyle} display:none; border-color:#e67e22; margin-bottom:6px;">
             <div style="display:flex; gap:6px;">
@@ -389,6 +394,7 @@ function syncDropBox(force) {
     dropSig = sig;
     renderDropTargets();
     renderWinnerSelect();
+    renderVariantSelect();
     loadDrops();
     renderDrops();
 }
@@ -413,19 +419,158 @@ async function stFresh(id) {
 
 /*__DROP_REMOVED_loadDrops__*/
 
-function loadBossItems(bossId) {
+// ── 이 시간대에 나올 수 있는 보스(층) 목록 ─────────────────────
+// 일정 이름에 "/" 가 있으면 자동으로 나눔: "오만 1층 / 6층" → ["오만 1층", "오만 6층"], "라바 암살/마령" → ["라바 암살", "마령"]
+function deriveVariants(name) {
+    const raw = String(name || '');
+    const i = raw.indexOf('/');
+    if (i <= 0) return [];
+    const L = raw.slice(0, i).trim(), R = raw.slice(i + 1).trim();
+    if (!L || !R) return [];
+    const m = /^(.*?)(\d+)\s*층?$/.exec(L);
+    if (m && /^\d+\s*층$/.test(R)) return [(m[1] + m[2] + '층').trim(), (m[1] + R.replace(/\s+/g, '')).trim()];
+    return [L, R];
+}
+const variantKey = (label) => String(label).replace(/[.$#\[\]\/]/g, '_');
+
+let varReq = 0, itemsReq = 0;
+function loadVariants(bossId) {
+    const boss = bossId ? getSchedules().find(b => b.id === bossId) : null;
+    const remember = (list) => (state.variantMem[bossId] && list.some(v => v.label === state.variantMem[bossId])) ? state.variantMem[bossId] : '';
+    state.variants = boss ? deriveVariants(boss.name).map(l => ({ label: l, bossName: '' })) : [];
+    state.variantSel = remember(state.variants);
+    renderVariantSelect();
+    loadBossItems();
+    if (!bossId) return;
+    const req = ++varReq;
+    db.ref('boss_variants/' + bossId).once('value').then(snap => {       // 직접 등록한 보스 이름이 있으면 그것을 사용
+        if (req !== varReq || dropTarget().bossId !== bossId) return;
+        const stored = Object.values(snap.val() || {})
+            .filter(v => v && typeof v === 'object' && String(v.label || '').trim())
+            .map(v => ({ label: String(v.label).trim(), bossName: String(v.bossName || '').trim() }));
+        if (!stored.length) return;
+        state.variants = stored;
+        state.variantSel = remember(stored);
+        renderVariantSelect();
+        loadBossItems();
+    }).catch(e => console.warn('보스 목록 로드 실패:', e));
+}
+
+function renderVariantSelect() {
+    const wrap = $('settle-drop-variant-wrap'), sel = $('settle-drop-variant'), edit = $('settle-var-edit');
+    if (!wrap || !sel) return;
+    const t = dropTarget();
+    if (edit) edit.innerHTML = (t.boss && canManage())
+        ? '<button onclick="Settle.openVariants()" style="padding:3px 9px; border:1px solid #8e44ad; border-radius:6px; background:white; color:#8e44ad; font-size:0.75rem; font-weight:bold; cursor:pointer;">⚙️ 이 시간대 보스 이름 등록</button>'
+        : '';
+    const need = state.variants.length >= 2;
+    wrap.style.display = need ? 'block' : 'none';
+    if (!need) { state.variantSel = ''; return; }
+    sel.innerHTML = '<option value="">어떤 보스인지 선택 (필수)</option>'
+        + state.variants.map(v => `<option value="${esc(v.label)}">${esc(v.label)}${v.bossName ? ' · ' + esc(v.bossName) : ''}</option>`).join('');
+    sel.value = state.variantSel || '';
+}
+
+function onVariantChange() {
+    const sel = $('settle-drop-variant');
+    state.variantSel = sel ? sel.value : '';
+    const t = dropTarget();
+    if (t.bossId) state.variantMem[t.bossId] = state.variantSel;     // 같은 시간대에서는 방금 고른 보스를 기억
+    loadBossItems();
+}
+
+// ── 시간대 보스 이름 등록 (관리자/담당자) ──
+function varRowHtml(v) {
+    return `<div class="settle-var-row" style="display:flex; gap:6px; margin-bottom:6px; align-items:center;">
+        <input type="text" class="settle-var-label" maxlength="30" placeholder="구분 (예: 오만 1층)" value="${esc(v.label)}" style="${inputStyle} flex:1;">
+        <input type="text" class="settle-var-name" maxlength="40" placeholder="보스 이름 (선택)" value="${esc(v.bossName)}" style="${inputStyle} flex:1.3;">
+        <button onclick="Settle.removeVariantRow(this)" style="padding:8px 10px; border:none; border-radius:6px; background:#e74c3c; color:white; cursor:pointer; flex:none;">✕</button>
+    </div>`;
+}
+async function openVariants() {
+    const t = dropTarget();
+    if (!t.boss) return;
+    if (!(await requireManage())) return;
+    const rows = state.variants.length ? state.variants : [{ label: '', bossName: '' }];
+    showModal(`
+        <h3 style="margin:0 0 4px; color:#2c3e50;">⚙️ 보스 이름 등록</h3>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px;"><b>${esc(t.boss.time + ' ' + t.boss.name)}</b> 시간대에 나올 수 있는 보스를 등록하세요. 드랍을 기록할 때 이 중에서 고릅니다. (2개 이상이면 선택창이 나타납니다)</p>
+        <div id="settle-var-rows">${rows.map(varRowHtml).join('')}</div>
+        <button onclick="Settle.addVariantRow()" style="padding:6px 12px; border:1px dashed #8e44ad; border-radius:6px; background:white; color:#8e44ad; font-weight:bold; font-size:0.82rem; cursor:pointer;">+ 보스 추가</button>
+        <div style="display:flex; gap:8px; margin-top:14px;">
+            ${actBtn('저장', 'Settle.saveVariants()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('일정 이름대로', 'Settle.resetVariants()', '#7f8c8d').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
+        </div>`);
+}
+function addVariantRow() {
+    const box = $('settle-var-rows');
+    if (box) box.insertAdjacentHTML('beforeend', varRowHtml({ label: '', bossName: '' }));
+}
+function removeVariantRow(btn) {
+    const row = btn && btn.closest ? btn.closest('.settle-var-row') : null;
+    if (row) row.remove();
+}
+async function saveVariants() {
+    const t = dropTarget();
+    if (!t.bossId) return;
+    if (!(await requireManage())) return;
+    const list = [], seen = new Set();
+    document.querySelectorAll('#settle-var-rows .settle-var-row').forEach(r => {
+        const label = (r.querySelector('.settle-var-label').value || '').trim();
+        const bossName = (r.querySelector('.settle-var-name').value || '').trim();
+        if (label && !seen.has(label)) { seen.add(label); list.push({ label: label, bossName: bossName }); }
+    });
+    try {
+        if (list.length) await db.ref('boss_variants/' + t.bossId).set(list);
+        else await db.ref('boss_variants/' + t.bossId).remove();
+        closeModal();
+        loadVariants(t.bossId);
+    } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+async function resetVariants() {
+    const t = dropTarget();
+    if (!t.bossId) return;
+    if (!(await requireManage())) return;
+    if (!confirm('등록한 보스 이름을 지우고, 일정 이름("/" 기준)대로 되돌릴까요?')) return;
+    try {
+        await db.ref('boss_variants/' + t.bossId).remove();
+        closeModal();
+        loadVariants(t.bossId);
+    } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+
+// ── 아이템 목록: 보스(층)별 + 예전에 쌓인 시간대 공통 목록을 합쳐서 보여줌 ──
+function itemKeys() {
+    const t = dropTarget();
+    if (!t.bossId) return [];
+    const keys = [];
+    if (state.variantSel) keys.push(t.bossId + '~' + variantKey(state.variantSel));
+    keys.push(t.bossId);
+    return keys;
+}
+function loadBossItems() {
     state.bossItems = [];
     renderItemSelect();
-    if (!bossId) return;
-    db.ref('boss_items/' + bossId + '/items').once('value').then(snap => {
-        if (dropTarget().bossId !== bossId) return;
-        state.bossItems = Object.values(snap.val() || {}).filter(v => typeof v === 'string' && v.trim());
+    const keys = itemKeys();
+    if (!keys.length) return;
+    const req = ++itemsReq;
+    Promise.all(keys.map(k => db.ref('boss_items/' + k + '/items').once('value'))).then(snaps => {
+        if (req !== itemsReq) return;
+        const seen = new Set(), list = [];
+        snaps.forEach(sn => Object.values(sn.val() || {}).forEach(v => {
+            if (typeof v === 'string' && v.trim() && !seen.has(v)) { seen.add(v); list.push(v); }
+        }));
+        state.bossItems = list;
         renderItemSelect();
     }).catch(e => console.warn('아이템 목록 로드 실패:', e));
 }
 function renderItemSelect() {
     const sel = $('settle-drop-item');
     if (!sel) return;
+    const needVar = state.variants.length >= 2 && !state.variantSel;
+    sel.disabled = needVar;
+    if (needVar) { sel.innerHTML = '<option value="">먼저 위에서 어떤 보스인지 선택하세요</option>'; return; }
     const prev = sel.value;
     sel.innerHTML = '<option value="">아이템 선택 (이 보스 목록)</option>'
         + state.bossItems.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')
@@ -442,9 +587,10 @@ function getItemName() {
     if (direct && direct.style.display !== 'none' && direct.value.trim()) return direct.value.trim();
     return (sel && sel.value && sel.value !== '__direct__') ? sel.value : '';
 }
-function learnItem(bossId, name) {
-    if (!bossId || state.bossItems.includes(name)) return Promise.resolve();
-    return db.ref('boss_items/' + bossId + '/items').transaction(cur => {
+function learnItem(name) {
+    const keys = itemKeys();
+    if (!keys.length || state.bossItems.includes(name)) return Promise.resolve();
+    return db.ref('boss_items/' + keys[0] + '/items').transaction(cur => {      // 보스(층)를 골랐으면 그 보스 목록에, 아니면 시간대 목록에 저장
         const arr = Array.isArray(cur) ? cur.slice() : Object.values(cur || {});
         if (!arr.includes(name)) arr.push(name);
         return arr;
@@ -458,6 +604,7 @@ function storageFromDrop(d) {
     return {
         id: String(d.id), itemName: d.itemName,
         bossId: d.bossId, bossName: d.bossName, bossServer: d.bossServer || '',
+        bossVariant: d.bossVariant || '', bossVariantName: d.bossVariantName || '',
         date: d.date, winner: d.winner, winnerId: d.winnerId, winnerServer: d.winnerServer || '',
         dropPath: 'boss_drops/' + d.date + '_' + d.bossId + '/items/' + (d._k != null ? d._k : d.id),
         addedAt: nowIso(), sold: false, bidPrice: 0, buyer: ''
@@ -471,6 +618,8 @@ async function addDrop() {
     if (!t.boss)   { alert('기록할 보스가 없습니다.\n위의 "보스 선택"에서 보스를 고르거나, "기록할 보스"를 직접 선택하세요.'); return; }
     if (!itemName) { alert('아이템을 선택하거나 직접 입력하세요.'); return; }
     if (!winner)   { alert('획득자를 선택하세요.'); return; }
+    if (state.variants.length >= 2 && !state.variantSel) { alert('어떤 보스를 잡았는지(예: 1층 / 6층) 먼저 선택하세요.'); return; }
+    const vObj = state.variants.find(v => v.label === state.variantSel) || null;
     const date = t.date, bossId = t.bossId, boss = t.boss;
 
     const id = Date.now() + '_' + Number(winner.id);
@@ -478,6 +627,7 @@ async function addDrop() {
     const drop = {
         id: id, itemName: itemName, winner: winner.name, winnerId: Number(winner.id), winnerServer: winner.server || '',
         bossId: bossId, bossName: boss.name, bossServer: winner.server || '', date: date,
+        bossVariant: vObj ? vObj.label : '', bossVariantName: vObj ? vObj.bossName : '',
         delivered: isMgr, inStorage: isMgr, timestamp: nowIso()
     };
     const updates = {};
@@ -485,12 +635,12 @@ async function addDrop() {
     if (isMgr) updates['boss_storage/' + id] = storageFromDrop(Object.assign({ _k: id }, drop));   // 보관함에도 실제로 등록
     try {
         await db.ref().update(updates);
-        await learnItem(bossId, itemName);
+        await learnItem(itemName);
         $('settle-drop-item').value = '';
         $('settle-drop-item-direct').value = '';
         $('settle-drop-item-direct').style.display = 'none';
         $('settle-drop-winner').value = '';
-        showDropMsg('✅ ' + itemName + ' → ' + boss.time + ' ' + boss.name + (date !== ymdOf(nowD()) ? ' (' + date.slice(5) + ')' : '') + ' 기록 완료');
+        showDropMsg('✅ ' + itemName + ' → ' + boss.time + ' ' + boss.name + (vObj ? ' · ' + vObj.label : '') + (date !== ymdOf(nowD()) ? ' (' + date.slice(5) + ')' : '') + ' 기록 완료');
     } catch (e) {
         alert('❌ 드랍 기록 실패: ' + e.message);
     }
@@ -530,6 +680,7 @@ function renderDrops() {
             <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
                 <b style="color:#2c3e50;">${esc(d.itemName)}</b>${status}
             </div>
+            ${d.bossVariant ? `<div style="font-size:0.8rem; color:#6c3483; margin-top:3px;">🗡️ ${esc(d.bossVariant)}${d.bossVariantName ? ' · ' + esc(d.bossVariantName) : ''}</div>` : ''}
             <div style="font-size:0.82rem; color:#666; margin-top:3px;">
                 획득: <b>${esc(d.winner)}</b>${serverBadge(d.winnerServer)}${mgrWinner ? ' ' + badge('담당자', '#8e44ad') : ''}
                 ${mgrWinner && d.inStorage ? '<span style="color:#8e44ad; font-size:0.76rem;"> · 자동 보관함 등록</span>' : ''}
@@ -613,7 +764,7 @@ function renderStorage() {
             <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
                 <div style="flex:1; min-width:150px;">
                     <div style="font-weight:bold; color:#2c3e50;">${esc(it.itemName)} ${sold ? badge(it.settledId ? '정산완료' : '판매완료', it.settledId ? '#16a085' : '#27ae60') : ''}</div>
-                    <div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${serverBadge(it.bossServer)}</div>
+                    <div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${it.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(it.bossVariant)}${it.bossVariantName ? ' · ' + esc(it.bossVariantName) : ''}</span>` : ''}${serverBadge(it.bossServer)}</div>
                     <div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">${btns.join('')}</div>
@@ -769,7 +920,7 @@ function renderCalc() {
             <b style="font-size:1.1rem;">${fmt(total)} ${UNIT}</b>
         </div>
         <div style="padding:8px 14px; font-size:0.82rem;">
-            ${items.map(i => `<div style="display:flex; justify-content:space-between; gap:8px; padding:3px 0; border-bottom:1px dashed #eee;"><span>${esc(i.itemName)} → ${esc(i.buyer)}</span><b style="color:#2980b9;">${fmt(i.bidPrice)}</b></div>`).join('')}
+            ${items.map(i => `<div style="display:flex; justify-content:space-between; gap:8px; padding:3px 0; border-bottom:1px dashed #eee;"><span>${esc(i.itemName)}${i.bossVariant ? ' (' + esc(i.bossVariant) + ')' : ''} → ${esc(i.buyer)}</span><b style="color:#2980b9;">${fmt(i.bidPrice)}</b></div>`).join('')}
         </div>
         <div style="padding:0 14px 10px;">
             <div style="font-size:0.85rem; font-weight:bold; margin:6px 0;">👥 정산 대상자 <span id="settle-rcpt-count" style="color:#27ae60;"></span></div>
@@ -842,7 +993,7 @@ async function saveSettlement() {
         dist.forEach(d => { recMap['u' + d.userId] = { userId: d.userId, name: d.name, server: d.server, amount: d.amount, received: false }; });
         const record = {
             id: sidv, createdAt: nowIso(), totalAmount: total, count: dist.length,
-            items: items.map(i => ({ id: String(i.id), itemName: i.itemName, bossName: i.bossName, bossServer: i.bossServer || '', date: i.date, buyer: i.buyer, bidPrice: i.bidPrice })),
+            items: items.map(i => ({ id: String(i.id), itemName: i.itemName, bossName: i.bossName, bossServer: i.bossServer || '', bossVariant: i.bossVariant || '', date: i.date, buyer: i.buyer, bidPrice: i.bidPrice })),
             recipients: recMap
         };
         const updates = {};
@@ -901,7 +1052,7 @@ function renderHistory() {
             <details style="margin-top:6px;">
                 <summary style="cursor:pointer; font-size:0.85rem; color:#2c3e50;">낙찰 아이템 / 대상자 보기</summary>
                 <div style="font-size:0.8rem; margin:6px 0; padding:6px 8px; background:#f8f9fa; border-radius:6px;">
-                    ${its.map(i => `<div style="display:flex; justify-content:space-between; gap:8px;"><span>${esc(i.itemName)} → ${esc(i.buyer)}</span><b>${fmt(i.bidPrice)}</b></div>`).join('')}
+                    ${its.map(i => `<div style="display:flex; justify-content:space-between; gap:8px;"><span>${esc(i.itemName)}${i.bossVariant ? ' (' + esc(i.bossVariant) + ')' : ''} → ${esc(i.buyer)}</span><b>${fmt(i.bidPrice)}</b></div>`).join('')}
                 </div>
                 <div style="max-height:220px; overflow-y:auto; border:1px solid #eee; border-radius:6px;">
                     ${rc.map(x => `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 10px; border-bottom:1px solid #f3f3f3; font-size:0.85rem;">
@@ -1426,7 +1577,7 @@ function rbRenderSummary() {
 // ============================================================
 window.Settle = {
     onOpen, onModeChange, showPane, closeModal,
-    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onItemSelect, addDrop, toggleDelivered, deleteDrop,
+    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
     openCalc, closeCalc, toggleRecipient, setRecipientsAll, setRecipientsServer, saveSettlement,
