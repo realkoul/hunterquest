@@ -1,7 +1,7 @@
 // ============================================================
 // 💰 정산 모듈 (settlement.js)
 //   📦 아이템 드랍 → 담당자 전달 → 보관함 → 입찰/판매 → 정산(균등 배분)
-//   💸 복구·축복 지원비 (주 단위 신청 → 운영진 승인 → 지급)
+//   💸 복구·축복 지원비 (주 단위 신청 → 운영진 확정 → 지급)
 //
 // - app.js 가 먼저 로드되어야 함 (db, users, schedules, isAdmin, getHash, ADMIN_PW_HASH 등을 사용)
 // - 모든 로직은 이 파일 안(IIFE)에 격리되어 app.js 와 이름이 겹치지 않음. 바깥에는 window.Settle 만 노출.
@@ -112,7 +112,7 @@ function buildRoot() {
     <div class="card" style="padding:10px 18px;">
         <div style="display:flex; gap:8px;">
             <button id="settle-seg-items" onclick="Settle.showPane('items')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">📦 아이템·정산</button>
-            <button id="settle-seg-reimb" onclick="Settle.showPane('reimb')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">💸 복구·축복 지원비</button>
+            <button id="settle-seg-reimb" onclick="Settle.showPane('reimb')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">💸 복구비 관리</button>
         </div>
     </div>
 
@@ -143,15 +143,29 @@ function buildRoot() {
 }
 
 function showPane(p) {
+    if (p === 'reimb' && !isAdmin) p = 'items';                 // 복구비 관리는 관리자만
     state.pane = p;
     const on = 'background:#2c3e50; color:white; border:2px solid #2c3e50;';
     const off = 'background:white; color:#2c3e50; border:2px solid #d5d8dc;';
     const bi = $('settle-seg-items'), br = $('settle-seg-reimb');
     if (bi) bi.style.cssText = (p === 'items' ? on : off) + ' flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;';
-    if (br) br.style.cssText = (p === 'reimb' ? on : off) + ' flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;';
+    if (br) { br.style.cssText = (p === 'reimb' ? on : off) + ' flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;'; br.style.display = isAdmin ? '' : 'none'; }
     $('settle-pane-items').style.display = p === 'items' ? 'block' : 'none';
     $('settle-pane-reimb').style.display = p === 'reimb' ? 'block' : 'none';
-    if (p === 'reimb') rbInit();
+    if (p === 'reimb') rbAdminInit();
+}
+function renderSeg() {
+    const br = $('settle-seg-reimb');
+    if (br) br.style.display = isAdmin ? '' : 'none';
+    if (!isAdmin && state.pane === 'reimb') showPane('items');
+}
+
+// 하단 [정산] 메뉴는 관리자·담당자에게만 보임 (일반 사용자는 출석 · 복구비 신청 · 내 정보 중심)
+function updateNav() {
+    const n = $('nav-settle');
+    if (n) n.style.display = canManage() ? '' : 'none';
+    const tab = $('tab-settle');
+    if (tab && tab.classList.contains('active') && !canManage() && typeof switchTab === 'function') switchTab('attendance');
 }
 
 // ── 탭 진입/모드 변경 ────────────────────────────────────
@@ -162,6 +176,7 @@ function onOpen() {
         root.innerHTML = '<div class="card"><p style="color:#c0392b;">정산 모듈을 시작할 수 없습니다. app.js 가 먼저 로드되었는지 확인하세요.</p></div>';
         return;
     }
+    if (!canManage()) { if (typeof switchTab === 'function') switchTab('attendance'); return; }   // 정산 탭은 관리자·담당자 전용
     if (!state.inited) {
         buildRoot();
         state.inited = true;
@@ -169,11 +184,14 @@ function onOpen() {
     }
     ensureListeners();
     refreshAll();
-    if (state.pane === 'reimb') rbInit();
+    renderSeg();
+    if (state.pane === 'reimb') rbAdminInit();
 }
 function onModeChange() {
     syncDropBox(true);
-    if (state.inited) { refreshAll(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
+    updateNav();
+    if (state.inited) { refreshAll(); renderSeg(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
+    rbRenderUser();
 }
 function refreshAll() {
     renderStorage();
@@ -190,7 +208,7 @@ function ensureManagers() {
     managersOn = true;
     db.ref('hunter_config/storageManagers').on('value', snap => {
         state.managers = Object.values(snap.val() || {}).map(Number).filter(n => !isNaN(n));
-        renderDrops(); renderStorage(); renderCalcActions(); renderVariantSelect();
+        renderDrops(); renderStorage(); renderCalcActions(); renderVariantSelect(); updateNav();
     });
 }
 function ensureStorage() {
@@ -393,6 +411,8 @@ function syncDropBox(force) {
     const sig = dropSignature();
     if (!force && sig === dropSig) return;
     dropSig = sig;
+    updateNav();
+    rbRenderUser();
     renderDropTargets();
     renderWinnerSelect();
     renderVariantSelect();
@@ -1447,12 +1467,13 @@ async function cancelSettlement(rid) {
 }
 
 // ============================================================
-// 💸 복구·축복 지원비 (주 단위 신청 → 운영진 승인 → 지급)
+// 💸 복구·축복 지원비 (주 단위 신청 → 운영진 확정 → 지급)
 // ============================================================
 const RB_MAX_IMAGES = 3;
 const rb = {
     inited: false, week: '', requests: [], prices: { recovery: 0, blessing: 0 },
     shots: [], shotSeq: 0, ocrQ: Promise.resolve(), workerP: null,
+    uInited: false, userData: {}, userRefs: {},          // 사용자 탭: 최근 3주 데이터
     weekRef: null, priceBound: false, imgCache: {}, open: new Set()
 };
 const RB_MAX_PER_KIND = 2;                                   // 복구 사진 2장 · 축복 사진 2장까지
@@ -1471,27 +1492,83 @@ function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padSta
 function md(d) { return (d.getMonth() + 1) + '/' + d.getDate(); }
 
 const rbSafeSrc = (d) => (typeof d === 'string' && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/=]+$/.test(d)) ? d : '';
-const rbFind = (k) => rb.requests.find(r => sid(r.id) === k) || null;
+// 이 기기를 구분하는 값 (다른 사람 사진을 대신 올린 신청도 올린 사람이 수정/삭제할 수 있게)
+function deviceId() {
+    try {
+        let v = localStorage.getItem('settleDeviceId');
+        if (!v) { v = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); localStorage.setItem('settleDeviceId', v); }
+        return v;
+    } catch (e) { return 'd-nolocal'; }
+}
+const rbIsMine = (r) => myNameList().includes(r.name) || (!!r.by && r.by === deviceId());
+const rbWeekOf = (r) => r._week || rb.week;
+function rbWeekRange(key) {
+    const st = new Date(key + 'T00:00:00'), en = new Date(st);
+    en.setDate(st.getDate() + 7);
+    return '수 ' + md(st) + ' 05시 ~ 수 ' + md(en) + ' 05시';
+}
+function rbWeekName(key) {
+    const cur = ymd(weekStartWed(nowD()));
+    const diff = Math.round((new Date(cur + 'T00:00:00') - new Date(key + 'T00:00:00')) / (7 * 86400000));
+    const p = diff === 0 ? '이번 주' : (diff === 1 ? '지난 주' : (diff > 1 ? diff + '주 전' : ''));
+    return (p ? p + ' ' : '') + '(' + rbWeekRange(key) + ')';
+}
+function rbRecentWeeks(n) {                              // 이번 주부터 n주 (시작 수요일 날짜 키)
+    const cur = weekStartWed(nowD()), out = [];
+    for (let i = 0; i < n; i++) { const st = new Date(cur); st.setDate(cur.getDate() - i * 7); out.push(ymd(st)); }
+    return out;
+}
+function rbUserAll() {
+    const out = [];
+    Object.keys(rb.userData).forEach(k => rb.userData[k].forEach(r => out.push(r)));
+    return out;
+}
+const rbMine = () => rbUserAll().filter(rbIsMine).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+const rbFind = (k) => rb.requests.find(r => sid(r.id) === k) || rbUserAll().find(r => sid(r.id) === k) || null;
 function rbAmount(r) {
     const p = r.priceSnap || rb.prices;
     return (Number(r.recoveryCnt) || 0) * (Number(p.recovery) || 0) + (Number(r.blessingCnt) || 0) * (Number(p.blessing) || 0);
 }
 
-function rbBuild() {
-    const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin-bottom:4px;';
+// 관리자 화면 (정산 탭 > 복구비 관리): 전체 신청 목록 · 확정/반려/지급 · 단가 · 주간 지급 요약
+function rbBuildAdmin() {
     $('settle-pane-reimb').innerHTML = `
     <div class="card">
-        <h2 style="font-size:1.05rem; margin:0 0 4px;">💸 복구비·축복비 지원 신청</h2>
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 12px; line-height:1.5;">게임의 <b>[호칭 → 호칭 리스트]</b> 화면 사진을 올리면 종류(복구·축복)와 점수(= 사용 횟수)를 자동으로 읽습니다. 운영진이 확정하면 혈에서 비용을 지급합니다.<br>⏰ 주간 호칭 랭킹은 <b>매주 수요일 05시</b>에 초기화되니, 초기화 전에 올려주세요.</p>
+        <h2 style="font-size:1.05rem; margin:0 0 4px;">💸 복구비 관리</h2>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px; line-height:1.5;">전체 신청을 확인하고 확정·지급 처리합니다. 확정하면 횟수 수정이 잠기고 증빙 사진은 삭제됩니다.</p>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
             <label style="font-weight:bold; color:#2c3e50;">주차:</label>
             <select id="rb-week" onchange="Settle.rbLoadWeek()" style="width:auto; margin:0; padding:9px 12px; border:2px solid #5D6D7E; border-radius:8px; font-size:0.88rem; font-weight:bold;"></select>
         </div>
         <div id="rb-price-line" style="font-size:0.82rem; color:#7f8c8d;"></div>
     </div>
+    <div class="card">
+        <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">📋 이 주차 신청 내역 (전체)</h3>
+        <div id="rb-list"></div>
+    </div>
+    <div class="card">
+        <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">🧾 주간 지급 요약</h3>
+        <div id="rb-summary"></div>
+    </div>`;
+}
+
+// 사용자 화면 (복구비 탭): 내가 받을 돈 · 신청하기 · 내 신청 내역
+function rbBuildUser() {
+    const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin-bottom:4px;';
+    $('reimb-root').innerHTML = `
+    <div class="card" style="background:#f4faff;">
+        <h2 style="font-size:1.05rem; margin:0 0 6px;">💰 내가 받을 돈</h2>
+        <div id="rbu-money"></div>
+    </div>
 
     <div class="card">
-        <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">📝 신청하기</h3>
+        <h2 style="font-size:1.05rem; margin:0 0 4px;">💸 복구비 신청</h2>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 12px; line-height:1.5;">게임의 <b>[호칭 → 호칭 리스트]</b> 화면 사진을 올리면 종류(복구·축복)와 점수(= 사용 횟수)를 자동으로 읽습니다. 운영진이 확정하면 혈에서 비용을 지급합니다.<br>⏰ 주간 호칭 랭킹은 <b>매주 수요일 05시</b>에 초기화되니, 초기화 전에 올려주세요.</p>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
+            <label style="font-weight:bold; color:#2c3e50;">주차:</label>
+            <select id="rbu-week" style="width:auto; margin:0; padding:9px 12px; border:2px solid #5D6D7E; border-radius:8px; font-size:0.86rem; font-weight:bold;"></select>
+        </div>
+        <div id="rbu-price-line" style="font-size:0.82rem; color:#7f8c8d; margin-bottom:12px;"></div>
         <div style="margin-bottom:12px;"><label style="${lab}">신청자</label><select id="rb-user" style="${inputStyle}"></select></div>
         <div style="margin-bottom:10px;">
             <label style="${lab}">호칭 화면 사진 <span style="font-weight:normal; color:#7f8c8d;">(복구 2장 · 축복 2장까지)</span></label>
@@ -1506,43 +1583,75 @@ function rbBuild() {
     </div>
 
     <div class="card">
-        <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">📋 이 주차 신청 내역</h3>
-        <div id="rb-list"></div>
-    </div>
-    <div class="card">
-        <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">🧾 주간 지급 요약</h3>
-        <div id="rb-summary"></div>
+        <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">📋 내 신청 내역 <span style="font-weight:normal; color:#95a5a6; font-size:0.78rem;">(최근 3주)</span></h3>
+        <div id="rbu-list"></div>
     </div>`;
 }
 
-function rbInit() {
-    if (!rb.inited) { rbBuild(); rbPopulateWeeks(); rb.inited = true; }
-    rbPopulateUsers();
-    if (!rb.priceBound) {
-        rb.priceBound = true;
-        db.ref('hunter_config/reimbursePrices').on('value', snap => {
-            const v = snap.val() || {};
-            rb.prices = { recovery: Number(v.recovery) || 0, blessing: Number(v.blessing) || 0 };
-            rbRenderPriceLine();
-            rbRender();
-        });
-    }
+// 단가는 사용자·관리자 화면이 함께 사용
+function rbEnsurePrices() {
+    if (rb.priceBound) return;
+    rb.priceBound = true;
+    db.ref('hunter_config/reimbursePrices').on('value', snap => {
+        const v = snap.val() || {};
+        rb.prices = { recovery: Number(v.recovery) || 0, blessing: Number(v.blessing) || 0 };
+        rbRenderPriceLine(); rbRender(); rbRenderUser();
+    });
+}
+
+function rbAdminInit() {
+    if (!rb.inited) { rbBuildAdmin(); rbPopulateWeeks(); rb.inited = true; }
+    rbEnsurePrices();
     if (!rb.weekRef) rbLoadWeek();
     rbRenderPriceLine();
     rbRender();
 }
 
-function rbPopulateWeeks() {
+// 사용자 탭을 열 때: 화면 만들기 + 최근 3주 신청 구독
+function rbUserOpen() {
+    if (!depsOk()) return;
+    if (!rb.uInited) { rbBuildUser(); rb.uInited = true; }
+    rbPopulateUserWeeks();
+    rbPopulateUsers();
+    rbEnsurePrices();
+    rbUserAttach();
+    rbRenderUser();
+}
+function rbUserAttach() {
+    rbRecentWeeks(3).forEach(key => {
+        if (rb.userRefs[key]) return;
+        const ref = db.ref('boss_reimburse/' + key);
+        rb.userRefs[key] = ref;
+        ref.on('value', snap => {
+            const data = snap.val() || {};
+            rb.userData[key] = Object.values(data).filter(r => r && r.id).map(r => Object.assign({}, r, { _week: key }));
+            rbRenderUser();
+        });
+    });
+}
+function initUserReimb() {                               // 복구비 탭이 열릴 때마다 (app.js 수정 없이 감지)
+    const tab = $('tab-reimb');
+    if (!tab) return;
+    let was = tab.classList.contains('active');
+    new MutationObserver(() => {
+        const now = tab.classList.contains('active');
+        if (now && !was) afterAuth(rbUserOpen);
+        was = now;
+    }).observe(tab, { attributes: true, attributeFilter: ['class'] });
+    if (was) afterAuth(rbUserOpen);
+}
+
+function rbPopulateWeeks() {                              // 관리자: 최근 8주
     const sel = $('rb-week');
-    const thisStart = weekStartWed(nowD());
-    let html = '';
-    for (let i = 0; i >= -7; i--) {
-        const st = new Date(thisStart); st.setDate(thisStart.getDate() + i * 7);
-        const en = new Date(st); en.setDate(st.getDate() + 7);
-        const prefix = i === 0 ? '이번 주 ' : (i === -1 ? '지난 주 ' : '');
-        html += `<option value="${ymd(st)}">${prefix}(수 ${md(st)} 05시 ~ 수 ${md(en)} 05시)</option>`;
-    }
-    sel.innerHTML = html;
+    if (sel) sel.innerHTML = rbRecentWeeks(8).map(k => `<option value="${k}">${esc(rbWeekName(k))}</option>`).join('');
+}
+function rbPopulateUserWeeks() {                          // 사용자: 이번 주 / 지난 주
+    const sel = $('rbu-week');
+    if (!sel) return;
+    const prev = sel.value;
+    const keys = rbRecentWeeks(2);
+    sel.innerHTML = keys.map(k => `<option value="${k}">${esc(rbWeekName(k))}</option>`).join('');
+    sel.value = keys.includes(prev) ? prev : keys[0];
 }
 
 function rbPopulateUsers() {
@@ -1780,25 +1889,27 @@ function rbLoadWeek() {
     rb.week = $('rb-week').value;
     rb.open.clear();
     if (rb.weekRef) rb.weekRef.off('value');
-    const ref = db.ref('boss_reimburse/' + rb.week);
+    const key = rb.week;
+    const ref = db.ref('boss_reimburse/' + key);
     rb.weekRef = ref;
     ref.on('value', snap => {
         if (rb.weekRef !== ref) return;
         const data = snap.val() || {};
-        rb.requests = Object.values(data).filter(r => r && r.id)
+        rb.requests = Object.values(data).filter(r => r && r.id).map(r => Object.assign({}, r, { _week: key }))
             .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
         rbRender();
     });
 }
 
 function rbRenderPriceLine() {
-    const el = $('rb-price-line');
-    if (!el) return;
     const p = rb.prices;
     const txt = (p.recovery || p.blessing)
         ? `지급 단가(회당): 복구 ${fmt(p.recovery)} · 축복 ${fmt(p.blessing)} ${UNIT}`
         : '지급 단가가 아직 설정되지 않았습니다. (운영진이 복구·축복 단가를 각각 설정하면 금액이 계산됩니다)';
-    el.innerHTML = esc(txt) + (isAdmin ? ' <button onclick="Settle.rbSetPrices()" style="margin-left:6px; padding:4px 10px; border:none; border-radius:6px; background:#8e44ad; color:white; font-size:0.78rem; font-weight:bold; cursor:pointer;">⚙️ 단가 설정</button>' : '');
+    const adm = $('rb-price-line');
+    if (adm) adm.innerHTML = esc(txt) + (isAdmin ? ' <button onclick="Settle.rbSetPrices()" style="margin-left:6px; padding:4px 10px; border:none; border-radius:6px; background:#8e44ad; color:white; font-size:0.78rem; font-weight:bold; cursor:pointer;">⚙️ 단가 설정</button>' : '');
+    const usr = $('rbu-price-line');
+    if (usr) usr.textContent = txt;
 }
 
 // ── 이미지 선택/압축 ──
@@ -1806,7 +1917,8 @@ function rbRenderPriceLine() {
 async function rbSubmit() {
     const user = userById(parseInt($('rb-user').value));
     const memo = $('rb-memo').value.trim();
-    if (!rb.week) { alert('주차를 선택하세요.'); return; }
+    const week = $('rbu-week') ? $('rbu-week').value : rb.week;
+    if (!week) { alert('주차를 선택하세요.'); return; }
     if (!user)    { alert('신청자를 선택하세요.'); return; }
     if (rb.shots.length === 0) { alert('호칭 화면 사진을 1장 이상 올려주세요.'); return; }
     if (rb.shots.some(x => x.status === 'reading' && !x.manual)) { alert('사진을 읽는 중입니다. 잠시 뒤에 다시 눌러주세요. (횟수를 직접 입력해도 됩니다)'); return; }
@@ -1825,8 +1937,10 @@ async function rbSubmit() {
         if (same.length === 2 && Number(same[0].cnt) === Number(same[1].cnt) && !confirm(RB_KIND[kind] + ' 사진 두 장의 횟수가 같습니다(' + same[0].cnt + '회).\n서로 다른 캐릭터 사진이 맞나요? 합산해서 신청합니다.')) return;
     }
     // 점수는 한 주 누적값이라, 같은 사람이 같은 주에 두 번 신청하면 이중으로 합산됨 → 한 사람당 한 건
-    if (rb.requests.some(r => Number(r.userId) === Number(user.id) && r.status !== 'rejected')) {
-        alert(user.name + '님은 이 주차에 이미 신청이 있습니다.\n횟수를 고치려면 기존 신청의 [횟수 수정]을 쓰거나, 삭제한 뒤 다시 올려주세요.');
+    let existing = rb.userData[week] || [];
+    try { existing = Object.values((await db.ref('boss_reimburse/' + week).once('value')).val() || {}); } catch (e) { /* 화면에 있는 값으로 확인 */ }
+    if (existing.some(r => r && Number(r.userId) === Number(user.id) && r.status !== 'rejected')) {
+        alert(user.name + '님은 이 주차에 이미 신청이 있습니다.\n횟수를 고치려면 아래 [내 신청 내역]의 [횟수 수정]을 쓰거나, 삭제한 뒤 다시 올려주세요.');
         return;
     }
 
@@ -1837,10 +1951,10 @@ async function rbSubmit() {
         id: id, userId: Number(user.id), name: user.name,
         recoveryCnt: t.recovery, blessingCnt: t.blessing,
         shots: rb.shots.map(x => ({ kind: x.kind, cnt: Number(x.cnt) || 0, auto: x.auto === null ? null : x.auto })),   // 사진별 횟수 + 자동 인식값(수정 여부 확인용)
-        memo: memo, imgCount: rb.shots.length, status: 'pending', paid: false, createdAt: nowIso()
+        memo: memo, imgCount: rb.shots.length, status: 'pending', paid: false, by: deviceId(), createdAt: nowIso()
     };
     const updates = {};
-    updates['boss_reimburse/' + rb.week + '/' + id] = req;
+    updates['boss_reimburse/' + week + '/' + id] = req;
     updates['boss_reimburse_img/' + id] = rb.shots.map(x => x.data);
     try {
         await db.ref().update(updates);
@@ -1861,6 +1975,98 @@ function rbStatusBadge(r) {
     if (r.status === 'rejected') return badge('❌ 반려', '#c0392b');
     return badge('⏳ 확인 대기', '#e67e22');
 }
+
+function rbCardHtml(r, mode) {
+    const adminView = mode === 'admin';
+    const k = sid(r.id);
+    const amount = rbAmount(r);
+    const pr = r.priceSnap || rb.prices;
+    const isMine = rbIsMine(r);
+    const locked = r.status === 'approved';                          // 확정되면 수정 불가
+    const canEdit = !locked && ((adminView && isAdmin) || isMine);
+    const canDelete = (adminView && isAdmin) || (isMine && (r.status === 'pending' || r.status === 'rejected'));
+    const border = r.status === 'approved' ? (r.paid ? '#a9dfbf' : '#aed6f1') : (r.status === 'rejected' ? '#f5b7b1' : '#f0e6cc');
+    const btns = [];
+    if (r.imgCount > 0) btns.push(actBtn('🖼️ 증빙 ' + r.imgCount + '장', `Settle.rbShowImages('${k}')`, '#5D6D7E'));
+    if (canEdit) btns.push(actBtn('✏️ 횟수 수정', `Settle.rbEdit('${k}')`, '#8e44ad'));
+    if (adminView && isAdmin) {
+        if (!locked) btns.push(actBtn('✅ 확정', `Settle.rbApprove('${k}')`, '#2980b9'));
+        if (r.status === 'pending') btns.push(actBtn('❌ 반려', `Settle.rbReject('${k}')`, '#c0392b'));
+        if (locked) btns.push(actBtn(r.paid ? '↩️ 지급 취소' : '💵 지급완료', `Settle.rbTogglePaid('${k}')`, '#27ae60'));
+        if (locked && !r.paid) btns.push(actBtn('↩️ 확정 취소', `Settle.rbUnconfirm('${k}')`, '#7f8c8d'));
+        if (r.paid && r.imgCount > 0) btns.push(actBtn('🧹 증빙 삭제', `Settle.rbDeleteImages('${k}')`, '#95a5a6'));
+    }
+    if (canDelete) btns.push(actBtn('🗑️', `Settle.rbDelete('${k}')`, '#e74c3c'));
+    const shotsLine = adminView ? rbShotsLine(r) : '';
+    const weekTag = adminView ? '' : `<div style="font-size:0.74rem; color:#7f8c8d; margin-bottom:4px;">📅 ${esc(rbWeekName(r._week || ''))}</div>`;
+    return `
+    <div style="background:white; border:2px solid ${border}; border-radius:10px; padding:12px; margin-bottom:10px;">
+        ${weekTag}
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+            <div style="font-weight:bold; color:#2c3e50;">${esc(r.name)}${isMine && adminView ? ' <span style="padding:1px 6px; background:#ffc107; color:#333; border-radius:4px; font-size:0.72rem;">⭐ 나</span>' : ''}</div>
+            ${rbStatusBadge(r)}
+        </div>
+        <div style="margin-top:6px; font-size:0.92rem; color:#555;">
+            복구 <b>${fmt(r.recoveryCnt)}</b>회 · 축복 <b>${fmt(r.blessingCnt)}</b>회
+            <span style="color:#2980b9; font-weight:bold;"> = ${fmt(amount)} ${UNIT}</span>${r.edited ? ' <span style="color:#8e44ad; font-size:0.76rem;">✏️수정됨</span>' : ''}
+        </div>
+        <div style="margin-top:2px; font-size:0.76rem; color:#95a5a6;">복구 ${fmt(r.recoveryCnt)}×${fmt(pr.recovery)} + 축복 ${fmt(r.blessingCnt)}×${fmt(pr.blessing)}${r.status === 'pending' && (pr.recovery || pr.blessing) ? ' (예상 · 확정 때 단가로 정해짐)' : ''}</div>
+        ${shotsLine ? `<div style="margin-top:2px; font-size:0.76rem; color:#7f8c8d;">${esc(shotsLine)}</div>` : ''}
+        ${r.memo ? `<div style="margin-top:4px; font-size:0.85rem; color:#7f8c8d;">📝 ${esc(r.memo)}</div>` : ''}
+        ${r.status === 'rejected' && r.rejectReason ? `<div style="margin-top:4px; font-size:0.85rem; color:#c0392b;">반려 사유: ${esc(r.rejectReason)}</div>` : ''}
+        ${locked ? '<div style="margin-top:4px; font-size:0.76rem; color:#2980b9;">🔒 확정됨 — 횟수 수정 불가 · 증빙 사진 삭제됨</div>' : ''}
+        <div style="margin-top:3px; font-size:0.76rem; color:#aaa;">${esc(new Date(r.createdAt).toLocaleString('ko-KR'))}</div>
+        <div class="rb-imgs" data-k="${k}" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;"></div>
+        ${btns.length ? `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">${btns.join('')}</div>` : ''}
+    </div>`;
+}
+
+function rbRender() {                                      // 관리자: 이 주차 전체 신청
+    const box = $('rb-list');
+    if (!box) return;
+    if (rb.requests.length === 0) {
+        box.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:20px; margin:0;">이 주차에 접수된 신청이 없습니다.</p>';
+        rbRenderSummary();
+        return;
+    }
+    box.innerHTML = rb.requests.map(r => rbCardHtml(r, 'admin')).join('');
+    rb.open.forEach(k => rbPaintImages(k));
+    rbRenderSummary();
+}
+
+// ── 사용자 화면: 내가 받을 돈 / 내 신청 내역 ──
+function rbRenderUser() {
+    rbRenderPriceLine();
+    rbRenderMoney();
+    rbRenderMine();
+}
+function rbRenderMoney() {
+    const el = $('rbu-money');
+    if (!el) return;
+    const mine = rbMine();
+    const sum = (f) => mine.filter(f).reduce((t, r) => t + rbAmount(r), 0);
+    const waiting = sum(r => r.status === 'approved' && !r.paid);
+    const paid = sum(r => r.status === 'approved' && r.paid);
+    const est = sum(r => r.status === 'pending');
+    const tile = (label, val, bg, color) => `<div style="flex:1; background:${bg}; border-radius:8px; padding:8px; text-align:center;"><div style="font-size:0.72rem; color:#7f8c8d;">${label}</div><div style="font-size:0.98rem; font-weight:bold; color:${color};">${fmt(val)} ${UNIT}</div></div>`;
+    el.innerHTML = `
+        <div style="text-align:center; padding:4px 0 10px;">
+            <div style="font-size:0.8rem; color:#7f8c8d;">지급 대기 (확정됨)</div>
+            <div style="font-size:1.8rem; font-weight:bold; color:#2980b9;">${fmt(waiting)} <span style="font-size:1rem;">${UNIT}</span></div>
+            <div style="font-size:0.76rem; color:#7f8c8d;">${waiting ? '운영진이 확정한 금액입니다. 곧 지급됩니다.' : (est ? '운영진이 확정하면 이곳에 표시됩니다.' : '확정된 금액이 없습니다.')}</div>
+        </div>
+        <div style="display:flex; gap:8px;">${tile('확인 대기 (예상)', est, '#fef9e7', '#d35400')}${tile('지급 완료', paid, '#d5f4e6', '#27ae60')}</div>
+        <div style="font-size:0.74rem; color:#95a5a6; margin-top:8px; line-height:1.5;">최근 3주 신청 기준${myNameList().length === 0 ? '<br>💡 출석 체크 탭에서 <b>[내 이름 설정]</b>을 하면 내 신청이 자동으로 모입니다.' : ''}</div>`;
+}
+function rbRenderMine() {
+    const box = $('rbu-list');
+    if (!box) return;
+    const mine = rbMine();
+    if (!mine.length) { box.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:16px; margin:0; font-size:0.9rem;">최근 3주 동안 신청한 내역이 없습니다.</p>'; return; }
+    box.innerHTML = mine.map(r => rbCardHtml(r, 'user')).join('');
+    rb.open.forEach(k => rbPaintImages(k));
+}
+
 function rbShotsLine(r) {
     if (!Array.isArray(r.shots) || !r.shots.length) return '';
     const parts = r.shots.map(x => {
@@ -1870,67 +2076,12 @@ function rbShotsLine(r) {
     });
     return '사진 ' + r.shots.length + '장: ' + parts.join(' · ');
 }
-
-function rbRender() {
-    const box = $('rb-list');
-    if (!box) return;
-    const myNames = myNameList();
-    if (rb.requests.length === 0) {
-        box.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:20px; margin:0;">이 주차에 접수된 신청이 없습니다.</p>';
-        rbRenderSummary();
-        return;
-    }
-    box.innerHTML = rb.requests.map(r => {
-        const k = sid(r.id);
-        const amount = rbAmount(r);
-        const pr = r.priceSnap || rb.prices;
-        const isMine = myNames.includes(r.name);
-        const locked = r.status === 'approved';                          // 확정되면 수정 불가
-        const canEdit = !locked && (isAdmin || isMine);
-        const canDelete = isAdmin || (isMine && (r.status === 'pending' || r.status === 'rejected'));
-        const border = r.status === 'approved' ? (r.paid ? '#a9dfbf' : '#aed6f1') : (r.status === 'rejected' ? '#f5b7b1' : '#f0e6cc');
-        const btns = [];
-        if (r.imgCount > 0) btns.push(actBtn('🖼️ 증빙 ' + r.imgCount + '장', `Settle.rbShowImages('${k}')`, '#5D6D7E'));
-        if (canEdit) btns.push(actBtn('✏️ 횟수 수정', `Settle.rbEdit('${k}')`, '#8e44ad'));
-        if (isAdmin) {
-            if (!locked) btns.push(actBtn('✅ 확정', `Settle.rbApprove('${k}')`, '#2980b9'));
-            if (r.status === 'pending') btns.push(actBtn('❌ 반려', `Settle.rbReject('${k}')`, '#c0392b'));
-            if (locked) btns.push(actBtn(r.paid ? '↩️ 지급 취소' : '💵 지급완료', `Settle.rbTogglePaid('${k}')`, '#27ae60'));
-            if (locked && !r.paid) btns.push(actBtn('↩️ 확정 취소', `Settle.rbUnconfirm('${k}')`, '#7f8c8d'));
-            if (r.paid && r.imgCount > 0) btns.push(actBtn('🧹 증빙 삭제', `Settle.rbDeleteImages('${k}')`, '#95a5a6'));
-        }
-        if (canDelete) btns.push(actBtn('🗑️', `Settle.rbDelete('${k}')`, '#e74c3c'));
-        const shotsLine = rbShotsLine(r);
-        return `
-        <div style="background:white; border:2px solid ${border}; border-radius:10px; padding:12px; margin-bottom:10px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-                <div style="font-weight:bold; color:#2c3e50;">${esc(r.name)}${isMine ? ' <span style="padding:1px 6px; background:#ffc107; color:#333; border-radius:4px; font-size:0.72rem;">⭐ 나</span>' : ''}</div>
-                ${rbStatusBadge(r)}
-            </div>
-            <div style="margin-top:6px; font-size:0.92rem; color:#555;">
-                복구 <b>${fmt(r.recoveryCnt)}</b>회 · 축복 <b>${fmt(r.blessingCnt)}</b>회
-                <span style="color:#2980b9; font-weight:bold;"> = ${fmt(amount)} ${UNIT}</span>${r.edited ? ' <span style="color:#8e44ad; font-size:0.76rem;">✏️수정됨</span>' : ''}
-            </div>
-            <div style="margin-top:2px; font-size:0.76rem; color:#95a5a6;">복구 ${fmt(r.recoveryCnt)}×${fmt(pr.recovery)} + 축복 ${fmt(r.blessingCnt)}×${fmt(pr.blessing)}</div>
-            ${shotsLine ? `<div style="margin-top:2px; font-size:0.76rem; color:#7f8c8d;">${esc(shotsLine)}</div>` : ''}
-            ${r.memo ? `<div style="margin-top:4px; font-size:0.85rem; color:#7f8c8d;">📝 ${esc(r.memo)}</div>` : ''}
-            ${r.status === 'rejected' && r.rejectReason ? `<div style="margin-top:4px; font-size:0.85rem; color:#c0392b;">반려 사유: ${esc(r.rejectReason)}</div>` : ''}
-            ${locked ? '<div style="margin-top:4px; font-size:0.76rem; color:#2980b9;">🔒 확정됨 — 횟수 수정 불가 · 증빙 사진 삭제됨</div>' : ''}
-            <div style="margin-top:3px; font-size:0.76rem; color:#aaa;">${esc(new Date(r.createdAt).toLocaleString('ko-KR'))}</div>
-            <div id="rb-imgs-${k}" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;"></div>
-            ${btns.length ? `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">${btns.join('')}</div>` : ''}
-        </div>`;
-    }).join('');
-    rb.open.forEach(k => rbPaintImages(k));
-    rbRenderSummary();
-}
-
 // ── 증빙 이미지 보기 ──
+const rbImgBoxes = (k) => Array.from(document.querySelectorAll('.rb-imgs[data-k="' + k + '"]'));
 function rbShowImages(k) {
     if (rb.open.has(k)) {
         rb.open.delete(k);
-        const box = $('rb-imgs-' + k);
-        if (box) box.innerHTML = '';
+        rbImgBoxes(k).forEach(b => { b.innerHTML = ''; });
         return;
     }
     rb.open.add(k);
@@ -1939,22 +2090,21 @@ function rbShowImages(k) {
 
 async function rbPaintImages(k) {
     const r = rbFind(k);
-    const box = $('rb-imgs-' + k);
-    if (!r || !box) return;
+    if (!r || !rbImgBoxes(k).length) return;
     try {
         if (!rb.imgCache[r.id]) {
-            box.innerHTML = '<span style="color:#aaa; font-size:0.85rem;">불러오는 중...</span>';
+            rbImgBoxes(k).forEach(b => { b.innerHTML = '<span style="color:#aaa; font-size:0.85rem;">불러오는 중...</span>'; });
             const snap = await db.ref('boss_reimburse_img/' + r.id).once('value');
             rb.imgCache[r.id] = Object.values(snap.val() || {});
         }
         const imgs = rb.imgCache[r.id];
-        const target = $('rb-imgs-' + k);
-        if (!target || !rb.open.has(k)) return;
-        target.innerHTML = imgs.length
+        if (!rb.open.has(k)) return;
+        const html = imgs.length
             ? imgs.map((d, i) => `<img src="${rbSafeSrc(d)}" onclick="Settle.rbOpenImage('${k}', ${i})" style="width:96px; height:96px; object-fit:cover; border-radius:8px; border:1px solid #ddd; cursor:pointer;">`).join('')
             : '<span style="color:#aaa; font-size:0.85rem;">증빙 이미지가 없습니다 (삭제됨)</span>';
+        rbImgBoxes(k).forEach(b => { b.innerHTML = html; });
     } catch (e) {
-        box.innerHTML = '<span style="color:#c0392b; font-size:0.85rem;">이미지를 불러오지 못했습니다.</span>';
+        rbImgBoxes(k).forEach(b => { b.innerHTML = '<span style="color:#c0392b; font-size:0.85rem;">이미지를 불러오지 못했습니다.</span>'; });
     }
 }
 
@@ -1977,7 +2127,7 @@ function rbOpenImage(k, idx) {
 // ── 운영진 처리 ──
 function rbUpdate(r, patch) {
     const updates = {};
-    Object.keys(patch).forEach(key => { updates['boss_reimburse/' + rb.week + '/' + r.id + '/' + key] = patch[key]; });
+    Object.keys(patch).forEach(key => { updates['boss_reimburse/' + rbWeekOf(r) + '/' + r.id + '/' + key] = patch[key]; });
     return db.ref().update(updates).catch(e => alert('❌ 저장 실패: ' + e.message));
 }
 
@@ -1991,7 +2141,7 @@ async function rbApprove(k) {
     if (missing.length && !confirm(missing.join('·') + ' 단가가 설정되지 않아 해당 금액이 0으로 계산됩니다. 계속 확정할까요?')) return;
     const imgN = Number(r.imgCount) || 0;
     if (!confirm(`${r.name}님 신청을 확정할까요?\n복구 ${fmt(r.recoveryCnt)}회 · 축복 ${fmt(r.blessingCnt)}회\n\n확정하면 횟수를 수정할 수 없고${imgN ? ', 증빙 사진 ' + imgN + '장은 삭제됩니다.' : '.'}`)) return;
-    const base = 'boss_reimburse/' + rb.week + '/' + r.id;
+    const base = 'boss_reimburse/' + rbWeekOf(r) + '/' + r.id;
     const updates = {};
     updates[base + '/status'] = 'approved';
     updates[base + '/priceSnap'] = { recovery: rb.prices.recovery, blessing: rb.prices.blessing };
@@ -2017,7 +2167,7 @@ async function rbUnconfirm(k) {
 async function rbEdit(k) {
     const r = rbFind(k);
     if (!r) return;
-    const mine = myNameList().includes(r.name);
+    const mine = rbIsMine(r);
     if (r.status === 'approved') { alert('확정된 신청은 수정할 수 없습니다.'); return; }
     if (!isAdmin && !mine) { if (!(await requireAdmin())) return; }
     const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
@@ -2039,10 +2189,10 @@ async function rbSaveEdit(k) {
     if (!r) return;
     const rn = parseInt($('rb-edit-rec').value), bn = parseInt($('rb-edit-bls').value);
     if (isNaN(rn) || isNaN(bn) || rn < 0 || bn < 0) { alert('횟수는 0 이상의 숫자여야 합니다. (복구/축복 둘 다)'); return; }
-    if (!isAdmin && !myNameList().includes(r.name)) { if (!(await requireAdmin())) return; }
+    if (!isAdmin && !rbIsMine(r)) { if (!(await requireAdmin())) return; }
     try {
         // 그 사이 운영진이 확정했다면 저장하지 않도록 서버 값으로 한 번 더 확인
-        const res = await db.ref('boss_reimburse/' + rb.week + '/' + r.id).transaction(cur => {
+        const res = await db.ref('boss_reimburse/' + rbWeekOf(r) + '/' + r.id).transaction(cur => {
             if (cur === null) return cur;
             if (cur.status === 'approved') return;                         // 중단
             cur.recoveryCnt = rn; cur.blessingCnt = bn;
@@ -2076,19 +2226,19 @@ async function rbPayUser(userId) {
     const now = nowIso();
     const updates = {};
     targets.forEach(r => {
-        updates['boss_reimburse/' + rb.week + '/' + r.id + '/paid'] = true;
-        updates['boss_reimburse/' + rb.week + '/' + r.id + '/paidAt'] = now;
+        updates['boss_reimburse/' + rbWeekOf(r) + '/' + r.id + '/paid'] = true;
+        updates['boss_reimburse/' + rbWeekOf(r) + '/' + r.id + '/paidAt'] = now;
     });
     await db.ref().update(updates).catch(e => alert('❌ 저장 실패: ' + e.message));
 }
 async function rbDelete(k) {
     const r = rbFind(k);
     if (!r) return;
-    const mine = myNameList().includes(r.name) && (r.status === 'pending' || r.status === 'rejected');
+    const mine = rbIsMine(r) && (r.status === 'pending' || r.status === 'rejected');
     if (!(isAdmin || mine)) { alert('삭제 권한이 없습니다.'); return; }
     if (!confirm('이 신청을 삭제할까요? (증빙 이미지도 함께 삭제됩니다)')) return;
     const updates = {};
-    updates['boss_reimburse/' + rb.week + '/' + r.id] = null;
+    updates['boss_reimburse/' + rbWeekOf(r) + '/' + r.id] = null;
     updates['boss_reimburse_img/' + r.id] = null;
     await db.ref().update(updates).catch(e => alert('❌ 삭제 실패: ' + e.message));
     delete rb.imgCache[r.id];
@@ -2100,7 +2250,7 @@ async function rbDeleteImages(k) {
     if (!confirm('지급이 끝난 신청의 증빙 이미지를 삭제할까요? (DB 용량 절약, 되돌릴 수 없음)')) return;
     const updates = {};
     updates['boss_reimburse_img/' + r.id] = null;
-    updates['boss_reimburse/' + rb.week + '/' + r.id + '/imgCount'] = 0;
+    updates['boss_reimburse/' + rbWeekOf(r) + '/' + r.id + '/imgCount'] = 0;
     await db.ref().update(updates).catch(e => alert('❌ 삭제 실패: ' + e.message));
     delete rb.imgCache[r.id];
     rb.open.delete(k);
@@ -2115,7 +2265,7 @@ async function rbSetPrices() {
         <input type="number" id="rb-price-recovery" min="0" step="1" value="${Number(rb.prices.recovery) || 0}" style="${inputStyle}">
         <label style="${lab}">✨ 축복 1회당 지급액 (${UNIT})</label>
         <input type="number" id="rb-price-blessing" min="0" step="1" value="${Number(rb.prices.blessing) || 0}" style="${inputStyle}">
-        <p style="font-size:0.76rem; color:#95a5a6; margin:10px 0 0;">이미 승인된 신청은 승인 당시 단가가 유지됩니다.</p>
+        <p style="font-size:0.76rem; color:#95a5a6; margin:10px 0 0;">이미 확정된 신청은 확정 당시 단가가 유지됩니다.</p>
         <div style="display:flex; gap:8px; margin-top:14px;">
             ${actBtn('저장', 'Settle.rbSavePrices()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
             ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
@@ -2152,13 +2302,13 @@ function rbRenderSummary() {
     const unpaid = rows.reduce((s, u) => s + u.unpaid, 0);
     const tile = (label, val, bg, color) => `<div style="flex:1; min-width:90px; background:${bg}; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:0.74rem; color:#7f8c8d;">${label}</div><div style="font-size:1rem; font-weight:bold; color:${color};">${val}</div></div>`;
     let html = `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
-        ${tile('승인 총액', fmt(total) + ' ' + UNIT, '#e8f4fd', '#2980b9')}
+        ${tile('확정 총액', fmt(total) + ' ' + UNIT, '#e8f4fd', '#2980b9')}
         ${tile('지급 완료', fmt(total - unpaid), '#d5f4e6', '#27ae60')}
         ${tile('미지급', fmt(unpaid), '#fef9e7', '#d35400')}
     </div>`;
-    if (pendingCnt > 0) html += `<div style="margin-bottom:10px; padding:8px 12px; background:#fef9e7; border-radius:8px; font-size:0.85rem; color:#d35400;">⏳ 확인 대기 ${pendingCnt}건은 승인 후 요약에 반영됩니다.</div>`;
+    if (pendingCnt > 0) html += `<div style="margin-bottom:10px; padding:8px 12px; background:#fef9e7; border-radius:8px; font-size:0.85rem; color:#d35400;">⏳ 확인 대기 ${pendingCnt}건은 확정 후 요약에 반영됩니다.</div>`;
     if (rows.length === 0) {
-        html += '<p style="color:#95a5a6; text-align:center; padding:12px; margin:0;">승인된 신청이 없습니다.</p>';
+        html += '<p style="color:#95a5a6; text-align:center; padding:12px; margin:0;">확정된 신청이 없습니다.</p>';
     } else {
         html += rows.map(u => `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 12px; border:1px solid #e5e8ea; border-radius:8px; margin-bottom:6px; background:white;">
@@ -2187,10 +2337,12 @@ window.Settle = {
     openManagers, filterManagerRows, saveManagers,
     openCalc, closeCalc, toggleRecipient, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
-    rbLoadWeek, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
+    rbLoadWeek, rbUserOpen, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
 };
 
 initDropBox();   // 출석 탭의 드랍 칸 시작
 initAdminItems(); // 관리 탭의 [보스 아이템 설정] 편집기
+initUserReimb();  // 사용자용 [복구비] 탭
+updateNav();      // 정산 메뉴는 관리자·담당자에게만
 })();

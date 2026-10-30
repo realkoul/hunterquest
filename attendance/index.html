@@ -73,7 +73,10 @@
         <button class="bottom-nav-item" id="nav-stats" onclick="switchTab('stats')">
             <span class="nav-icon">📈</span>통계
         </button>
-        <button class="bottom-nav-item" id="nav-settle" onclick="switchTab('settle')">
+        <button class="bottom-nav-item" id="nav-reimb" onclick="switchTab('reimb')">
+            <span class="nav-icon">💸</span>복구비
+        </button>
+        <button class="bottom-nav-item" id="nav-settle" onclick="switchTab('settle')" style="display:none;">
             <span class="nav-icon">💰</span>정산
         </button>
         <button class="bottom-nav-item admin-only" id="nav-users" onclick="switchTab('users')" style="display:none;">
@@ -237,7 +240,12 @@
         </div>
     </div>
     
-    <!-- 💰 정산 (아이템 드랍·보관함·정산 / 복구·축복 지원비) — 화면은 settlement.js 가 채움 -->
+    <!-- 💸 복구비 (사용자: 내가 받을 돈 · 복구비 신청 · 내 신청 내역) — 화면은 settlement.js 가 채움 -->
+    <div id="tab-reimb" class="tab-content">
+        <div id="reimb-root"></div>
+    </div>
+
+    <!-- 💰 정산 (관리자·담당자: 아이템 보관함·입찰·정산 / 복구비 관리) — 화면은 settlement.js 가 채움 -->
     <div id="tab-settle" class="tab-content">
         <div id="settle-root"></div>
     </div>
