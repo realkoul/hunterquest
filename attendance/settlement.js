@@ -55,7 +55,7 @@ const cbStyle = 'width:16px; height:16px; margin:0; padding:0; border:none; flex
 
 // ── 상태 ─────────────────────────────────────────────────
 const state = {
-    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {}, variants: [], variantSel: '', variantMem: {}, undeliv: [], undelivLoaded: false, undelivLoading: false, undelivStale: false,
+    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {}, variants: [], variantSel: '', variantMem: {}, undeliv: [], undelivLoaded: false, undelivLoading: false, undelivStale: false, admVariants: {}, admEntries: [], admBoss: '', adm: null, admLoading: false,
     managers: [],                 // 담당자 userId[]
     storage: [], stFilter: 'all', stServer: '',
     drops: [], dropKey: '', dropRef: null, bossItems: [],
@@ -541,13 +541,228 @@ async function resetVariants() {
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 
+// ============================================================
+// 📦 관리 탭 > 보스 아이템 설정 — 보스별 아이템 이름 관리 (출석 탭 [드랍 기록]의 아이템 선택과 같은 데이터)
+//   boss_items/@{보스이름}/items   보스별 공통 목록 (같은 보스는 요일·시간대와 상관없이 하나)
+//   예전에 일정별/층별로 쌓인 목록은 읽어서 합쳐 보여주고, 편집하면 위 공통 목록으로 정리됨
+// ============================================================
+const numCmp = (a, b) => String(a).localeCompare(String(b), 'ko', { numeric: true });
+const DOW_KO = ['일', '월', '화', '수', '목', '금', '토'];
+
+function slotVariantList(sch) {
+    const stored = state.admVariants[sch.id];
+    const list = stored ? Object.values(stored).filter(v => v && String(v.label || '').trim()).map(v => ({ label: String(v.label).trim(), bossName: String(v.bossName || '').trim() })) : [];
+    if (list.length) return list;
+    return deriveVariants(sch.name).map(l => ({ label: l, bossName: '' }));
+}
+
+// 일정 전체에서 "보스" 목록을 뽑음 (같은 보스가 요일마다 나와도 하나로 합침)
+function adminBossEntries() {
+    const map = new Map();
+    getSchedules().forEach(sch => {
+        if (!sch || !sch.name) return;
+        const vars = slotVariantList(sch);
+        const multi = vars.length >= 2;
+        (multi ? vars : [{ label: sch.name, bossName: '' }]).forEach(v => {
+            const key = normName(v.label);
+            const e = map.get(key) || { key: key, name: v.label, bossName: '', sched: [] };
+            if (v.bossName && !e.bossName) e.bossName = v.bossName;
+            e.sched.push({ s: sch, multi: multi, label: v.label });
+            map.set(key, e);
+        });
+    });
+    return Array.from(map.values()).sort((a, b) => numCmp(a.name, b.name));
+}
+
+function initAdminItems() {
+    const card = $('acc-items');
+    if (!card || card.dataset.built) return;
+    const body = card.querySelector('.accordion-body');
+    if (!body) return;
+    card.dataset.built = '1';
+    body.innerHTML = `
+        <p style="color:#7f8c8d; margin:15px 0 12px; font-size:0.88rem; line-height:1.5;">보스별로 드랍되는 아이템 이름을 관리합니다. 같은 보스는 요일·시간대와 상관없이 하나의 목록을 쓰고, 출석 탭의 <b>[드랍 기록]</b>에서 그대로 선택할 수 있습니다.</p>
+        <div style="margin-bottom:12px;">
+            <label style="color:#2c3e50; font-weight:bold; margin-bottom:6px; display:block;">보스 선택:</label>
+            <select id="settle-adm-boss" onchange="Settle.adminOnBossChange()" style="width:100%; padding:10px; font-size:1rem; border:2px solid #5D6D7E; border-radius:6px; margin:0;"><option value="">보스를 선택하세요</option></select>
+        </div>
+        <div id="settle-adm-body"></div>`;
+    const tab = $('tab-users');
+    if (tab) {                                             // 관리 탭이 열릴 때마다 보스 목록을 새로 읽음 (app.js 수정 없이 감지)
+        let was = tab.classList.contains('active');
+        new MutationObserver(() => {
+            const now = tab.classList.contains('active');
+            if (now && !was) adminOpen();
+            was = now;
+        }).observe(tab, { attributes: true, attributeFilter: ['class'] });
+        if (was) afterAuth(adminOpen);
+    }
+}
+function afterAuth(fn) {
+    if (typeof authReadyPromise !== 'undefined' && authReadyPromise && typeof authReadyPromise.then === 'function') authReadyPromise.then(fn);
+    else fn();
+}
+
+async function adminOpen() {
+    if (!depsOk() || state.admLoading) return;
+    state.admLoading = true;
+    try { state.admVariants = (await db.ref('boss_variants').once('value')).val() || {}; }
+    catch (e) { state.admVariants = {}; }
+    state.admLoading = false;
+    state.admEntries = adminBossEntries();
+    const sel = $('settle-adm-boss');
+    if (sel) {
+        const prev = state.admBoss;
+        sel.innerHTML = '<option value="">보스를 선택하세요</option>' + state.admEntries.map(e => `<option value="${esc(e.key)}">${esc(e.name)}${e.bossName ? ' · ' + esc(e.bossName) : ''}</option>`).join('');
+        sel.value = state.admEntries.some(e => e.key === prev) ? prev : '';
+        state.admBoss = sel.value;
+    }
+    await adminLoadBoss();
+}
+function adminOnBossChange() {
+    const sel = $('settle-adm-boss');
+    state.admBoss = sel ? sel.value : '';
+    adminLoadBoss();
+}
+
+let admReq = 0;
+async function adminLoadBoss() {
+    const e = state.admEntries.find(x => x.key === state.admBoss);
+    if (!e) { state.adm = null; adminRender(); return; }
+    const gKey = bossListKey(e.name);
+    const uKeys = [], aKeys = [];                          // uKeys: 이 보스 것이 확실한 예전 목록 / aKeys: 시간대 공통(어느 층 것인지 알 수 없음)
+    e.sched.forEach(x => {
+        const k = x.multi ? x.s.id + '~' + variantKey(x.label) : x.s.id;
+        if (!uKeys.includes(k)) uKeys.push(k);
+        if (x.multi && !aKeys.includes(x.s.id)) aKeys.push(x.s.id);
+    });
+    const keys = [gKey].concat(uKeys, aKeys);
+    const req = ++admReq;
+    let snaps;
+    try { snaps = await Promise.all(keys.map(k => db.ref('boss_items/' + k + '/items').once('value'))); }
+    catch (err) { alert('❌ 아이템 목록을 불러오지 못했습니다: ' + err.message); return; }
+    if (req !== admReq) return;
+    const rd = (sn) => Object.values(sn.val() || {}).filter(v => typeof v === 'string' && v.trim());
+    const items = [];
+    const add = (n) => { if (!items.includes(n)) items.push(n); };
+    rd(snaps[0]).forEach(add);
+    uKeys.forEach(k => rd(snaps[keys.indexOf(k)]).forEach(add));
+    const slotLists = {}, slot = new Map();
+    aKeys.forEach(k => {
+        const list = rd(snaps[keys.indexOf(k)]);
+        slotLists[k] = list;
+        list.forEach(n => { const ks = slot.get(n) || []; ks.push(k); slot.set(n, ks); });
+    });
+    state.adm = { e: e, gKey: gKey, uKeys: uKeys, items: items, slotLists: slotLists, slot: Array.from(slot.entries()).map(([name, ks]) => ({ name: name, keys: ks })) };
+    adminRender();
+}
+
+function adminRender() {
+    const box = $('settle-adm-body');
+    if (!box) return;
+    const a = state.adm;
+    if (!a) { box.innerHTML = '<p style="color:#95a5a6; font-size:0.88rem; margin:6px 0;">위에서 보스를 선택하면 그 보스의 아이템 목록을 관리할 수 있습니다.</p>'; return; }
+    const days = a.e.sched.map(x => DOW_KO[x.s.dayOfWeek] + ' ' + x.s.time).filter((v, i, arr) => arr.indexOf(v) === i).join(', ');
+    const row = (n, btns, stack) => `<div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px 8px; padding:7px 10px; border-bottom:1px solid #f3f3f3;"><span style="color:#2c3e50; word-break:break-all; ${stack ? 'flex:1 1 100%;' : 'flex:1 1 0; min-width:0;'}">${esc(n)}</span><span style="display:flex; gap:6px; flex:none;">${btns}</span></div>`;
+    box.innerHTML = `
+        <div style="background:#f8f9fa; border-radius:8px; padding:9px 12px; margin-bottom:10px; font-size:0.85rem;">
+            <b style="color:#2c3e50;">${esc(a.e.name)}</b>${a.e.bossName ? ' · ' + esc(a.e.bossName) : ''}
+            <div style="font-size:0.75rem; color:#95a5a6; margin-top:2px;">나오는 시간: ${esc(days)}</div>
+        </div>
+        <div style="font-size:0.85rem; font-weight:bold; color:#555; margin-bottom:4px;">아이템 ${a.items.length}개</div>
+        <div style="border:1px solid #eee; border-radius:8px; margin-bottom:10px; max-height:260px; overflow-y:auto;">
+            ${a.items.length ? a.items.map((n, i) => row(n, actBtn('✕', `Settle.adminDeleteItem(${i})`, '#e74c3c'))).join('') : '<div style="padding:12px; color:#95a5a6; font-size:0.85rem; text-align:center;">등록된 아이템이 없습니다.</div>'}
+        </div>
+        <textarea id="settle-adm-input" rows="3" placeholder="추가할 아이템 이름 (여러 개는 줄바꿈으로 구분)" style="width:100%; margin:0 0 8px; padding:9px; border:2px solid #ddd; border-radius:7px; font-size:0.92rem; box-sizing:border-box;"></textarea>
+        <button class="btn btn-primary" onclick="Settle.adminAddItems()" style="width:100%;">➕ 아이템 추가</button>
+        ${a.slot.length ? `
+        <div style="margin-top:14px; border:1px dashed #e67e22; border-radius:8px; padding:9px 11px; background:#fffaf2;">
+            <div style="font-size:0.82rem; font-weight:bold; color:#d35400;">예전에 "시간대 공통"으로 저장된 아이템 ${a.slot.length}개</div>
+            <div style="font-size:0.74rem; color:#7f8c8d; margin:2px 0 6px;">어느 층 보스 것인지 알 수 없어 따로 표시합니다. 이 보스 것이면 [옮기기], 아니면 삭제하세요. (삭제하면 같은 시간대의 다른 층에서도 사라집니다)</div>
+            ${a.slot.map((it, i) => row(it.name, actBtn('이 보스로 옮기기', `Settle.adminMoveSlot(${i})`, '#16a085') + actBtn('✕', `Settle.adminDeleteSlot(${i})`, '#e74c3c'), true)).join('')}
+        </div>` : ''}`;
+}
+
+// 저장: 보스별 공통 목록에 쓰고, 이 보스 것이 확실한 예전 목록은 비워서 한 곳으로 정리
+async function adminSave(list, extra) {
+    const a = state.adm;
+    if (!a) return;
+    const updates = {};
+    updates['boss_items/' + a.gKey + '/items'] = list.length ? list : null;
+    a.uKeys.forEach(k => { updates['boss_items/' + k + '/items'] = null; });
+    Object.keys(extra || {}).forEach(k => { updates['boss_items/' + k + '/items'] = extra[k]; });
+    try {
+        await db.ref().update(updates);
+        await adminLoadBoss();
+        loadBossItems();                                    // 출석 탭 드랍 칸의 아이템 선택 목록도 바로 갱신
+    } catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+
+async function adminAddItems() {
+    const a = state.adm;
+    if (!a) { alert('보스를 먼저 선택하세요.'); return; }
+    const raw = ($('settle-adm-input').value || '').split('\n').map(x => x.trim().slice(0, 60)).filter(Boolean);
+    if (!raw.length) { alert('추가할 아이템 이름을 입력하세요.'); return; }
+    if (!(await requireAdmin())) return;
+    const list = a.items.slice();
+    let added = 0;
+    raw.forEach(n => { if (!list.includes(n)) { list.push(n); added++; } });
+    if (!added) { alert('이미 모두 등록된 아이템입니다.'); return; }
+    await adminSave(list);
+    const inp = $('settle-adm-input');
+    if (inp) inp.value = '';
+}
+
+async function adminDeleteItem(i) {
+    const a = state.adm;
+    const name = a ? a.items[i] : null;
+    if (!name) return;
+    if (!(await requireAdmin())) return;
+    if (!confirm(`"${name}" 을(를) ${a.e.name} 아이템 목록에서 삭제할까요?\n(이미 기록된 드랍 내역은 그대로 남습니다)`)) return;
+    await adminSave(a.items.filter(x => x !== name));
+}
+
+async function adminMoveSlot(i) {
+    const a = state.adm;
+    const it = a ? a.slot[i] : null;
+    if (!it) return;
+    if (!(await requireAdmin())) return;
+    const list = a.items.slice();
+    if (!list.includes(it.name)) list.push(it.name);
+    const extra = {};
+    it.keys.forEach(k => { const rest = (a.slotLists[k] || []).filter(x => x !== it.name); extra[k] = rest.length ? rest : null; });
+    await adminSave(list, extra);
+}
+
+async function adminDeleteSlot(i) {
+    const a = state.adm;
+    const it = a ? a.slot[i] : null;
+    if (!it) return;
+    if (!(await requireAdmin())) return;
+    if (!confirm(`"${it.name}" 을(를) 시간대 공통 목록에서 삭제할까요?\n(같은 시간대의 다른 층에서도 사라집니다)`)) return;
+    const extra = {};
+    it.keys.forEach(k => { const rest = (a.slotLists[k] || []).filter(x => x !== it.name); extra[k] = rest.length ? rest : null; });
+    await adminSave(a.items.slice(), extra);
+}
+
+
 // ── 아이템 목록: 보스(층)별 + 예전에 쌓인 시간대 공통 목록을 합쳐서 보여줌 ──
+const normName = (n) => String(n || '').replace(/\s+/g, '');                 // "오만 1층" 과 "오만1층" 을 같은 보스로 취급
+const bossListKey = (name) => '@' + variantKey(normName(name));              // boss_items/@보스이름/items (요일·시간대와 무관한 보스별 공통 목록)
+function currentBossName() {
+    const t = dropTarget();
+    if (!t.boss) return '';
+    if (state.variantSel) return state.variantSel;
+    return state.variants.length >= 2 ? '' : t.boss.name;
+}
 function itemKeys() {
     const t = dropTarget();
     if (!t.bossId) return [];
+    const name = currentBossName();
     const keys = [];
-    if (state.variantSel) keys.push(t.bossId + '~' + variantKey(state.variantSel));
-    keys.push(t.bossId);
+    if (name) keys.push(bossListKey(name));                                   // 1순위: 보스별 공통 목록 (관리 탭에서 설정, 새 아이템도 여기에 저장)
+    if (state.variantSel) keys.push(t.bossId + '~' + variantKey(state.variantSel));   // 예전: 일정+층별 목록
+    keys.push(t.bossId);                                                      // 예전: 일정별 목록
     return keys;
 }
 function loadBossItems() {
@@ -591,7 +806,7 @@ function getItemName() {
 function learnItem(name) {
     const keys = itemKeys();
     if (!keys.length || state.bossItems.includes(name)) return Promise.resolve();
-    return db.ref('boss_items/' + keys[0] + '/items').transaction(cur => {      // 보스(층)를 골랐으면 그 보스 목록에, 아니면 시간대 목록에 저장
+    return db.ref('boss_items/' + keys[0] + '/items').transaction(cur => {      // 새 아이템은 그 보스의 공통 목록에 저장 (다른 요일에도 그대로 선택 가능)
         const arr = Array.isArray(cur) ? cur.slice() : Object.values(cur || {});
         if (!arr.includes(name)) arr.push(name);
         return arr;
@@ -757,9 +972,10 @@ function renderStorage() {
     }).sort((a, b) => String(b.addedAt || '').localeCompare(String(a.addedAt || '')));
 
     const pendingN = state.storage.filter(i => !i.sold).length;
-    const waiting = unsettledItems().reduce((s, i) => s + (Number(i.bidPrice) || 0), 0);
-    const tile = (label, val, bg, color) => `<div style="flex:1; background:${bg}; border-radius:8px; padding:8px; text-align:center;"><div style="font-size:0.74rem; color:#7f8c8d;">${label}</div><div style="font-size:1.05rem; font-weight:bold; color:${color};">${val}</div></div>`;
-    const head = `<div style="display:flex; gap:8px; margin-bottom:10px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('정산 대기 금액', fmt(waiting) + ' ' + UNIT, '#d5f4e6', '#27ae60')}</div>`;
+    const soldTotal = state.storage.filter(i => i.sold).reduce((t, i) => t + (Number(i.bidPrice) || 0), 0);
+    const waiting = unsettledItems().reduce((t, i) => t + (Number(i.bidPrice) || 0), 0);
+    const tile = (label, val, bg, color, sub) => `<div style="flex:1; background:${bg}; border-radius:8px; padding:8px; text-align:center;"><div style="font-size:0.74rem; color:#7f8c8d;">${label}</div><div style="font-size:1.05rem; font-weight:bold; color:${color};">${val}</div>${sub ? `<div style="font-size:0.7rem; color:#7f8c8d; margin-top:2px;">${sub}</div>` : ''}</div>`;
+    const head = `<div style="display:flex; gap:8px; margin-bottom:10px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('아이템 판매 금액', fmt(soldTotal) + ' ' + UNIT, '#d5f4e6', '#27ae60', soldTotal ? (waiting ? '정산 대기 ' + fmt(waiting) : '모두 정산됨') : '')}</div>`;
 
     if (!list.length) { box.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">조건에 맞는 아이템이 없습니다.</p>'; return; }
     box.innerHTML = head + list.map(it => {
@@ -1710,7 +1926,7 @@ function rbRenderSummary() {
 // ============================================================
 window.Settle = {
     onOpen, onModeChange, showPane, closeModal,
-    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered,
+    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
     openCalc, closeCalc, toggleRecipient, setRecipientsAll, setRecipientsServer, saveSettlement,
@@ -1720,4 +1936,5 @@ window.Settle = {
 };
 
 initDropBox();   // 출석 탭의 드랍 칸 시작
+initAdminItems(); // 관리 탭의 [보스 아이템 설정] 편집기
 })();
