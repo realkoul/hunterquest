@@ -1140,15 +1140,15 @@ const NONE_CAT = '__none';
 const CAT_SETS = [['type', '종류'], ['job', '직업']];
 const DEFAULT_CATS = {
     type: [
-        { name: '주문서', keywords: ['주문서', '스크롤'] },
         { name: '반지', keywords: ['반지'] },
         { name: '목걸이', keywords: ['목걸이'] },
         { name: '귀걸이', keywords: ['귀걸이'] },
-        { name: '방어구', keywords: ['투구', '갑옷', '망토', '장갑', '각반', '부츠', '장화', '방패', '티셔츠', '허리띠', '벨트'] },
-        { name: '무기', keywords: ['지팡이', '크로우', '석궁', '단검', '키링크', '체인소드', '이도류', '도끼', '양손검', '한손검'] },
+        { name: '방어구', keywords: ['투구', '갑옷', '망토', '장갑', '각반', '부츠', '장화', '방패', '티셔츠', '허리띠', '벨트','가더'] },
+        { name: '무기', keywords: ['단검','한손검','양손검','지팡이','활','창','도끼','이도류','크로우','건틀렛','라이플','핸드캐넌','체인소드','사이드','룬소드'] },
         { name: '마법인형', keywords: ['마법인형', '카드'] },
-        { name: '비법서', keywords: ['비법서', '제작'] },
-        { name: '스킬북', keywords: ['스킬북', '마법서', '기술서'] }
+        { name: '영웅제작비법서', keywords: ['영비'] },
+        { name: '전설제작비법서', keywords: ['전비'] },
+        { name: '스킬북', keywords: ['스킬북'] }
     ],
     job: [
         { name: '군주', keywords: ['군주'] },
@@ -1156,10 +1156,14 @@ const DEFAULT_CATS = {
         { name: '요정', keywords: ['요정'] },
         { name: '법사', keywords: ['법사', '마법사'] },
         { name: '다크엘프', keywords: ['다크엘프', '다엘'] },
-        { name: '용기사', keywords: ['용기사'] },
-        { name: '환술사', keywords: ['환술사'] },
-        { name: '전사', keywords: ['전사'] },
-        { name: '검사', keywords: ['검사'] }
+        { name: '총사', keywords: ['총사'] },
+        { name: '투사', keywords: ['투사'] },
+        { name: '암흑기사', keywords: ['암흑기사','암기'] },
+        { name: '신성검사', keywords: ['신성검사','신검'] },
+        { name: '광전사', keywords: ['광전사','광전'] },
+        { name: '사신', keywords: ['사신'] },
+        { name: '뇌신', keywords: ['뇌신'] },
+        { name: '마검사', keywords: ['마검사','마검'] }
     ]
 };
 const normKey = (t) => String(t || '').replace(/\s+/g, '').toLowerCase();
