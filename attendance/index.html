@@ -67,17 +67,17 @@
         <button class="bottom-nav-item active" id="nav-attendance" onclick="switchTab('attendance')">
             <span class="nav-icon">📋</span>출석 체크
         </button>
-        <button class="bottom-nav-item" id="nav-schedules" onclick="switchTab('schedules')">
-            <span class="nav-icon">📊</span>주간 현황
-        </button>
-        <button class="bottom-nav-item" id="nav-stats" onclick="switchTab('stats')">
-            <span class="nav-icon">📈</span>통계
-        </button>
         <button class="bottom-nav-item" id="nav-reimb" onclick="switchTab('reimb')">
             <span class="nav-icon">💸</span>복구비
         </button>
+        <button class="bottom-nav-item" id="nav-schedules" onclick="switchTab('schedules')">
+            <span class="nav-icon">📊</span>주간 현황
+        </button>
         <button class="bottom-nav-item" id="nav-settle" onclick="switchTab('settle')" style="display:none;">
             <span class="nav-icon">💰</span>정산
+        </button>
+        <button class="bottom-nav-item" id="nav-stats" onclick="switchTab('stats')">
+            <span class="nav-icon">📈</span>통계
         </button>
         <button class="bottom-nav-item admin-only" id="nav-users" onclick="switchTab('users')" style="display:none;">
             <span class="nav-icon">⚙️</span>관리
@@ -115,6 +115,9 @@
             <!-- 출석하기 버튼 (전체 폭) — updateMyNameDisplay에서 렌더링 -->
             <div id="quick-attend-btn-area" style="margin-bottom:10px;"></div>
         </div>
+
+        <!-- 📊 내 출석 (이번 주 · 통계와 같은 계산) — settlement.js 가 채움 -->
+        <div id="my-attendance-box" style="display:none; padding:0 18px 10px;"></div>
 
         <!-- 보스 선택 드롭다운 -->
         <div style="padding:0 18px 8px; border-bottom:1px solid #f0f0f0;">

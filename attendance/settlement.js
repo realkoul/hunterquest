@@ -190,6 +190,7 @@ function onOpen() {
 function onModeChange() {
     syncDropBox(true);
     updateNav();
+    myAttTick();
     if (state.inited) { refreshAll(); renderSeg(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
     rbRenderUser();
 }
@@ -622,6 +623,87 @@ function afterAuth(fn) {
     if (typeof authReadyPromise !== 'undefined' && authReadyPromise && typeof authReadyPromise.then === 'function') authReadyPromise.then(fn);
     else fn();
 }
+
+// ============================================================
+// 📊 내 출석 (출석 탭 맨 위) — 통계 탭과 같은 calculateStats() 로 계산한 이번 주(수~화) 내 출석
+//   boss_attendance 중 이번 주 날짜 범위(키 "날짜_보스ID")만 실시간으로 받음 (전체 출석 기록을 읽지 않음)
+// ============================================================
+const myAtt = { q: null, cb: null, week: '', data: null, sig: '' };
+
+function myAttDetach() {
+    if (myAtt.q) { try { myAtt.q.off('value', myAtt.cb); } catch (e) { /* 이미 해제됨 */ } }
+    myAtt.q = null; myAtt.cb = null; myAtt.week = ''; myAtt.data = null;
+}
+function myAttAttach(startKey, endKey) {
+    myAttDetach();
+    const q = db.ref('boss_attendance').orderByKey().startAt(startKey).endAt(endKey + '\uf8ff');
+    const cb = (snap) => { if (myAtt.q !== q) return; myAtt.data = snap.val() || {}; renderMyAtt(); };
+    myAtt.q = q; myAtt.cb = cb; myAtt.week = startKey;
+    q.on('value', cb);
+}
+function myAttUsers() {                                  // 내 이름(최대 5개) 중 명단에 있는 사람
+    const seen = new Set(), out = [];
+    myNameList().forEach(n => { const u = getUsers().find(x => x.name === n); if (u && !seen.has(u.id)) { seen.add(u.id); out.push(u); } });
+    return out;
+}
+
+function renderMyAtt() {
+    const box = $('my-attendance-box');
+    if (!box) return;
+    const mine = myAttUsers();
+    if (!mine.length || typeof getWeekStart !== 'function' || typeof calculateStats !== 'function') { box.style.display = 'none'; box.innerHTML = ''; return; }
+    const ws = getWeekStart(), we = new Date(ws);
+    we.setDate(ws.getDate() + 6);
+    const head = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+            <span style="font-size:0.85rem; font-weight:bold; color:#2c3e50;">📊 내 출석 <span style="font-weight:normal; color:#95a5a6; font-size:0.76rem;">이번 주 (수 ${md(ws)} ~ 화 ${md(we)})</span></span>
+            <button onclick="switchTab('stats')" style="padding:2px 8px; border:1px solid #d0d7de; border-radius:6px; background:white; color:#5D6D7E; font-size:0.72rem; cursor:pointer; white-space:nowrap; flex:none;">통계 ›</button>
+        </div>`;
+    box.style.display = 'block';
+    let stats = null;
+    if (myAtt.data && typeof calculateStats === 'function') {
+        const log = console.log; console.log = function () {};                // calculateStats 의 디버그 로그가 콘솔을 채우지 않게
+        try { stats = calculateStats(myAtt.data).userStats; } catch (e) { stats = null; } finally { console.log = log; }
+    }
+    const rows = mine.map(u => {
+        const st = stats ? stats[String(u.id)] : null;
+        const nm = `<b style="color:#2c3e50;">${esc(u.name)}</b>${serverBadge(u.server)}`;
+        if (!myAtt.data) return `<div style="padding:6px 0; font-size:0.82rem; color:#95a5a6;">${nm} 불러오는 중...</div>`;
+        if (!st || !st.serverTotal) return `<div style="padding:6px 0; font-size:0.82rem; color:#7f8c8d;">${nm} 이번 주 출석 기록이 아직 없습니다.</div>`;
+        const pct = Math.max(0, Math.min(100, Number(st.rate) || 0));
+        return `<div style="padding:6px 0;">
+            <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:0.85rem;">
+                <span>${nm}</span>
+                <span><b style="font-size:1.1rem; color:#2980b9;">${esc(st.rate)}%</b> <span style="color:#7f8c8d; font-size:0.78rem;">${st.present}/${st.serverTotal}회 출석</span></span>
+            </div>
+            <div style="height:6px; background:#ecf0f1; border-radius:3px; margin-top:4px; overflow:hidden;"><div style="width:${pct}%; height:100%; background:#3498db;"></div></div>
+        </div>`;
+    }).join('');
+    box.innerHTML = `<div style="background:white; border:1px solid #e0e0e0; border-radius:10px; padding:10px 12px;">${head}${rows}</div>`;
+}
+
+// 1초마다: 이름/명단/주가 바뀌었는지 확인 (이름이 없으면 구독하지 않음)
+function myAttTick() {
+    const box = $('my-attendance-box');
+    if (!box || !depsOk()) return;
+    if (!myAttUsers().length) {
+        if (myAtt.q) myAttDetach();
+        if (box.style.display !== 'none') renderMyAtt();
+        return;
+    }
+    if (typeof getWeekStart !== 'function' || typeof formatLocalDate !== 'function' || typeof calculateStats !== 'function') {
+        if (box.style.display !== 'none') renderMyAtt();                           // 통계 함수를 쓸 수 없으면 칸을 숨김
+        return;
+    }
+    const ws = getWeekStart(), we = new Date(ws);
+    we.setDate(ws.getDate() + 6);
+    const key = formatLocalDate(ws);
+    if (myAtt.week !== key) myAttAttach(key, formatLocalDate(we));              // 최초 / 새 주(수요일)가 시작되면 다시 구독
+    const assignN = (typeof weekAssignCache !== 'undefined' && weekAssignCache) ? Object.keys(weekAssignCache).length : 0;
+    const sig = myAttUsers().map(u => u.id + ':' + u.server).join(',') + '|' + getUsers().length + '|' + assignN;
+    if (sig !== myAtt.sig) { myAtt.sig = sig; renderMyAtt(); }                // 서버 배정/명단이 늦게 도착해도 다시 계산
+}
+function initMyAtt() { afterAuth(() => { myAttTick(); setInterval(myAttTick, 1000); }); }
+
 
 async function adminOpen() {
     if (!depsOk() || state.admLoading) return;
@@ -2344,5 +2426,6 @@ window.Settle = {
 initDropBox();   // 출석 탭의 드랍 칸 시작
 initAdminItems(); // 관리 탭의 [보스 아이템 설정] 편집기
 initUserReimb();  // 사용자용 [복구비] 탭
+initMyAtt();      // 출석 탭의 [내 출석]
 updateNav();      // 정산 메뉴는 관리자·담당자에게만
 })();
