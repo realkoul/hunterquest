@@ -34,11 +34,6 @@ const sid = (v) => String(v == null ? '' : v).replace(/[^0-9A-Za-z_\-]/g, '');  
 const nowIso = () => new Date().toISOString();
 const koCmp = (a, b) => String(a).localeCompare(String(b), 'ko');
 
-function todayStr() {
-    const d = new Date();
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-}
-
 function serverBadge(sv) {
     if (!sv) return '';
     const s = SERVERS[sv] || { name: sv, color: '#95a5a6' };
@@ -60,7 +55,7 @@ const cbStyle = 'width:16px; height:16px; margin:0; padding:0; border:none; flex
 
 // ── 상태 ─────────────────────────────────────────────────
 const state = {
-    inited: false, pane: 'items',
+    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow',
     managers: [],                 // 담당자 userId[]
     storage: [], stFilter: 'all', stServer: '',
     drops: [], dropKey: '', dropRef: null, bossItems: [],
@@ -122,23 +117,6 @@ function buildRoot() {
     </div>
 
     <div id="settle-pane-items">
-        <!-- 드랍 기록 -->
-        <div class="card">
-            <h2 style="font-size:1.05rem; margin:0 0 4px;">📦 아이템 드랍 기록</h2>
-            <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px;">보스에서 나온 아이템과 획득자를 기록합니다. 이름은 처음 입력하면 이 보스 목록에 저장되어 다음부터 선택할 수 있습니다.</p>
-            <div style="display:grid; grid-template-columns:1fr 1.5fr; gap:8px; margin-bottom:8px;">
-                <input type="date" id="settle-drop-date" onchange="Settle.onDropDateChange()" style="${inputStyle}">
-                <select id="settle-drop-boss" onchange="Settle.loadDrops()" style="${inputStyle}"></select>
-            </div>
-            <select id="settle-drop-item" onchange="Settle.onItemSelect()" style="${inputStyle} margin-bottom:6px;"></select>
-            <input type="text" id="settle-drop-item-direct" maxlength="60" placeholder="아이템 이름을 직접 입력" style="${inputStyle} display:none; border-color:#e67e22; margin-bottom:6px;">
-            <div style="display:flex; gap:6px;">
-                <select id="settle-drop-winner" style="${inputStyle} flex:1;"></select>
-                <button class="btn btn-primary" onclick="Settle.addDrop()" style="white-space:nowrap;">➕ 기록</button>
-            </div>
-            <div id="settle-drops-list" style="margin-top:12px;"></div>
-        </div>
-
         <!-- 보관함 -->
         <div class="card">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
@@ -186,25 +164,27 @@ function onOpen() {
     }
     if (!state.inited) {
         buildRoot();
-        attachListeners();
-        $('settle-drop-date').value = todayStr();
         state.inited = true;
         showPane('items');
     }
+    ensureListeners();
     refreshAll();
     if (state.pane === 'reimb') rbInit();
 }
 function onModeChange() {
+    syncDropBox(true);
     if (state.inited) { refreshAll(); if (state.pane === 'reimb') rbRender(); }
 }
 function refreshAll() {
-    renderWinnerSelect();
-    renderBossSelect();
     renderStorage();
     renderCalcActions();
 }
 
-function attachListeners() {
+// 담당자/보관함 구독은 필요할 때(정산 탭 열기, 드랍 칸 펼치기)만 시작 — 출석 화면을 열 때마다 보관함 전체를 내려받지 않도록
+let listenersOn = false;
+function ensureListeners() {
+    if (listenersOn || !depsOk()) return;
+    listenersOn = true;
     db.ref('hunter_config/storageManagers').on('value', snap => {
         state.managers = Object.values(snap.val() || {}).map(Number).filter(n => !isNaN(n));
         renderDrops(); renderStorage(); renderCalcActions();
@@ -213,6 +193,7 @@ function attachListeners() {
         const arr = [];
         snap.forEach(ch => { const v = ch.val(); if (v && typeof v === 'object') arr.push(Object.assign({}, v, { id: v.id != null ? v.id : ch.key })); });
         state.storage = arr;
+        state.storageLoaded = true;
         renderStorage(); renderDrops(); renderCalcActions();
     });
 }
@@ -232,35 +213,81 @@ function renderWinnerSelect() {
     if (prev) sel.value = prev;
 }
 
-function bossesForDate(dateStr) {
-    if (!dateStr) return [];
-    const dow = new Date(dateStr + 'T00:00:00').getDay();
-    return getSchedules().filter(s => s && s.dayOfWeek === dow).sort((a, b) => String(a.time).localeCompare(String(b.time)));
+// ── 기록 대상 보스: 출석 탭의 "현재 진행 중인 보스"를 따라감 (수동으로 다른 보스도 선택 가능) ──
+const nowD = () => (typeof getEffectiveNow === 'function') ? getEffectiveNow() : new Date();
+function ymdOf(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+
+// 오늘 이미 시작한 보스 중 가장 최근 것 (진행 중인 보스가 없을 때 기본 대상)
+function latestBossToday() {
+    const now = nowD();
+    const mins = now.getHours() * 60 + now.getMinutes();
+    const toMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t)); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+    const list = getSchedules()
+        .filter(b => b && b.dayOfWeek === now.getDay() && toMin(b.time) !== null && toMin(b.time) <= mins)
+        .sort((a, b) => toMin(a.time) - toMin(b.time));
+    return list.length ? list[list.length - 1] : null;
 }
 
-function renderBossSelect() {
-    const dateEl = $('settle-drop-date'), sel = $('settle-drop-boss');
-    if (!dateEl || !sel) return;
-    const list = bossesForDate(dateEl.value);
-    const prev = sel.value;
-    sel.innerHTML = list.length
-        ? list.map(b => `<option value="${esc(b.id)}">${esc(b.time)} ${esc(b.name)}</option>`).join('')
-        : '<option value="">이 요일에 등록된 보스가 없습니다</option>';
-    if (list.some(b => b.id === prev)) sel.value = prev;
-    else if (typeof currentScheduleId !== 'undefined' && list.some(b => b.id === currentScheduleId)) sel.value = currentScheduleId;
-    loadDrops();
+// "위에서 선택한 보스" 기준 대상 (출석 탭의 현재 보스 → 없으면 가장 최근 보스)
+function followTarget() {
+    const manualDate = (typeof currentScheduleDate !== 'undefined' && currentScheduleDate) ? currentScheduleDate : null;
+    let bossId = (typeof currentScheduleId !== 'undefined') ? currentScheduleId : null;
+    let fallback = false;
+    if (!bossId && !manualDate) {
+        const lb = latestBossToday();
+        if (lb) { bossId = lb.id; fallback = true; }
+    }
+    const boss = bossId ? (getSchedules().find(s => s.id === bossId) || null) : null;
+    return { date: manualDate || ymdOf(nowD()), bossId: bossId, boss: boss, fallback: fallback };
 }
-function onDropDateChange() { renderBossSelect(); }
+
+function dropTarget() {
+    const v = state.dropTarget;
+    if (v && v !== 'follow') {                      // "YYYY-MM-DD_보스ID" (날짜는 10자 고정)
+        const date = v.slice(0, 10), bossId = v.slice(11);
+        return { date: date, bossId: bossId, boss: getSchedules().find(s => s.id === bossId) || null, fallback: false };
+    }
+    return followTarget();
+}
+
+function renderDropTargets() {
+    const sel = $('settle-drop-target');
+    if (!sel) return;
+    const f = followTarget();
+    const when = (f.boss ? f.boss.time + ' ' + f.boss.name : '');
+    const dateTxt = (f.date !== ymdOf(nowD())) ? f.date.slice(5) + ' ' : '';
+    let followLabel;
+    if (f.boss && !f.fallback) followLabel = '⭐ 선택된 보스 · ' + dateTxt + when;
+    else if (f.boss)           followLabel = '⭐ 최근 보스 · ' + when;
+    else                       followLabel = '⭐ 선택된 보스 없음';
+    const now = nowD();
+    const group = (label, d) => {
+        const list = getSchedules().filter(b => b && b.dayOfWeek === d.getDay()).sort((a, b) => String(a.time).localeCompare(String(b.time)));
+        if (!list.length) return '';
+        const ds = ymdOf(d);
+        return `<optgroup label="${label} (${ds.slice(5)})">` + list.map(b => `<option value="${ds}_${esc(b.id)}">${esc(b.time)} ${esc(b.name)}</option>`).join('') + '</optgroup>';
+    };
+    const yest = new Date(now); yest.setDate(now.getDate() - 1);
+    const prev = state.dropTarget;
+    sel.innerHTML = '<option value="follow">' + esc(followLabel) + '</option>' + group('오늘', now) + group('어제', yest);
+    sel.value = Array.from(sel.options).some(o => o.value === prev) ? prev : 'follow';
+    state.dropTarget = sel.value;
+}
+
+function onDropTargetChange() {
+    const sel = $('settle-drop-target');
+    state.dropTarget = sel ? sel.value : 'follow';
+    syncDropBox(true);
+}
 
 function loadDrops() {
-    const dateEl = $('settle-drop-date'), bossEl = $('settle-drop-boss');
-    const date = dateEl ? dateEl.value : '', bossId = bossEl ? bossEl.value : '';
-    const key = (date && bossId) ? date + '_' + bossId : '';
+    const t = dropTarget();
+    const key = (t.date && t.bossId) ? t.date + '_' + t.bossId : '';
     if (key && key === state.dropKey && state.dropRef) return;      // 같은 대상이면 다시 구독하지 않음
     if (state.dropRef) { state.dropRef.off('value'); state.dropRef = null; }
     state.dropKey = key;
     state.drops = [];
-    loadBossItems(bossId);
+    loadBossItems(t.bossId);
     renderDrops();
     if (!key) return;
     const ref = db.ref('boss_drops/' + key + '/items');
@@ -278,13 +305,92 @@ function loadDrops() {
     });
 }
 
+// ── 출석 탭 "현재 진행 중인 보스" 아래에 들어가는 드랍 칸 ──
+let dropMsgTimer = null;
+function showDropMsg(text) {
+    const el = $('settle-drop-msg');
+    if (!el) return;
+    el.textContent = text;
+    el.style.display = 'block';
+    clearTimeout(dropMsgTimer);
+    dropMsgTimer = setTimeout(() => { el.style.display = 'none'; }, 6000);
+}
+
+function buildDropBox() {
+    const box = $('drop-box');
+    if (!box || box.dataset.built) return false;
+    box.dataset.built = '1';
+    const lab = 'font-size:0.8rem; font-weight:bold; color:#555; display:block; margin:0 0 4px;';
+    box.innerHTML = `
+    <details id="settle-drop-details" style="border:1px solid #e0e0e0; border-radius:10px; background:white;">
+        <summary style="padding:11px 14px; cursor:pointer; font-weight:bold; color:#2c3e50; font-size:0.92rem;">
+            📦 드랍 기록 <span id="settle-drop-count" style="margin-left:6px; padding:1px 8px; border-radius:10px; background:#eef2f5; color:#5D6D7E; font-size:0.75rem;"></span>
+        </summary>
+        <div style="padding:2px 14px 14px;">
+            <p style="font-size:0.78rem; color:#7f8c8d; margin:0 0 10px;">보스에서 나온 아이템과 획득자를 기록합니다. 아이템 이름은 처음 입력하면 이 보스 목록에 저장되어 다음부터 선택할 수 있습니다.</p>
+            <label style="${lab}">기록할 보스</label>
+            <select id="settle-drop-target" onchange="Settle.onDropTargetChange()" style="${inputStyle} margin-bottom:8px;"></select>
+            <select id="settle-drop-item" onchange="Settle.onItemSelect()" style="${inputStyle} margin-bottom:6px;"></select>
+            <input type="text" id="settle-drop-item-direct" maxlength="60" placeholder="아이템 이름을 직접 입력" style="${inputStyle} display:none; border-color:#e67e22; margin-bottom:6px;">
+            <div style="display:flex; gap:6px;">
+                <select id="settle-drop-winner" style="${inputStyle} flex:1;"></select>
+                <button class="btn btn-primary" onclick="Settle.addDrop()" style="white-space:nowrap;">➕ 기록</button>
+            </div>
+            <div id="settle-drop-msg" style="display:none; margin-top:8px; padding:7px 10px; background:#d5f4e6; color:#16a085; border-radius:6px; font-size:0.82rem; font-weight:bold;"></div>
+            <div id="settle-drops-list" style="margin-top:12px;"></div>
+        </div>
+    </details>`;
+    $('settle-drop-details').addEventListener('toggle', () => {
+        if ($('settle-drop-details').open) { ensureListeners(); syncDropBox(true); }
+    });
+    return true;
+}
+
+// 출석 탭의 현재 보스/날짜/사용자/스케줄/관리자 모드가 바뀌면 드랍 칸을 맞춰서 갱신
+let dropSig = '';
+function dropSignature() {
+    const cs = (typeof currentScheduleId !== 'undefined') ? currentScheduleId : null;
+    const cd = (typeof currentScheduleDate !== 'undefined') ? currentScheduleDate : null;
+    const f = followTarget();
+    return [cs, cd, f.bossId, f.date, getUsers().length, getSchedules().length, !!isAdmin, state.dropTarget, myNameList().join(',')].join('|');
+}
+function syncDropBox(force) {
+    if (!$('settle-drop-target')) return;
+    const sig = dropSignature();
+    if (!force && sig === dropSig) return;
+    dropSig = sig;
+    renderDropTargets();
+    renderWinnerSelect();
+    loadDrops();
+    renderDrops();
+}
+function initDropBox() {
+    if (!depsOk() || !buildDropBox()) return;
+    const start = () => { syncDropBox(true); setInterval(() => syncDropBox(false), 1000); };
+    if (typeof authReadyPromise !== 'undefined' && authReadyPromise && typeof authReadyPromise.then === 'function') authReadyPromise.then(start);
+    else start();
+}
+
+// 저장소 상태를 최신으로 확인 (구독 전이면 한 건만 직접 조회)
+async function stFresh(id) {
+    if (state.storageLoaded) return stById(id);
+    try {
+        const v = (await db.ref('boss_storage/' + id).once('value')).val();
+        return (v && typeof v === 'object') ? Object.assign({}, v, { id: v.id != null ? v.id : id }) : null;
+    } catch (e) { return stById(id); }
+}
+
+
+
+
+/*__DROP_REMOVED_loadDrops__*/
+
 function loadBossItems(bossId) {
     state.bossItems = [];
     renderItemSelect();
     if (!bossId) return;
     db.ref('boss_items/' + bossId + '/items').once('value').then(snap => {
-        const cur = $('settle-drop-boss');
-        if (!cur || cur.value !== bossId) return;
+        if (dropTarget().bossId !== bossId) return;
         state.bossItems = Object.values(snap.val() || {}).filter(v => typeof v === 'string' && v.trim());
         renderItemSelect();
     }).catch(e => console.warn('아이템 목록 로드 실패:', e));
@@ -331,13 +437,13 @@ function storageFromDrop(d) {
 }
 
 async function addDrop() {
-    const date = $('settle-drop-date').value, bossId = $('settle-drop-boss').value;
+    const t = dropTarget();
     const itemName = getItemName();
     const winner = userById(parseInt($('settle-drop-winner').value));
-    const boss = getSchedules().find(s => s.id === bossId);
-    if (!date || !boss) { alert('날짜와 보스를 선택하세요.'); return; }
-    if (!itemName)      { alert('아이템을 선택하거나 직접 입력하세요.'); return; }
-    if (!winner)        { alert('획득자를 선택하세요.'); return; }
+    if (!t.boss)   { alert('기록할 보스가 없습니다.\n위의 "보스 선택"에서 보스를 고르거나, "기록할 보스"를 직접 선택하세요.'); return; }
+    if (!itemName) { alert('아이템을 선택하거나 직접 입력하세요.'); return; }
+    if (!winner)   { alert('획득자를 선택하세요.'); return; }
+    const date = t.date, bossId = t.bossId, boss = t.boss;
 
     const id = Date.now() + '_' + Number(winner.id);
     const isMgr = state.managers.includes(Number(winner.id));      // 담당자가 먹었으면 전달·보관함 자동 처리
@@ -356,6 +462,7 @@ async function addDrop() {
         $('settle-drop-item-direct').value = '';
         $('settle-drop-item-direct').style.display = 'none';
         $('settle-drop-winner').value = '';
+        showDropMsg('✅ ' + itemName + ' → ' + boss.time + ' ' + boss.name + (date !== ymdOf(nowD()) ? ' (' + date.slice(5) + ')' : '') + ' 기록 완료');
     } catch (e) {
         alert('❌ 드랍 기록 실패: ' + e.message);
     }
@@ -367,17 +474,20 @@ const findDrop = (k) => state.drops.find(d => sid(d.id) === k);
 function renderDrops() {
     const box = $('settle-drops-list');
     if (!box) return;
+    const cnt = $('settle-drop-count');
+    if (cnt) cnt.textContent = state.dropKey ? state.drops.length + '개' : '';
     const msg = (t) => `<p style="color:#95a5a6; text-align:center; padding:12px; font-size:0.88rem; margin:0;">${t}</p>`;
-    if (!state.dropKey) { box.innerHTML = msg('날짜와 보스를 선택하세요.'); return; }
+    if (!state.dropKey) { box.innerHTML = msg('지금 기록할 보스가 없습니다.<br>위 "보스 선택"에서 보스를 고르거나, 위의 "기록할 보스"에서 선택하세요.'); return; }
     if (!state.drops.length) { box.innerHTML = msg('이 보스의 드랍 기록이 없습니다.'); return; }
+    const t = dropTarget();
     const mg = canManage();
-    box.innerHTML = `<div style="font-size:0.82rem; font-weight:bold; color:#555; margin-bottom:6px;">이 보스 드랍 ${state.drops.length}개</div>` + state.drops.map(d => {
+    box.innerHTML = `<div style="font-size:0.82rem; font-weight:bold; color:#555; margin-bottom:6px;">${esc(t.date.slice(5))} ${t.boss ? esc(t.boss.time + ' ' + t.boss.name) : ''} · 드랍 ${state.drops.length}개</div>` + state.drops.map(d => {
         const k = sid(d.id);
         const st = stById(d.id);
         const mgrWinner = state.managers.includes(Number(d.winnerId));
         let status;
         if (st && st.sold) status = badge(st.settledId ? '정산완료' : '판매완료', '#27ae60');
-        else if (st)       status = badge('보관중', '#e67e22');
+        else if (st || d.inStorage) status = badge('보관중', '#e67e22');
         else if (d.delivered) status = badge('전달완료', '#16a085');
         else status = badge('미전달', '#d35400');
         const controls = mg ? `
@@ -409,7 +519,7 @@ async function toggleDelivered(k, checked) {
     const d = findDrop(k);
     if (!d) return;
     if (!(await requireManage())) { renderDrops(); return; }
-    const st = stById(d.id);
+    const st = await stFresh(d.id);
     if (!checked && st && st.sold) { alert('이미 판매된 아이템입니다. 보관함에서 판매 취소를 먼저 해주세요.'); renderDrops(); return; }
     const base = 'boss_drops/' + state.dropKey + '/items/' + d._k;
     const updates = {};
@@ -426,7 +536,7 @@ async function toggleStorage(k, checked) {
     if (!d) return;
     if (!(await requireManage())) { renderDrops(); return; }
     if (!d.delivered) { alert('전달완료를 먼저 체크하세요.'); renderDrops(); return; }
-    const st = stById(d.id);
+    const st = await stFresh(d.id);
     if (!checked && st && st.sold) { alert('이미 판매된 아이템입니다. 보관함에서 판매 취소를 먼저 해주세요.'); renderDrops(); return; }
     const base = 'boss_drops/' + state.dropKey + '/items/' + d._k;
     const updates = {};
@@ -440,7 +550,7 @@ async function deleteDrop(k) {
     const d = findDrop(k);
     if (!d) return;
     if (!(await requireManage())) return;
-    const st = stById(d.id);
+    const st = await stFresh(d.id);
     if (st && st.sold) { alert('판매된 아이템은 삭제할 수 없습니다. 보관함에서 판매 취소를 먼저 해주세요.'); return; }
     if (!confirm(`"${d.itemName}" 드랍 기록을 삭제할까요?`)) return;
     const updates = {};
@@ -1290,7 +1400,7 @@ function rbRenderSummary() {
 // ============================================================
 window.Settle = {
     onOpen, onModeChange, showPane, closeModal,
-    onDropDateChange, loadDrops, onItemSelect, addDrop, toggleDelivered, toggleStorage, deleteDrop,
+    onDropTargetChange, refreshDropBox: () => syncDropBox(true), onItemSelect, addDrop, toggleDelivered, toggleStorage, deleteDrop,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
     openCalc, closeCalc, toggleRecipient, setRecipientsAll, setRecipientsServer, saveSettlement,
@@ -1298,4 +1408,6 @@ window.Settle = {
     rbLoadWeek, rbHandleFiles, rbRemovePending, rbSubmit, rbShowImages, rbOpenImage,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices
 };
+
+initDropBox();   // 출석 탭의 드랍 칸 시작
 })();
