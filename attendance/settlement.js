@@ -1478,7 +1478,8 @@ function renderStorage() {
     const soldN = state.storage.filter(i => i.sold).length;
     const head = mg
         ? `<div style="display:flex; gap:8px; margin-bottom:10px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('아이템 판매 금액', fmt(soldTotal) + ' ' + UNIT, '#d5f4e6', '#27ae60', soldTotal ? (waiting ? '정산 대기 ' + fmt(waiting) : '모두 정산됨') : '')}</div>`
-        : `<div style="display:flex; gap:8px; margin-bottom:10px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('판매완료', soldN + '개', '#eef2f3', '#7f8c8d')}</div>`;      // 일반 사용자에겐 금액을 보여주지 않음
+        : `<div style="display:flex; gap:8px; margin-bottom:8px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('판매완료', soldN + '개', '#eef2f3', '#7f8c8d')}</div>`
+          + `<div id="settle-waiting-tile" style="display:flex; gap:8px; margin-bottom:10px;">${tile('현재 정산해야 할 다이아', fmt(waiting) + ' ' + UNIT, '#fff4e5', '#e67e22', waiting ? '판매가 끝났고 아직 정산하지 않은 금액' : '정산할 금액이 없습니다')}</div>`;      // 일반 사용자에겐 낙찰자·낙찰가 대신 "정산해야 할 총액"만
 
     if (!list.length) { box.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">조건에 맞는 아이템이 없습니다.</p>'; return; }
     box.innerHTML = head + list.slice(0, state.stShow).map(it => {
@@ -1897,14 +1898,19 @@ function calcItems() {
 // 1) 직접 지정한 금액(특정인에게 주는 금액)을 총액에서 먼저 뺌
 // 2) 남은 금액을 방식대로 분배: 균등 / 서버별 비율(조건 = 서버, 비율 = %, 각 서버 몫 안에서는 균등)
 // 3) 받을 사람이 없는 서버의 몫은 "미배분"(혈 귀속)으로 따로 표시. 정수(다이아) 단위, 남는 1은 이름순 앞사람부터
-const RATIO_GROUPS = [['jingir', '진기르'], ['pandora', '판도라'], ['support', '지원'], ['other', '서버 없음']];
-const groupOf = (u) => (SERVERS[u.server] ? u.server : 'other');
+const RATIO_GROUPS = [['jingir', '진기르'], ['pandora', '판도라'], ['support', '지원'], ['other', '그 외']];
+// 서버별 비율의 "지원" 몫 = 지원조 (서버 표시가 아니라 [지원조 설정] 명단이 기준). 지원조는 서버와 상관없이 지원 몫을 받고,
+// 지원조가 아닌 사람은 진기르/판도라 몫, 그 외(서버 없음 · 서버가 '지원'이어도 지원조가 아닌 사람)는 "그 외" 몫
+const groupOf = (u, supportIds) => {
+    if (supportIds && supportIds.has(Number(u.id))) return 'support';
+    return (SERVERS[u.server] && u.server !== 'support') ? u.server : 'other';
+};
 const sumOf = (arr) => arr.reduce((a, b) => a + b, 0);
 
 function computeSplit(total, recips, mode, ratios, fixed, opts) {
     const warnings = [], errors = [];
     const rows = recips.slice().sort((a, b) => koCmp(a.name, b.name))
-        .map(u => ({ userId: Number(u.id), name: u.name, server: u.server || '', group: groupOf(u), team: !!(opts && opts.supportIds && opts.supportIds.has(Number(u.id))), amount: 0, fixed: false }));
+        .map(u => ({ userId: Number(u.id), name: u.name, server: u.server || '', group: groupOf(u, opts && opts.supportIds), team: !!(opts && opts.supportIds && opts.supportIds.has(Number(u.id))), amount: 0, fixed: false }));
     let fixedSum = 0;
     rows.forEach(r => {
         const f = fixed ? fixed[r.userId] : undefined;
@@ -2008,7 +2014,8 @@ function renderCalc() {
     if (!box) return;
     const { items, total } = calcItems();
     const us = getUsers().slice().sort((a, b) => koCmp(a.name, b.name));
-    const showOther = us.some(u => !SERVERS[u.server]);
+    const ts = new Set(state.supportTeam.map(Number));
+    const showOther = us.some(u => groupOf(u, ts) === 'other');
     const inp = 'width:70px; margin:0; padding:5px 7px; border:2px solid #ddd; border-radius:6px; font-size:0.85rem; text-align:right; box-sizing:border-box;';
     box.innerHTML = `
     <div style="border:2px solid #27ae60; border-radius:10px; overflow:hidden; margin-bottom:12px;">
@@ -2033,8 +2040,9 @@ function renderCalc() {
                 <div style="font-size:0.74rem; color:#95a5a6; margin-top:4px;">지원조 명단은 관리자만 설정할 수 있습니다.${isAdmin ? ' ' + actBtn('🤝 지원조 설정', 'Settle.openSupportTeam()', '#8e44ad') : ''}</div>
             </div>
             <div id="settle-ratio-box" style="display:none; background:#f8f9fa; border-radius:8px; padding:8px 10px; margin-bottom:6px;">
-                <div style="font-size:0.78rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">서버마다 몫(%)을 정하면, 각 서버 몫을 그 서버 대상자끼리 균등하게 나눕니다.</div>
-                ${RATIO_GROUPS.filter(([g]) => g !== 'other' || showOther).map(([g, n]) => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:3px 0; font-size:0.85rem;"><span>${n}</span><span><input type="number" id="settle-ratio-${g}" min="0" max="100" step="0.5" value="${Number(state.calcRatios[g]) || 0}" oninput="Settle.setRatio('${g}', this.value)" style="${inp}"> %</span></div>`).join('')}
+                <div style="font-size:0.78rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">서버마다 몫(%)을 정하면, 각 몫을 그 서버 대상자끼리 균등하게 나눕니다.<br><b style="color:#1e8449;">지원 몫은 서버가 아니라 [지원조 설정] 명단 기준</b>입니다. 지원조는 서버와 상관없이 지원 몫을 받고, 진기르·판도라 몫에서는 빠집니다.</div>
+                <div id="settle-ratio-info" style="font-size:0.78rem; color:#555; margin-bottom:6px; line-height:1.6;"></div>
+                ${RATIO_GROUPS.filter(([g]) => g !== 'other' || showOther).map(([g, n]) => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:3px 0; font-size:0.85rem;"><span>${g === 'support' ? '지원 <small style="color:#1e8449; font-weight:bold;">(지원조)</small>' : n}</span><span><input type="number" id="settle-ratio-${g}" min="0" max="100" step="0.5" value="${Number(state.calcRatios[g]) || 0}" oninput="Settle.setRatio('${g}', this.value)" style="${inp}"> %</span></div>`).join('')}
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:0.82rem;"><span id="settle-ratio-sum"></span>${actBtn('대상 인원 비례로 채우기', 'Settle.fillRatioByHeadcount()', '#5D6D7E')}</div>
             </div>
             <div style="font-size:0.85rem; font-weight:bold; margin:8px 0 6px;">👥 정산 대상자 <span id="settle-rcpt-count" style="color:#27ae60;"></span></div>
@@ -2042,7 +2050,7 @@ function renderCalc() {
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
                 ${actBtn('전체 선택', 'Settle.setRecipientsAll(true)', '#5D6D7E')}
                 ${actBtn('전체 해제', 'Settle.setRecipientsAll(false)', '#95a5a6')}
-                ${Object.keys(SERVERS).map(k => actBtn(SERVERS[k].name + '만', `Settle.setRecipientsServer('${k}')`, SERVERS[k].color)).join('')}
+                ${Object.keys(SERVERS).map(k => actBtn((k === 'support' ? '지원조' : SERVERS[k].name) + '만', `Settle.setRecipientsServer('${k}')`, SERVERS[k].color)).join('')}
             </div>
             <div id="settle-rcpt-list" style="max-height:240px; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
                 ${us.map(u => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 10px; border-bottom:1px solid #f5f5f5;">
@@ -2069,7 +2077,7 @@ function renderCalcModeUi() {
     const rb2 = $('settle-ratio-box'), sb = $('settle-support-box');
     if (rb2) rb2.style.display = state.calcMode === 'ratio' ? 'block' : 'none';
     if (sb) sb.style.display = state.calcMode === 'support' ? 'block' : 'none';
-    document.querySelectorAll('.settle-team-badge').forEach(b => { b.style.display = state.calcMode === 'support' ? 'inline' : 'none'; });
+    document.querySelectorAll('.settle-team-badge').forEach(b => { b.style.display = (state.calcMode === 'support' || state.calcMode === 'ratio') ? 'inline' : 'none'; });
     RATIO_GROUPS.forEach(([g]) => { const el = $('settle-ratio-' + g); if (el && document.activeElement !== el) el.value = Number(state.calcRatios[g]) || 0; });
     const sp = $('settle-support-pct'); if (sp && document.activeElement !== sp) sp.value = Number(state.calcSupportPct) || 0;
 }
@@ -2087,7 +2095,8 @@ function fillRatioByHeadcount() {                              // 선택된 대�
     const recips = getUsers().filter(u => state.recipients.has(Number(u.id)));
     const n = recips.length;
     if (!n) return;
-    const cnt = {}; RATIO_GROUPS.forEach(([g]) => { cnt[g] = recips.filter(u => groupOf(u) === g).length; });
+    const ts = new Set(state.supportTeam.map(Number));
+    const cnt = {}; RATIO_GROUPS.forEach(([g]) => { cnt[g] = recips.filter(u => groupOf(u, ts) === g).length; });
     const pct = {}; let used = 0, big = 'jingir';
     RATIO_GROUPS.forEach(([g]) => { pct[g] = Math.floor(cnt[g] / n * 1000) / 10; used += pct[g]; if (cnt[g] > cnt[big]) big = g; });
     pct[big] = Math.round((pct[big] + (100 - used)) * 10) / 10;       // 합계가 정확히 100이 되도록 가장 큰 서버에 맞춤
@@ -2125,6 +2134,12 @@ function renderCalcPreview() {
     if (inf) {
         const tn = c.rows.filter(r => r.team).length, rn = c.rows.length - tn, p = Math.min(100, Math.max(0, Number(state.calcSupportPct) || 0));
         inf.innerHTML = `지원조 <b>${p}%</b> · 나머지 인원 <b>${Math.round((100 - p) * 100) / 100}%</b><br>선택한 대상자 중 지원조 <b>${tn}명</b> · 나머지 <b>${rn}명</b>${state.supportTeam.length === 0 ? '<br><span style="color:#c0392b;">⚠️ 지원조 명단이 비어 있습니다. 관리자가 먼저 설정해야 합니다.</span>' : ''}`;
+    }
+    const rinf = $('settle-ratio-info');
+    if (rinf) {
+        const cntBy = {}; c.rows.forEach(r => { cntBy[r.group] = (cntBy[r.group] || 0) + 1; });
+        rinf.innerHTML = '선택한 대상자: ' + RATIO_GROUPS.filter(([g]) => g !== 'other' || cntBy.other).map(([g, n]) => (g === 'support' ? '지원(지원조)' : n) + ' <b>' + (cntBy[g] || 0) + '명</b>').join(' · ')
+            + (state.supportTeam.length === 0 ? '<br><span style="color:#c0392b;">지원조 명단이 비어 있어 지원 몫은 받을 사람이 없습니다.</span>' : '');
     }
     const sumEl = $('settle-ratio-sum');
     if (sumEl) {
@@ -2169,7 +2184,8 @@ function setRecipientsAll(on) {
     syncRecipientChecks();
 }
 function setRecipientsServer(sv) {
-    state.recipients = new Set(getUsers().filter(u => u.server === sv).map(u => Number(u.id)));
+    const ts = new Set(state.supportTeam.map(Number));
+    state.recipients = new Set(getUsers().filter(u => groupOf(u, ts) === sv).map(u => Number(u.id)));       // 지원 = 지원조
     syncRecipientChecks();
 }
 
@@ -2196,7 +2212,7 @@ async function saveSettlement() {
         dist.forEach(d => {
             recMap['u' + d.userId] = { userId: d.userId, name: d.name, server: d.server, amount: d.amount, received: false };
             if (d.fixed) recMap['u' + d.userId].fixed = true;                       // 운영진이 금액을 직접 지정한 사람
-            if (state.calcMode === 'support' && d.team) recMap['u' + d.userId].team = true;   // 정산 당시 지원조였던 사람 (이후 명단이 바뀌어도 기록 유지)
+            if ((state.calcMode === 'support' || state.calcMode === 'ratio') && d.team) recMap['u' + d.userId].team = true;   // 정산 당시 지원조였던 사람 (이후 명단이 바뀌어도 기록 유지)
         });
         const record = {
             id: sidv, createdAt: nowIso(), totalAmount: total, count: dist.length,
@@ -2337,7 +2353,7 @@ function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padSta
 function md(d) { return (d.getMonth() + 1) + '/' + d.getDate(); }
 
 const rbSafeSrc = (d) => (typeof d === 'string' && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/=]+$/.test(d)) ? d : '';
-// 이 기기를 구분하는 값 (다른 사람 사진을 대신 올린 신청도 올린 사람이 수정/삭제할 수 있게)
+// 이 기기를 구분하는 값 — 신청 기록(by)에 남기기만 하고, "내 신청" 판단에는 쓰지 않음 (내 이름으로 등록한 캐릭터의 신청만 내 것)
 function deviceId() {
     try {
         let v = localStorage.getItem('settleDeviceId');
@@ -2345,7 +2361,7 @@ function deviceId() {
         return v;
     } catch (e) { return 'd-nolocal'; }
 }
-const rbIsMine = (r) => myNameList().includes(r.name) || (!!r.by && r.by === deviceId());
+const rbIsMine = (r) => myNameList().includes(r.name);          // 내 이름으로 등록한 캐릭터의 신청만 "내 것" (기기로는 판단하지 않음)
 const rbWeekOf = (r) => r._week || rb.week;
 function rbWeekRange(key) {
     const st = new Date(key + 'T00:00:00'), en = new Date(st);
@@ -2968,6 +2984,9 @@ function rbRenderSubmitState() {
 function rbRenderMoney() {
     const el = $('rbu-money');
     if (!el) return;
+    const has = myNameList().length > 0, card = el.closest('.card');
+    if (card) card.style.display = has ? '' : 'none';                  // 내 이름을 등록하지 않았으면 아무것도 보여주지 않음
+    if (!has) { el.innerHTML = ''; return; }
     const mine = rbMine();
     const sum = (f) => mine.filter(f).reduce((t, r) => t + rbAmount(r), 0);
     const waiting = sum(r => r.status === 'approved' && !r.paid);
@@ -2984,11 +3003,14 @@ function rbRenderMoney() {
             <div style="font-size:0.76rem; color:#7f8c8d;">${waiting ? '운영진이 확정한 금액입니다. 곧 지급됩니다.' : (est ? '운영진이 확정하면 이곳에 표시됩니다.' : '확정된 금액이 없습니다.')}</div>
         </div>
         <div style="display:flex; gap:8px;">${tile('확인 대기 (예상)', est, '#fef9e7', '#d35400')}${tile('지급 완료', paid, '#d5f4e6', '#27ae60')}</div>
-        <div style="font-size:0.74rem; color:#95a5a6; margin-top:8px; line-height:1.5;">최근 3주 신청 기준${myNameList().length === 0 ? '<br>💡 출석 체크 탭에서 <b>[내 이름 설정]</b>을 하면 내 신청이 자동으로 모입니다.' : ''}</div>`;
+        <div style="font-size:0.74rem; color:#95a5a6; margin-top:8px; line-height:1.5;">최근 3주 신청 기준</div>`;
 }
 function rbRenderMine() {
     const box = $('rbu-list');
     if (!box) return;
+    const has = myNameList().length > 0, card = box.closest('.card');
+    if (card) card.style.display = has ? '' : 'none';                  // 내 이름을 등록하지 않았으면 아무것도 보여주지 않음
+    if (!has) { box.innerHTML = ''; return; }
     const mine = rbMine();
     if (!mine.length) { box.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:16px; margin:0; font-size:0.9rem;">최근 3주 동안 신청한 내역이 없습니다.</p>'; return; }
     box.innerHTML = mine.map(r => rbCardHtml(r, 'user')).join('');
