@@ -1256,7 +1256,7 @@ function catTagLine(name) {                                                     
 // 검색어(띄어쓰기로 여러 단어, 모두 포함) + 종류/직업 선택에 맞는지. skip: 칩 개수를 셀 때 그 묶음의 선택은 빼고 계산
 function stPass(o, skip) {
     if (state.stQuery) {
-        const hay = normKey([o.itemName, o.bossName, o.bossVariant, o.bossVariantName, o.winner, canManage() ? o.buyer : ''].filter(Boolean).join(' '));
+        const hay = normKey((canManage() ? [o.itemName, o.bossName, o.bossVariant, o.bossVariantName, o.winner, o.buyer] : [o.itemName]).filter(Boolean).join(' '));
         if (!state.stQuery.split(/\s+/).map(normKey).filter(Boolean).every(t => hay.indexOf(t) >= 0)) return false;
     }
     const c = itemCats(o.itemName);
@@ -1279,7 +1279,7 @@ function ensureCatBar() {
     if (!bar || $('settle-st-q')) return;
     bar.innerHTML = `
         <div style="display:flex; gap:6px; margin-bottom:6px;">
-            <input type="search" id="settle-st-q" value="${esc(state.stQuery)}" placeholder="🔎 아이템·보스·획득자 검색 (띄어쓰기로 여러 단어)" oninput="Settle.setStQuery(this.value)" style="flex:1; min-width:0; margin:0; padding:9px 10px; border:2px solid #ddd; border-radius:8px; font-size:0.9rem; box-sizing:border-box;">
+            <input type="search" id="settle-st-q" value="${esc(state.stQuery)}" placeholder="${canManage() ? '🔎 아이템·보스·획득자 검색 (띄어쓰기로 여러 단어)' : '🔎 아이템 이름 검색 (띄어쓰기로 여러 단어)'}" oninput="Settle.setStQuery(this.value)" style="flex:1; min-width:0; margin:0; padding:9px 10px; border:2px solid #ddd; border-radius:8px; font-size:0.9rem; box-sizing:border-box;">
             <button id="settle-st-toggle" onclick="Settle.toggleCatPanel()" style="flex:none; padding:0 12px; border-radius:8px; font-weight:bold; font-size:0.85rem; cursor:pointer; white-space:nowrap;"></button>
         </div>
         <div id="settle-st-panel" style="display:none; background:#f8f9fa; border-radius:8px; padding:8px 10px; margin-bottom:6px;"></div>
@@ -1288,6 +1288,8 @@ function ensureCatBar() {
 // base: 상태/서버 필터까지만 적용한 목록 (칩의 개수 계산용), shown: 조건에 맞는 개수
 function renderCatBar(base, shown) {
     ensureCatBar();
+    const qbox = $('settle-st-q');
+    if (qbox) qbox.placeholder = canManage() ? '🔎 아이템·보스·획득자 검색 (띄어쓰기로 여러 단어)' : '🔎 아이템 이름 검색 (띄어쓰기로 여러 단어)';      // 권한이 바뀌어도 안내 문구가 맞게 (검색칸은 다시 그리지 않으므로 여기서 갱신)
     const panel = $('settle-st-panel'), sum = $('settle-st-summary'), tog = $('settle-st-toggle');
     if (!panel || !sum || !tog) return;
     stValidateSel();
@@ -1536,13 +1538,13 @@ function renderStorage() {
         if (mg && !sold) btns.push(actBtn('🗑️', `Settle.deleteStorage('${k}')`, '#e74c3c'));
         if (mg && sold && !it.settledId) btns.push(actBtn('↩️ 판매 취소', `Settle.unsell('${k}')`, '#7f8c8d'));
         return `
-        <div style="border:2px solid ${sold ? '#a9dfbf' : '#e0e0e0'}; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:${sold ? '#f0fff4' : 'white'};">
+        <div data-st-card="${esc(k)}" style="border:2px solid ${sold ? '#a9dfbf' : '#e0e0e0'}; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:${sold ? '#f0fff4' : 'white'};">
             <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
                 <div style="flex:1; min-width:150px;">
-                    <div style="font-weight:bold; color:#2c3e50;">${sold ? '' : bidCheckbox(k)}${esc(it.itemName)} ${sold ? badge(it.settledId ? '정산완료' : '판매완료', it.settledId ? '#16a085' : '#27ae60') : ''}</div>
+                    <div style="font-weight:bold; color:#2c3e50;">${sold ? '' : bidCheckbox(k)}${esc(it.itemName)} ${sold ? badge(it.settledId ? '정산완료' : '판매완료', it.settledId ? '#16a085' : '#27ae60') : (mg ? '' : badge('보관중', '#2980b9'))}</div>
                     ${catTagLine(it.itemName)}
-                    <div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${it.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(it.bossVariant)}${it.bossVariantName ? ' · ' + esc(it.bossVariantName) : ''}</span>` : ''}${serverBadge(it.bossServer)}</div>
-                    <div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold && mg ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>
+                    ${mg ? `<div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${it.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(it.bossVariant)}${it.bossVariantName ? ' · ' + esc(it.bossVariantName) : ''}</span>` : ''}${serverBadge(it.bossServer)}</div>` : (it.bossServer ? `<div style="margin-top:3px;">${serverBadge(it.bossServer)}</div>` : '')}
+                    ${mg ? `<div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold && mg ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>` : ''}
                     ${!sold && priceOf(it.itemName) ? `<div style="font-size:0.8rem; color:#e67e22; font-weight:bold;">💎 입찰가 ${fmt(priceOf(it.itemName))} ${UNIT}</div>` : ''}
                     ${bidLineHtml(it)}
                 </div>
@@ -2039,7 +2041,7 @@ function openBidModal(k, uid) {
         <div id="settle-bid-rows">
             ${items.map(it => { const pr = priceOf(it.itemName); return `<div data-bk="${esc(sid(it.id))}" style="border:1px solid #eee; border-radius:8px; padding:8px 10px; margin-top:8px;">
                 <div style="font-weight:bold; color:#2c3e50;">${esc(it.itemName)}</div>
-                <div style="font-size:0.76rem; color:#7f8c8d;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}</div>
+                ${canManage() ? `<div style="font-size:0.76rem; color:#7f8c8d;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}</div>` : (it.bossServer ? `<div style="margin-top:2px;">${serverBadge(it.bossServer)}</div>` : '')}
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-top:5px; font-size:0.85rem;">
                     <span>${pr ? '💎 입찰가 <b style="color:#e67e22;">' + fmt(pr) + ' ' + UNIT + '</b>' : '<span style="color:#95a5a6;">입찰가 미정 (확정할 때 관리자가 정합니다)</span>'}</span>
                     <span class="settle-bid-done" style="color:#27ae60; font-weight:bold; font-size:0.8rem;"></span></div>
