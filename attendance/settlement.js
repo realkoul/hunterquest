@@ -64,7 +64,9 @@ const state = {
     stQuery: '', stCat: { type: '', job: '' }, stSort: 'recent', stShow: 40, stPanel: false,      // 보관함 검색 / 종류·직업 분류 / 정렬 / 한 번에 보여줄 개수
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
-    backupStatus: null, backupCool: 0,                                                                  // 구글시트 백업 상태(Apps Script 가 기록) / 연속 요청 방지
+    backupStatus: null, backupCool: 0,
+    bids: {}, bidSel: new Set(), bidAdmin: '',                                                          // 입찰 신청: { 사용자ID: { 아이템ID: 입찰 } } / 체크한 아이템 / 관리자 패널 상태
+                                                                     // 구글시트 백업 상태(Apps Script 가 기록) / 연속 요청 방지
     supportTeam: [], calcSupportPct: 50                                                                  // 지원조 명단(userId[], 관리자만 설정) / 지원조 몫(%)
 };
 
@@ -129,9 +131,11 @@ function buildRoot() {
                 <h2 style="font-size:1.05rem; margin:0;">🏪 아이템 보관함</h2>
                 <div id="settle-storage-actions" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
             </div>
+            <div id="settle-bids-area"></div>
             <div id="settle-storage-filters" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;"></div>
             <div id="settle-storage-cats"></div>
             <div id="settle-storage-list"></div>
+            <div id="settle-bid-bar"></div>
         </div>
 
         <!-- 정산 (관리자·담당자만 보임) -->
@@ -207,7 +211,7 @@ function onModeChange() {
     updateNav();
     myAttTick();
     renderBackupCard();
-    if (state.inited) { refreshAll(); renderSeg(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
+    if (state.inited) { syncBidListeners(); refreshAll(); renderSeg(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
     rbRenderUser();
 }
 function refreshAll() {
@@ -249,7 +253,7 @@ function ensureSupportTeam() {
         if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
     });
 }
-function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureStorage(); }
+function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureStorage(); syncBidListeners(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -440,7 +444,7 @@ function syncDropBox(force) {
     dropSig = sig;
     updateNav();
     rbRenderUser();
-    if (state.inited) renderStorage();
+    if (state.inited) { syncBidListeners(); renderStorage(); }
     renderDropTargets();
     renderWinnerSelect();
     renderVariantSelect();
@@ -1444,8 +1448,10 @@ function renderStorage() {
     const mg = canManage();
     stValidateSel();                                                                   // 분류 규칙이 바뀌어 사라진 분류를 선택 중이면, 목록을 계산하기 전에 먼저 해제
     viewerSync();
+    renderBidBar(); renderBidAdmin();
     acts.innerHTML = (isAdmin ? actBtn('👤 담당자 설정', 'Settle.openManagers()', '#8e44ad') + actBtn('🏷️ 분류 설정', 'Settle.openCatSettings()', '#8e44ad') : '')
-                   + (mg ? actBtn('💰 입찰/판매', 'Settle.openAuction()', '#e67e22') : '');
+                   + (mg ? actBtn('💰 입찰/판매', 'Settle.openAuction()', '#e67e22') : '')
+                   + (isAdmin ? actBtn('🙋 입찰 신청' + (pendingBids().length ? ' (' + pendingBids().length + ')' : ''), 'Settle.openBidAdmin()', '#e67e22') : '');
     fil.innerHTML =
         chip('전체', state.stFilter === 'all', '#5D6D7E', "Settle.setStorageFilter('all')")
         + chip('보관중', state.stFilter === 'pending', '#e67e22', "Settle.setStorageFilter('pending')")
@@ -1481,11 +1487,14 @@ function renderStorage() {
         : `<div style="display:flex; gap:8px; margin-bottom:8px;">${tile('보관중', pendingN + '개', '#e8f4fd', '#2980b9')}${tile('판매완료', soldN + '개', '#eef2f3', '#7f8c8d')}</div>`
           + `<div id="settle-waiting-tile" style="display:flex; gap:8px; margin-bottom:10px;">${tile('현재 정산해야 할 다이아', fmt(waiting) + ' ' + UNIT, '#fff4e5', '#e67e22', waiting ? '판매가 끝났고 아직 정산하지 않은 금액' : '정산할 금액이 없습니다')}</div>`;      // 일반 사용자에겐 낙찰자·낙찰가 대신 "정산해야 할 총액"만
 
-    if (!list.length) { box.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">조건에 맞는 아이템이 없습니다.</p>'; return; }
-    box.innerHTML = head + list.slice(0, state.stShow).map(it => {
+    const bidHint = (state.stFilter !== 'sold' && state.storage.some(i => !i.sold)) ? '<div style="font-size:0.78rem; color:#7f8c8d; background:#fffaf0; border:1px dashed #f5cba7; border-radius:8px; padding:7px 10px; margin-bottom:10px; line-height:1.5;">💡 입찰하려는 아이템 왼쪽 <b>체크 칸</b>을 누른 뒤 아래 <b>[🙋 입찰 신청]</b>을 누르세요. 한 개만, 또는 여러 개를 한꺼번에 신청할 수 있어요. 낙찰 확정은 관리자가 합니다.</div>' : '';
+
+    if (!list.length) { box.innerHTML = head + bidHint + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">조건에 맞는 아이템이 없습니다.</p>'; return; }
+    box.innerHTML = head + bidHint + list.slice(0, state.stShow).map(it => {
         const k = sid(it.id);
         const sold = !!it.sold;
         const btns = [];
+        if (isAdmin && !sold && bidsOfItem(it.id).length) btns.push(actBtn('🙋 입찰 ' + bidsOfItem(it.id).length + '건', `Settle.openBidAdmin('${k}')`, '#d35400'));
         if (mg && !sold) btns.push(actBtn('💰 입찰', `Settle.openAuction('${k}')`, '#e67e22'));
         if (mg && !sold) btns.push(actBtn('🗑️', `Settle.deleteStorage('${k}')`, '#e74c3c'));
         if (mg && sold && !it.settledId) btns.push(actBtn('↩️ 판매 취소', `Settle.unsell('${k}')`, '#7f8c8d'));
@@ -1493,10 +1502,11 @@ function renderStorage() {
         <div style="border:2px solid ${sold ? '#a9dfbf' : '#e0e0e0'}; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:${sold ? '#f0fff4' : 'white'};">
             <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
                 <div style="flex:1; min-width:150px;">
-                    <div style="font-weight:bold; color:#2c3e50;">${esc(it.itemName)} ${sold ? badge(it.settledId ? '정산완료' : '판매완료', it.settledId ? '#16a085' : '#27ae60') : ''}</div>
+                    <div style="font-weight:bold; color:#2c3e50;">${sold ? '' : bidCheckbox(k)}${esc(it.itemName)} ${sold ? badge(it.settledId ? '정산완료' : '판매완료', it.settledId ? '#16a085' : '#27ae60') : ''}</div>
                     ${catTagLine(it.itemName)}
                     <div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${it.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(it.bossVariant)}${it.bossVariantName ? ' · ' + esc(it.bossVariantName) : ''}</span>` : ''}${serverBadge(it.bossServer)}</div>
                     <div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold && mg ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>
+                    ${bidLineHtml(it)}
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">${btns.join('')}</div>
             </div>
@@ -1513,6 +1523,10 @@ async function deleteStorage(k) {
     const updates = {};
     updates['boss_storage/' + it.id] = null;
     if (it.dropPath) { updates[it.dropPath + '/inStorage'] = false; updates[it.dropPath + '/delivered'] = false; }
+    try {
+        const bs = await db.ref('boss_bids').once('value');                           // 이 아이템에 걸린 입찰도 함께 삭제
+        bs.forEach(u => { if (bidNode(u.val())[it.id]) updates['boss_bids/' + u.key + '/' + it.id] = null; });
+    } catch (e) { /* 입찰 정리에 실패해도 삭제는 진행 */ }
     try { await db.ref().update(updates); state.undelivStale = true; } catch (e) { alert('❌ 삭제 실패: ' + e.message); }
 }
 
@@ -1879,6 +1893,234 @@ async function backupNowRequest() {
         alert('❌ 요청을 보내지 못했습니다: ' + e.message + '\n주소와 인터넷 연결을 확인해 주세요.');
     }
 }
+
+// ============================================================
+// 🙋 입찰 신청 — 길드원이 보관함 아이템에 입찰가를 신청하고, 관리자가 낙찰자를 확정
+//   boss_bids/{사용자ID}/{아이템ID} = { itemId, itemName, bossName, date, userId, name, amount, createdAt, updatedAt }
+//   · 일반 사용자는 내 캐릭터의 노드만 구독합니다 (다른 사람의 입찰가는 내려받지 않음). 관리자는 전체를 구독합니다.
+//   · 낙찰/낙찰 실패/대기 중 표시는 보관함 아이템의 판매 정보(buyerId)로 계산합니다. → 판매를 취소하면 자동으로 "대기 중"으로 돌아갑니다.
+//   · 확정 = 관리자가 입찰 하나를 고르면 기존 [입찰/판매]와 같은 판매 기록(낙찰자·낙찰가)이 만들어집니다. → 정산 계산에 그대로 이어짐
+// ============================================================
+const BID_MAX = 999999999;
+const myUsers = () => { const names = myNameList(); return getUsers().filter(u => names.includes(u.name)); };
+function bidNode(v) {                                          // 파이어베이스가 숫자 키 묶음을 배열로 돌려줄 수 있어 객체로 통일
+    const o = {};
+    if (Array.isArray(v)) v.forEach((x, i) => { if (x && typeof x === 'object') o[i] = x; });
+    else if (v && typeof v === 'object') Object.keys(v).forEach(k => { if (v[k] && typeof v[k] === 'object') o[k] = v[k]; });
+    return o;
+}
+const bidListen = {};
+let bidRootCb = null;
+function syncBidListeners() {
+    if (!depsOk()) return;
+    if (isAdmin) {                                              // 관리자: 전체 구독
+        if (!bidRootCb) {
+            bidRootCb = snap => { const t = {}; snap.forEach(ch => { t[ch.key] = bidNode(ch.val()); }); state.bids = t; renderBidUi(); };
+            db.ref('boss_bids').on('value', bidRootCb);
+        }
+        Object.keys(bidListen).forEach(uid => { db.ref('boss_bids/' + uid).off('value', bidListen[uid]); delete bidListen[uid]; });
+        return;
+    }
+    if (bidRootCb) { db.ref('boss_bids').off('value', bidRootCb); bidRootCb = null; state.bids = {}; state.bidAdmin = ''; }
+    const want = new Set(myUsers().map(u => String(u.id)));      // 일반 사용자: 내 캐릭터의 입찰만 구독
+    Object.keys(bidListen).forEach(uid => { if (!want.has(uid)) { db.ref('boss_bids/' + uid).off('value', bidListen[uid]); delete bidListen[uid]; delete state.bids[uid]; } });
+    Object.keys(state.bids).forEach(uid => { if (!want.has(uid)) delete state.bids[uid]; });
+    want.forEach(uid => {
+        if (bidListen[uid]) return;
+        bidListen[uid] = snap => { state.bids[uid] = bidNode(snap.val()); renderBidUi(); };
+        db.ref('boss_bids/' + uid).on('value', bidListen[uid]);
+    });
+    renderBidUi();
+}
+function renderBidUi() { if (!state.inited) return; renderStorage(); }
+const bidsOfItem = (itemId) => Object.keys(state.bids).map(uid => (state.bids[uid] || {})[String(itemId)]).filter(Boolean);
+function myBidsOfItem(itemId) {
+    const out = [];
+    myUsers().forEach(u => { const b = (state.bids[String(u.id)] || {})[String(itemId)]; if (b) out.push(b); });
+    return out;
+}
+function bidStateOf(b, it) {                                   // 대기 중 / 낙찰 / 낙찰 실패 (아이템의 판매 정보로 계산)
+    if (!it.sold) return 'pending';
+    const won = (it.buyerId !== undefined && it.buyerId !== null && it.buyerId !== '') ? Number(it.buyerId) === Number(b.userId) : it.buyer === b.name;
+    return won ? 'won' : 'lost';
+}
+function pendingBids() {                                       // 아직 판매되지 않은 아이템에 걸린 입찰 (관리자용)
+    const out = [];
+    Object.keys(state.bids).forEach(uid => Object.keys(state.bids[uid] || {}).forEach(iid => {
+        const b = state.bids[uid][iid], it = state.storage.find(x => String(x.id) === String(iid));
+        if (b && it && !it.sold) out.push({ b: b, it: it });
+    }));
+    return out;
+}
+const bidCheckbox = (k) => `<input type="checkbox" ${state.bidSel.has(k) ? 'checked' : ''} onchange="Settle.toggleBidSel('${k}', this.checked)" title="입찰할 아이템 선택" style="${cbStyle} margin-right:8px; vertical-align:middle; accent-color:#e67e22;">`;
+function bidLineHtml(it) {                                     // 카드에 붙는 "내 입찰" 줄
+    const k = sid(it.id);
+    return myBidsOfItem(it.id).map(b => {
+        const st = bidStateOf(b, it);
+        const tone = st === 'won' ? '#27ae60' : st === 'lost' ? '#95a5a6' : '#e67e22';
+        const label = st === 'won' ? '🏆 낙찰 (낙찰가 ' + fmt(it.bidPrice) + ' ' + UNIT + ')' : st === 'lost' ? '낙찰 실패' : '⏳ 대기 중 · 관리자 확정 전';
+        const btns = st === 'pending' ? actBtn('✏️ 수정', `Settle.openBidModal('${k}', ${Number(b.userId)})`, '#8e44ad') + ' ' + actBtn('취소', `Settle.cancelMyBid('${k}', ${Number(b.userId)})`, '#7f8c8d') : '';
+        return `<div style="margin-top:6px; padding:6px 8px; background:#fff8e6; border:1px solid #ffe0a3; border-radius:6px; font-size:0.8rem; display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span>🙋 내 입찰 <b>${esc(b.name)}</b> <b style="color:#2980b9;">${fmt(b.amount)} ${UNIT}</b> · <b style="color:${tone};">${label}</b></span><span style="display:flex; gap:4px;">${btns}</span></div>`;
+    }).join('');
+}
+function renderBidBar() {                                      // 체크한 아이템이 있으면 아래쪽에 떠 있는 [입찰 신청] 바
+    const el = $('settle-bid-bar');
+    if (!el) return;
+    state.bidSel = new Set(Array.from(state.bidSel).filter(k => { const it = stById(k); return it && !it.sold; }));
+    const n = state.bidSel.size;
+    if (!n) { el.innerHTML = ''; return; }
+    // 화면 아래(하단 메뉴 바로 위)에 고정: 상위 .container 가 overflow:hidden 이라 sticky 는 쓸 수 없음. 마지막 카드를 가리지 않도록 같은 높이의 여백도 둠
+    el.innerHTML = `<div style="height:92px;"></div><div style="position:fixed; left:50%; transform:translateX(-50%); bottom:78px; width:calc(100% - 28px); max-width:612px; z-index:900; box-sizing:border-box; background:#2c3e50; color:white; border-radius:12px; padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:8px; box-shadow:0 4px 14px rgba(0,0,0,0.3);">
+        <span style="font-size:0.9rem;">🙋 선택 <b>${n}</b>개</span>
+        <span style="display:flex; gap:6px;">${actBtn('🙋 입찰 신청', 'Settle.openBidModal()', '#e67e22')}${actBtn('선택 해제', 'Settle.clearBidSel()', '#7f8c8d')}</span></div>`;
+}
+function toggleBidSel(k, on) { if (on) state.bidSel.add(k); else state.bidSel.delete(k); renderBidBar(); }
+function clearBidSel() { state.bidSel = new Set(); renderStorage(); }
+
+function openBidModal(k, uid) {
+    const mine = myUsers();
+    if (!mine.length) { alert('먼저 출석 체크 탭의 [⭐ 내 이름] 버튼으로 내 이름을 등록해 주세요.\n(내 이름으로 등록한 캐릭터로 입찰합니다)'); return; }
+    const keys = k ? [k] : Array.from(state.bidSel);
+    const items = keys.map(stById).filter(it => it && !it.sold);
+    if (!items.length) { alert(k ? '이미 판매된 아이템이라 입찰할 수 없습니다.' : '입찰할 아이템을 먼저 체크하세요.'); return; }
+    const who = (uid !== undefined && uid !== null) ? mine.filter(u => Number(u.id) === Number(uid)) : mine;
+    if (!who.length) { alert('이 입찰의 캐릭터가 내 이름에 등록되어 있지 않습니다.'); return; }
+    const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
+    showModal(`
+        <h3 style="margin:0 0 6px; color:#2c3e50;">🙋 입찰 신청</h3>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">아이템마다 입찰가(${UNIT})를 적어 신청하세요. 낙찰자는 <b>관리자가 확인한 뒤 확정</b>합니다. 확정 전에는 입찰가를 고치거나 취소할 수 있어요. 입찰하지 않을 아이템은 입찰가를 비워 두세요.</p>
+        <label style="${lab}">입찰 캐릭터</label>
+        ${who.length > 1
+            ? `<select id="settle-bid-char" onchange="Settle.bidCharChange()" style="${inputStyle}">${who.map(u => `<option value="${Number(u.id)}">${esc(u.name)}</option>`).join('')}</select>`
+            : `<input type="hidden" id="settle-bid-char" value="${Number(who[0].id)}"><div style="font-weight:bold;">${esc(who[0].name)}${serverBadge(who[0].server)}</div>`}
+        <div id="settle-bid-rows">
+            ${items.map(it => `<div data-bk="${esc(sid(it.id))}" style="border:1px solid #eee; border-radius:8px; padding:8px 10px; margin-top:8px;">
+                <div style="font-weight:bold; color:#2c3e50;">${esc(it.itemName)}</div>
+                <div style="font-size:0.76rem; color:#7f8c8d;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}</div>
+                <div style="display:flex; align-items:center; gap:6px; margin-top:6px;"><span style="font-size:0.85rem;">입찰가</span><input type="number" min="1" max="${BID_MAX}" step="1" placeholder="예: 800" style="${inputStyle} flex:1; text-align:right;"><span style="font-size:0.85rem;">${UNIT}</span></div>
+            </div>`).join('')}
+        </div>
+        <div style="display:flex; gap:8px; margin-top:16px;">
+            ${actBtn('🙋 입찰 신청 제출', 'Settle.submitBids()', '#e67e22').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
+        </div>`);
+    bidCharChange();
+}
+function bidCharChange() {                                     // 캐릭터를 바꾸면 그 캐릭터가 이미 낸 입찰가를 채워 줌
+    const sel = $('settle-bid-char');
+    if (!sel) return;
+    document.querySelectorAll('#settle-bid-rows [data-bk]').forEach(row => {
+        const it = stById(row.dataset.bk), b = it ? (state.bids[String(sel.value)] || {})[String(it.id)] : null;
+        row.querySelector('input').value = b ? String(b.amount) : '';
+    });
+}
+async function submitBids() {
+    const sel = $('settle-bid-char');
+    const me = sel ? myUsers().find(u => Number(u.id) === Number(sel.value)) : null;
+    if (!me) { alert('입찰할 캐릭터를 선택하세요. (내 이름으로 등록한 캐릭터만 가능합니다)'); return; }
+    const entries = [];
+    for (const row of Array.from(document.querySelectorAll('#settle-bid-rows [data-bk]'))) {
+        const raw = row.querySelector('input').value.trim();
+        if (raw === '') continue;
+        const amt = Number(raw);
+        if (!Number.isInteger(amt) || amt < 1 || amt > BID_MAX) { alert('입찰가는 1 이상의 정수(' + UNIT + ')로 입력하세요.'); return; }
+        entries.push({ k: row.dataset.bk, amt: amt });
+    }
+    if (!entries.length) { alert('입찰가를 한 개 이상 입력하세요. (비워 둔 아이템은 신청하지 않습니다)'); return; }
+    const updates = {}, done = [], skipped = [];
+    for (const e of entries) {
+        const it = await stFresh(e.k);
+        if (!it || it.sold) { skipped.push(it ? it.itemName : '(삭제된 아이템)'); continue; }
+        const old = (state.bids[String(me.id)] || {})[String(it.id)];
+        updates['boss_bids/' + me.id + '/' + it.id] = { itemId: String(it.id), itemName: it.itemName, bossName: it.bossName || '', date: it.date || '', userId: Number(me.id), name: me.name, amount: e.amt, createdAt: (old && old.createdAt) || nowIso(), updatedAt: nowIso() };
+        done.push(e.k);
+    }
+    if (!done.length) { alert('입찰할 수 있는 아이템이 없습니다. 모두 이미 판매되었거나 삭제되었습니다.'); closeModal(); return; }
+    try { await db.ref().update(updates); }
+    catch (err) { alert('❌ 입찰 신청 실패: ' + err.message); return; }
+    done.forEach(k => state.bidSel.delete(k));
+    closeModal();
+    renderStorage();
+    alert('✅ ' + done.length + '건 입찰 신청을 접수했습니다.\n관리자가 확정하면 결과가 아이템 카드에 표시됩니다.' + (skipped.length ? '\n\n⚠️ 이미 판매되어 제외됨: ' + skipped.join(', ') : ''));
+}
+async function cancelMyBid(k, uid) {
+    const it = stById(k);
+    const me = myUsers().find(u => Number(u.id) === Number(uid));
+    if (!it || !me) return;
+    if (it.sold) { alert('이미 판매가 끝나 입찰을 취소할 수 없습니다.'); return; }
+    if (!confirm('"' + it.itemName + '" 입찰을 취소할까요? (' + me.name + ')')) return;
+    try { await db.ref('boss_bids/' + me.id + '/' + it.id).remove(); }
+    catch (err) { alert('❌ 취소 실패: ' + err.message); }
+}
+
+// ── 관리자: 입찰 신청 확인 · 낙찰 확정 ──
+async function openBidAdmin(k) {
+    if (!(await requireAdmin())) return;
+    state.bidAdmin = k ? String(k) : 'all';
+    renderBidAdmin();
+    const a = $('settle-bids-area'); if (a && a.scrollIntoView) a.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function closeBidAdmin() { state.bidAdmin = ''; renderBidAdmin(); }
+function renderBidAdmin() {
+    const box = $('settle-bids-area');
+    if (!box) return;
+    if (!state.bidAdmin || !isAdmin) { box.innerHTML = ''; return; }
+    const groups = {};
+    pendingBids().forEach(x => {
+        if (state.bidAdmin !== 'all' && sid(x.it.id) !== state.bidAdmin) return;
+        (groups[x.it.id] = groups[x.it.id] || { it: x.it, bids: [] }).bids.push(x.b);
+    });
+    const gl = Object.keys(groups).map(id => groups[id]).sort((a, b) => Math.max.apply(null, b.bids.map(x => Date.parse(x.updatedAt) || 0)) - Math.max.apply(null, a.bids.map(x => Date.parse(x.updatedAt) || 0)));
+    const when = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+    box.innerHTML = `
+    <div style="border:2px solid #e67e22; border-radius:10px; overflow:hidden; margin-bottom:12px;">
+        <div style="background:#e67e22; color:white; padding:10px 14px; display:flex; justify-content:space-between; align-items:center;">
+            <b style="font-size:0.95rem;">🙋 입찰 신청 ${state.bidAdmin === 'all' ? '' : '(아이템 하나)'}</b>
+            ${actBtn('닫기', 'Settle.closeBidAdmin()', '#d35400')}
+        </div>
+        <div style="padding:8px 12px 12px;">
+            <div style="font-size:0.76rem; color:#7f8c8d; margin:4px 0 8px; line-height:1.5;">입찰가가 높은 순서입니다. [낙찰 확정]을 누르면 그 사람이 낙찰자·낙찰가로 기록되어 아이템이 판매완료가 되고, 이후 정산 계산 대상이 됩니다. 나머지 입찰은 낙찰 실패로 표시됩니다.</div>
+            ${gl.length ? gl.map(g => {
+                const bs = g.bids.slice().sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+                return `<div style="border:1px solid #f0e0cc; border-radius:8px; padding:8px 10px; margin-top:8px;">
+                    <div style="font-weight:bold; color:#2c3e50;">${esc(g.it.itemName)} <span style="font-size:0.75rem; color:#7f8c8d; font-weight:normal;">입찰 ${bs.length}건</span></div>
+                    <div style="font-size:0.76rem; color:#7f8c8d;">📅 ${esc(g.it.date)} ⚔️ ${esc(g.it.bossName)} · 획득: ${esc(g.it.winner)}</div>
+                    ${bs.map((b, i) => `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap; padding:6px 0; border-top:1px dashed #eee; margin-top:6px;">
+                        <span style="font-size:0.88rem;">${i === 0 ? '🥇' : (i + 1) + '.'} <b>${esc(b.name)}</b>${serverBadge((userById(b.userId) || {}).server)} <b style="color:#2980b9;">${fmt(b.amount)} ${UNIT}</b>${i === 0 && bs.length > 1 && Number(bs[1].amount) === Number(b.amount) ? ' <span style="font-size:0.72rem; color:#d35400;">(동점 · 먼저 신청한 순)</span>' : ''} <span style="font-size:0.72rem; color:#95a5a6;">${when(b.updatedAt)}</span></span>
+                        <span style="display:flex; gap:4px;">${actBtn('🏆 낙찰 확정', `Settle.confirmBid('${sid(g.it.id)}', ${Number(b.userId)})`, '#27ae60')}${actBtn('🗑️', `Settle.deleteBid('${sid(g.it.id)}', ${Number(b.userId)})`, '#e74c3c')}</span></div>`).join('')}
+                </div>`;
+            }).join('') : '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">대기 중인 입찰 신청이 없습니다.</p>'}
+        </div>
+    </div>`;
+}
+async function confirmBid(k, uid) {
+    if (!(await requireAdmin())) return;
+    const it = stById(k);
+    if (!it) { alert('아이템을 찾을 수 없습니다. (삭제되었을 수 있습니다)'); return; }
+    const b = bidsOfItem(it.id).find(x => Number(x.userId) === Number(uid));
+    if (!b) { alert('입찰 신청을 찾을 수 없습니다. (취소되었을 수 있습니다)'); return; }
+    const others = bidsOfItem(it.id).length - 1;
+    if (!confirm('"' + it.itemName + '" 을(를)\n' + b.name + '님에게 ' + fmt(b.amount) + ' ' + UNIT + '에 낙찰 확정할까요?' + (others > 0 ? '\n(다른 입찰 ' + others + '건은 낙찰 실패로 표시됩니다)' : ''))) return;
+    try {
+        const res = await db.ref('boss_storage/' + it.id).transaction(cur => {        // 그 사이 다른 담당자가 먼저 판매했다면 중단
+            if (!cur || cur.sold) return;
+            cur.sold = true; cur.bidPrice = Number(b.amount); cur.buyer = b.name; cur.buyerId = Number(b.userId); cur.soldAt = nowIso();
+            return cur;
+        });
+        if (!res.committed) { alert('이미 판매되었거나 삭제된 아이템입니다.'); return; }
+    } catch (err) { alert('❌ 확정 실패: ' + err.message); }
+}
+async function deleteBid(k, uid) {
+    if (!(await requireAdmin())) return;
+    const it = stById(k);
+    const b = it ? bidsOfItem(it.id).find(x => Number(x.userId) === Number(uid)) : null;
+    if (!b) return;
+    if (!confirm(b.name + '님의 "' + it.itemName + '" 입찰(' + fmt(b.amount) + ' ' + UNIT + ')을 삭제할까요?')) return;
+    try { await db.ref('boss_bids/' + b.userId + '/' + it.id).remove(); }
+    catch (err) { alert('❌ 삭제 실패: ' + err.message); }
+}
+
 
 
 
@@ -3333,7 +3575,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
