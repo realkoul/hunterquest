@@ -66,7 +66,7 @@ const state = {
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
     bids: {}, bidSel: new Set(), bidAdmin: '',
-    itemPrices: {}, part: { attendanceWeight: 70, supportWeight: 30 }, partStats: null, partAt: 0, partBusy: false, partWeek: '',   // 아이템별 입찰가 / 참여도 기준 / 이번 주 출석 통계                                                          // 입찰 신청: { 사용자ID: { 아이템ID: 입찰 } } / 체크한 아이템 / 관리자 패널 상태
+    itemPrices: {}, part: { attendanceWeight: 70, supportWeight: 30, exclude: {}, configured: false, ready: false }, partRaw: null, partStats: null, partAt: 0, partBusy: false, partWeek: '',   // 아이템별 입찰가 / 참여도 기준 / 이번 주 출석 통계                                                          // 입찰 신청: { 사용자ID: { 아이템ID: 입찰 } } / 체크한 아이템 / 관리자 패널 상태
                                                                      // 구글시트 백업 상태(Apps Script 가 기록) / 연속 요청 방지
     supportTeam: [], calcSupportPct: 50                                                                  // 지원조 명단(userId[], 관리자만 설정) / 지원조 몫(%)
 };
@@ -212,6 +212,8 @@ function onModeChange() {
     updateNav();
     myAttTick();
     renderBackupCard();
+    partToggleTick();
+    navFit();
     if (state.inited) { syncBidListeners(); refreshAll(); renderSeg(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
     rbRenderUser();
 }
@@ -715,6 +717,7 @@ function renderMyAtt() {
 
 // 1초마다: 이름/명단/주가 바뀌었는지 확인 (이름이 없으면 구독하지 않음)
 function myAttTick() {
+    navFit();
     const box = $('my-attendance-box');
     if (!box || !depsOk()) return;
     if (!myAttUsers().length) {
@@ -2108,7 +2111,9 @@ async function cancelMyBid(k, uid) {
 // ── 참여도 (임시 기준) ──
 //   참여도 = 이번 주(수~화) 출석률(%) × 출석 반영 비율(%) + (지원조이면) 지원조 가산점
 //   출석률은 통계 탭·내 출석과 같은 calculateStats() 값. 반영 비율·가산점은 관리자가 ⚙️ 에서 조정 (hunter_config/participation)
+//   보스별로 출석률 계산에 넣을지도 고를 수 있음: excludeBosses = { 보스이름키: 보스이름 } — 제외한 보스의 출석 기록은 참여도의 출석률에서만 빠짐 (통계 탭은 그대로)
 const PART_DEFAULT = { attendanceWeight: 70, supportWeight: 30 };
+const PART_DEFAULT_EXCLUDE_WORDS = ['신념', '무너지는섬', '마스터지배', '마족'];      // 처음(기본값) 설정에서 출석률에서 빼는 보스: 이름(공백 제거)에 이 글자가 들어 있으면 제외. 오만 보스 등은 모두 포함
 let partOn = false;
 function ensureParticipation() {
     if (partOn || !depsOk()) return;
@@ -2116,8 +2121,12 @@ function ensureParticipation() {
     db.ref('hunter_config/participation').on('value', snap => {
         const v = snap.val() || {};
         const num = (x, d) => { const n = Number(x); return (x === undefined || x === null || isNaN(n)) ? d : Math.max(0, Math.min(100, n)); };
-        state.part = { attendanceWeight: num(v.attendanceWeight, PART_DEFAULT.attendanceWeight), supportWeight: num(v.supportWeight, PART_DEFAULT.supportWeight) };
-        renderBidAdmin();
+        const ex = {};
+        if (v.excludeBosses && typeof v.excludeBosses === 'object') Object.keys(v.excludeBosses).forEach(k => { if (v.excludeBosses[k]) ex[k] = String(v.excludeBosses[k]); });
+        const configured = v.bossesConfigured === true || Object.keys(ex).length > 0;                // 예전 방식으로 저장된 제외 목록도 "설정함"으로 취급
+        state.part = { attendanceWeight: num(v.attendanceWeight, PART_DEFAULT.attendanceWeight), supportWeight: num(v.supportWeight, PART_DEFAULT.supportWeight), exclude: ex, configured: configured, ready: true };
+        if (state.partRaw) partCompute(); else renderBidAdmin();
+        partToggleTick();
     });
 }
 function partOf(userId) {
@@ -2129,7 +2138,38 @@ function partOf(userId) {
     const r1 = (x) => Math.round(x * 10) / 10;
     return { raw: att + sup, score: r1(att + sup), rate: r1(rate), have: have, team: team, att: r1(att), sup: sup, loaded: !!state.partStats };
 }
-async function partLoad(force) {                               // 이번 주 출석 기록을 한 번 읽어 통계 탭과 같은 방식으로 계산 (1분 안에는 다시 읽지 않음)
+
+function partDefaultExclude() {                                // 기본값으로 제외할 보스 (지금 일정에 있는 보스 중)
+    const m = {};
+    getSchedules().forEach(sch => { if (sch && sch.name && PART_DEFAULT_EXCLUDE_WORDS.some(w => normName(sch.name).indexOf(w) >= 0)) m[tagKey(sch.name)] = String(sch.name); });
+    return m;
+}
+function partExcludeMap() { return state.part.configured ? (state.part.exclude || {}) : partDefaultExclude(); }      // 지금 적용 중인 제외 목록
+function partBossGroups() {                                    // 일정에서 보스 이름별로 묶음 (같은 보스가 요일마다 있어도 하나)
+    const m = new Map();
+    getSchedules().forEach(sch => {
+        if (!sch || !sch.name) return;
+        const key = tagKey(sch.name), e = m.get(key) || { key: key, name: String(sch.name), ids: [] };
+        e.ids.push(String(sch.id)); m.set(key, e);
+    });
+    const exm = partExcludeMap();
+    Object.keys(exm).forEach(k => { if (!m.has(k)) m.set(k, { key: k, name: exm[k], ids: [] }); });   // 지금은 없는 보스를 제외해 둔 경우도 목록에 남김
+    return Array.from(m.values()).sort((a, b) => numCmp(a.name, b.name));
+}
+function partCompute() {                                       // 이미 읽은 이번 주 출석에서 제외한 보스의 기록을 뺀 뒤 통계 탭과 같은 방식으로 계산
+    if (!state.partRaw || typeof calculateStats !== 'function') return;
+    const ex = partExcludeMap(), skip = new Set();
+    partBossGroups().forEach(g => { if (ex[g.key]) g.ids.forEach(id => skip.add(id)); });
+    const data = {};
+    Object.keys(state.partRaw).forEach(k => { if (!skip.has(k.split('_').slice(1).join('_'))) data[k] = state.partRaw[k]; });
+    const log = console.log; console.log = function () {};
+    let stats = null;
+    try { stats = calculateStats(data).userStats; } catch (e) { stats = null; } finally { console.log = log; }
+    state.partStats = stats || {};
+    renderBidAdmin();
+}
+
+async function partLoad(force) {                               // 이번 주 출석 기록을 한 번 읽어 둠 (1분 안에는 다시 읽지 않음). 계산은 partCompute
     if (!isAdmin || state.partBusy || typeof getWeekStart !== 'function' || typeof calculateStats !== 'function' || typeof formatLocalDate !== 'function') return;
     if (!force && state.partAt && Date.now() - state.partAt < 60000) return;
     state.partBusy = true;
@@ -2138,13 +2178,13 @@ async function partLoad(force) {                               // 이번 주 출
         we.setDate(ws.getDate() + 6);
         const a = formatLocalDate(ws), b = formatLocalDate(we);
         const snap = await db.ref('boss_attendance').orderByKey().startAt(a).endAt(b + '\uf8ff').once('value');
-        const log = console.log; console.log = function () {};
-        let stats = null;
-        try { stats = calculateStats(snap.val() || {}).userStats; } catch (e) { stats = null; } finally { console.log = log; }
-        state.partStats = stats || {};
+        state.partRaw = snap.val() || {};
         state.partAt = Date.now();
         state.partWeek = '수 ' + md(ws) + ' ~ 화 ' + md(we);
-    } catch (e) { state.partStats = state.partStats || {}; state.partAt = Date.now(); }      // 읽기에 실패해도 1분 동안은 다시 시도하지 않음 (무한 반복 방지)
+        state.partBusy = false;
+        partCompute();
+        return;
+    } catch (e) { state.partRaw = state.partRaw || {}; state.partStats = state.partStats || {}; state.partAt = Date.now(); }      // 읽기에 실패해도 1분 동안은 다시 시도하지 않음 (무한 반복 방지)
     state.partBusy = false;
     renderBidAdmin();
 }
@@ -2159,6 +2199,13 @@ async function openPartSettings() {
         <input type="number" id="settle-part-att" min="0" max="100" step="1" value="${p.attendanceWeight}" oninput="Settle.partDemo()" style="${inputStyle}">
         <label style="${lab}">지원조 가산점 (점)</label>
         <input type="number" id="settle-part-sup" min="0" max="100" step="1" value="${p.supportWeight}" oninput="Settle.partDemo()" style="${inputStyle}">
+        <label style="${lab}">출석률에 넣을 보스</label>
+        <div style="font-size:0.74rem; color:#7f8c8d; line-height:1.5; margin-bottom:5px;">체크를 끈 보스의 출석 기록은 <b>참여도의 출석률 계산에서만</b> 빠집니다. (통계 탭의 출석률에는 영향 없음)<br>처음(기본값)에는 <b>신념 · 무너지는 섬 · 마스터 지배 · 마족</b> 보스가 빠져 있고 오만 등 나머지는 모두 포함입니다.</div>
+        <div id="settle-part-bosses" style="max-height:190px; overflow-y:auto; border:1px solid #eee; border-radius:8px; padding:2px 10px;">${(() => {
+            const gs = partBossGroups(), ex = partExcludeMap();
+            return gs.length ? gs.map(g => `<label style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #f3f3f3; font-size:0.88rem; cursor:pointer;"><input type="checkbox" data-pk="${esc(g.key)}" data-pn="${esc(g.name)}" ${ex[g.key] ? '' : 'checked'} style="${cbStyle}"> <span style="flex:1; min-width:0; word-break:break-all;">${esc(g.name)}</span></label>`).join('') : '<div style="padding:10px 0; color:#95a5a6; font-size:0.84rem;">등록된 보스가 없습니다.</div>';
+        })()}</div>
+        <div style="margin-top:6px;">${actBtn('모두 포함', 'Settle.partBossAll()', '#16a085')}</div>
         <div id="settle-part-demo" style="margin-top:10px; font-size:0.8rem; color:#555; line-height:1.6;"></div>
         <div style="display:flex; gap:8px; margin-top:14px;">
             ${actBtn('저장', 'Settle.savePartSettings()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
@@ -2167,6 +2214,125 @@ async function openPartSettings() {
         </div>`);
     partDemo();
 }
+function partBossAll() { document.querySelectorAll('#settle-part-bosses input[type=checkbox]').forEach(c => { c.checked = true; }); }
+
+// ── 출석 체크 화면 맨 아래 (관리자 모드): 지금 보고 있는 보스를 참여도 출석률에 넣을지 바로 체크 ──
+function initPartToggle() {
+    const tbl = $('attendance-table');
+    if (!tbl || $('part-toggle-box')) return;
+    const holder = (tbl.parentElement && tbl.parentElement.parentElement) || $('tab-attendance');        // 출석 표를 감싼 영역 (표 바로 아래)
+    const box = document.createElement('div');
+    box.id = 'part-toggle-box';
+    box.style.cssText = 'display:none; margin-top:14px;';
+    holder.appendChild(box);
+    afterAuth(() => { partToggleTick(); setInterval(partToggleTick, 1000); });
+}
+function partCurrentBoss() {                                   // 출석 화면이 보여 주는 보스(일정)
+    const id = (typeof currentScheduleId !== 'undefined') ? currentScheduleId : null;
+    return id ? (getSchedules().find(x => String(x.id) === String(id)) || null) : null;
+}
+function partToggleTick() {
+    const box = $('part-toggle-box');
+    if (!box) return;
+    if (!isAdmin || !depsOk()) { if (box.style.display !== 'none' || box.innerHTML) { box.style.display = 'none'; box.innerHTML = ''; box.dataset.sig = ''; } return; }
+    ensureParticipation();
+    const sch = partCurrentBoss(), key = sch ? tagKey(sch.name) : '', ex = partExcludeMap();
+    const sig = [state.part.ready ? 'r' : 'w', key, sch ? sch.name : '', key && ex[key] ? 'x' : 'o', state.part.configured ? 'c' : 'd'].join('|');
+    if (box.dataset.sig === sig && box.style.display !== 'none') return;
+    box.dataset.sig = sig;
+    box.style.display = 'block';
+    const head = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;"><span style="font-weight:bold; color:#6c3483; font-size:0.9rem;">📊 참여도 출석률 반영 <span style="font-weight:normal; color:#95a5a6; font-size:0.74rem;">관리자 전용</span></span>${actBtn('⚙️ 전체 설정', 'Settle.openPartSettings()', '#8e44ad')}</div>`;
+    let body;
+    if (!sch) body = '<div style="margin-top:8px; font-size:0.82rem; color:#7f8c8d;">보스를 선택하면, 그 보스의 출석을 참여도의 출석률에 넣을지 여기서 정할 수 있습니다.</div>';
+    else if (!state.part.ready) body = '<div style="margin-top:8px; font-size:0.82rem; color:#95a5a6;">설정을 불러오는 중…</div>';
+    else {
+        const inc = !ex[key];
+        body = `<label style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer; font-size:0.92rem;"><input type="checkbox" id="part-toggle-cb" ${inc ? 'checked' : ''} onchange="Settle.partToggleBoss('${esc(key)}', this.checked)" style="${cbStyle} accent-color:#8e44ad;"> <span><b>${esc(sch.name)}</b> 출석을 참여도 출석률에 넣기</span></label>
+            <div style="margin-top:5px; font-size:0.78rem; line-height:1.5; color:${inc ? '#27ae60' : '#c0392b'};">${inc ? '✅ 포함됨 — 이 보스의 출석이 참여도의 출석률 계산에 들어갑니다.' : '⛔ 제외됨 — 이 보스의 출석은 참여도의 출석률에서 빠집니다.'}</div>
+            <div style="margin-top:2px; font-size:0.72rem; color:#95a5a6; line-height:1.5;">이름이 같은 보스는 요일과 상관없이 함께 적용되고, 통계 탭의 출석률에는 영향이 없습니다.${state.part.configured ? '' : ' (지금은 기본값: 신념·무너지는 섬·마스터 지배·마족 제외)'}</div>`;
+    }
+    box.innerHTML = `<div style="border:1.5px solid #d6c3ea; background:#faf5ff; border-radius:10px; padding:10px 12px;">${head}${body}</div>`;
+}
+async function partToggleBoss(key, include) {                  // 체크 칸: 한 보스를 출석률에 넣거나 뺌 (기본값 상태에서 처음 바꾸면 기본 제외 목록 위에 반영해 저장)
+    if (!(await requireAdmin())) { partToggleTick(); return; }
+    const g = partBossGroups().find(x => x.key === key);
+    const ex = Object.assign({}, partExcludeMap());
+    if (include) delete ex[key]; else ex[key] = g ? g.name : key;
+    const groups = partBossGroups();
+    if (groups.length && groups.every(x => ex[x.key])) { alert('최소 한 개 보스는 출석률에 포함해야 합니다.'); const box = $('part-toggle-box'); if (box) box.dataset.sig = ''; partToggleTick(); return; }
+    const rec = { attendanceWeight: state.part.attendanceWeight, supportWeight: state.part.supportWeight, bossesConfigured: true };
+    if (Object.keys(ex).length) rec.excludeBosses = ex;
+    try { await db.ref('hunter_config/participation').set(rec); }
+    catch (e) { alert('❌ 저장 실패: ' + e.message); const box = $('part-toggle-box'); if (box) box.dataset.sig = ''; partToggleTick(); }
+}
+
+// ============================================================
+// 📖 사이트이용법 탭 — 길드원용 안내(같은 폴더의 guide.html)를 탭을 처음 열 때 한 번만 불러와 보여줌
+//   · 안내는 iframe 으로 보여줘서 앱의 스타일과 섞이지 않고, 높이는 안내 내용에 맞춰 자동으로 늘림 (안쪽 스크롤 없음)
+//   · guide.html 이 없거나 열리지 못하면 안내 문구와 [다시 시도] 버튼
+//   · 하단 메뉴가 7개(관리자)일 때는 글자를 조금 줄여 겹치지 않게 함
+// ============================================================
+const guide = { loaded: false, loading: false };
+function navFit() {                                            // 보이는 메뉴가 7개 이상이면 좁은 화면용 글자 크기
+    const nav = document.querySelector('.bottom-nav');
+    if (!nav) return;
+    const n = Array.from(nav.children).filter(b => b.style.display !== 'none').length;
+    nav.classList.toggle('nav-dense', n >= 7);
+}
+function guideLoad(retry) {
+    const f = $('guide-frame'), m = $('guide-msg');
+    if (!f || !m) return;
+    guide.loading = true; guide.loaded = false;
+    m.style.display = 'block'; m.textContent = '불러오는 중…';
+    f.style.display = 'none';
+    f.src = 'guide.html' + (retry ? '?r=' + Date.now() : '');
+}
+function guideLoaded() {
+    const f = $('guide-frame'), m = $('guide-msg');
+    if (!f || !m || !f.getAttribute('src')) return;            // 아직 주소를 넣기 전의 빈 프레임은 무시
+    let doc = null;
+    try { doc = f.contentDocument; } catch (e) { doc = null; }
+    guide.loading = false;
+    if (!doc || !doc.querySelector('[data-guide]')) {          // 안내 파일이 아니면(없거나 오류 페이지) 실패 처리
+        guide.loaded = false;
+        f.style.display = 'none';
+        m.style.display = 'block';
+        m.innerHTML = '사이트 이용 안내를 불러오지 못했습니다.<br><span style="font-size:0.8rem; color:#95a5a6;">잠시 뒤에 다시 시도해 주세요. 계속 안 되면 운영진에게 알려 주세요.</span><br><button class="btn btn-primary" onclick="Settle.guideRetry()" style="margin-top:12px; width:auto; padding:8px 18px;">다시 시도</button>';
+        return;
+    }
+    guide.loaded = true;
+    m.style.display = 'none';
+    f.style.display = 'block';
+    guideSize(); setTimeout(guideSize, 300); setTimeout(guideSize, 1200);
+}
+function guideSize() {                                         // 안내 내용의 실제 높이에 맞춰 칸을 늘림
+    const f = $('guide-frame');
+    if (!f || !guide.loaded || f.style.display === 'none') return;
+    try {
+        const d = f.contentDocument, h = Math.max(d.documentElement.scrollHeight, d.body ? d.body.scrollHeight : 0);
+        if (h > 80) f.style.height = h + 'px';
+    } catch (e) { /* 무시 */ }
+}
+function guideRetry() { guideLoad(true); }
+function initGuide() {
+    if (!document.getElementById('settle-nav-css')) {
+        const st = document.createElement('style');
+        st.id = 'settle-nav-css';
+        st.textContent = '.bottom-nav-item{min-width:0;padding-left:1px;padding-right:1px;text-align:center;line-height:1.2;word-break:keep-all;}.bottom-nav.nav-dense .bottom-nav-item{font-size:0.6rem;}.bottom-nav.nav-dense .bottom-nav-item .nav-icon{font-size:1.1rem;}';
+        document.head.appendChild(st);
+    }
+    navFit();
+    const tab = $('tab-guide'), frame = $('guide-frame');
+    if (!tab || !frame) return;
+    const open = () => { if (guide.loaded) guideSize(); else if (!guide.loading) guideLoad(false); };
+    let was = tab.classList.contains('active');
+    new MutationObserver(() => { const now = tab.classList.contains('active'); if (now && !was) open(); was = now; }).observe(tab, { attributes: true, attributeFilter: ['class'] });
+    frame.addEventListener('load', guideLoaded);
+    window.addEventListener('resize', () => guideSize());
+    if (was) open();
+}
+
+
 function partDemo() {                                          // 입력한 값으로 계산 예시를 바로 보여 줌
     const el = $('settle-part-demo'), a = Number(($('settle-part-att') || {}).value), s = Number(($('settle-part-sup') || {}).value);
     if (!el) return;
@@ -2177,8 +2343,13 @@ function partDemo() {                                          // 입력한 값�
 async function savePartSettings() {
     const a = Number($('settle-part-att').value), s = Number($('settle-part-sup').value);
     if ($('settle-part-att').value.trim() === '' || $('settle-part-sup').value.trim() === '' || isNaN(a) || isNaN(s) || a < 0 || a > 100 || s < 0 || s > 100) { alert('두 값 모두 0~100 사이의 숫자로 입력하세요.'); return; }
+    const boxes = Array.from(document.querySelectorAll('#settle-part-bosses input[type=checkbox]')), excl = {};
+    boxes.forEach(c => { if (!c.checked) excl[c.dataset.pk] = c.dataset.pn; });
+    if (boxes.length && Object.keys(excl).length === boxes.length) { alert('최소 한 개 보스는 출석률에 포함해야 합니다.'); return; }
     if (!(await requireAdmin())) return;
-    try { await db.ref('hunter_config/participation').set({ attendanceWeight: a, supportWeight: s }); closeModal(); }
+    const rec = { attendanceWeight: a, supportWeight: s, bossesConfigured: true };                 // 한 번 저장하면 기본 제외 목록 대신 여기서 고른 대로
+    if (Object.keys(excl).length) rec.excludeBosses = excl;
+    try { await db.ref('hunter_config/participation').set(rec); closeModal(); }
     catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 async function resetPartSettings() {
@@ -2217,7 +2388,7 @@ function renderBidAdmin() {
             <span style="display:flex; gap:6px;">${actBtn('⚙️ 참여도 기준', 'Settle.openPartSettings()', '#d35400')}${actBtn('🔄', 'Settle.partRefresh()', '#d35400')}${actBtn('닫기', 'Settle.closeBidAdmin()', '#d35400')}</span>
         </div>
         <div style="padding:8px 12px 12px;">
-            <div style="font-size:0.76rem; color:#7f8c8d; margin:4px 0 4px; line-height:1.55;"><b>참여도가 높은 순서</b>입니다. 참여도 = 이번 주 출석률 × ${P.attendanceWeight}% + 지원조 가산점 ${P.supportWeight}점 <span style="color:#d35400;">(임시 기준 · ⚙️에서 조정)</span><br>출석 기준: ${state.partWeek ? esc(state.partWeek) : (state.partBusy ? '불러오는 중…' : '-')}${state.partAt ? ' · ' + when(new Date(state.partAt).toISOString()) + ' 기준' : ''}</div>
+            <div style="font-size:0.76rem; color:#7f8c8d; margin:4px 0 4px; line-height:1.55;"><b>참여도가 높은 순서</b>입니다. 참여도 = 이번 주 출석률 × ${P.attendanceWeight}% + 지원조 가산점 ${P.supportWeight}점 <span style="color:#d35400;">(임시 기준 · ⚙️에서 조정)</span><br>출석 기준: ${state.partWeek ? esc(state.partWeek) : (state.partBusy ? '불러오는 중…' : '-')}${state.partAt ? ' · ' + when(new Date(state.partAt).toISOString()) + ' 기준' : ''}${Object.keys(partExcludeMap()).length ? '<br>출석률에서 제외한 보스: <b>' + esc(Object.keys(partExcludeMap()).map(k => partExcludeMap()[k]).join(', ')) + '</b>' + (state.part.configured ? '' : ' <span style="color:#95a5a6;">(기본값)</span>') : ''}</div>
             <div style="font-size:0.76rem; color:#7f8c8d; margin:0 0 8px; line-height:1.5;">[낙찰 확정]을 누르면 그 사람이 낙찰자로 기록되고 아이템이 판매완료가 되며, 낙찰가는 아이템에 정해 둔 입찰가가 됩니다. 이후 정산 계산 대상이 됩니다. 나머지 입찰은 낙찰 실패로 표시됩니다.</div>
             ${gl.length ? gl.map(g => {
                 const bs = g.bids.map(x => ({ b: x, p: partOf(x.userId) })).sort((a, c) => c.p.raw - a.p.raw || String(a.b.createdAt || '').localeCompare(String(c.b.createdAt || '')));
@@ -3722,7 +3893,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, openPartSettings, partDemo, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, openPartSettings, partDemo, partBossAll, partToggleBoss, guideRetry, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
@@ -3733,5 +3904,7 @@ initAdminItems(); // 관리 탭의 [보스 아이템 설정] 편집기
 initUserReimb();  // 사용자용 [복구비] 탭
 initMyAtt();      // 출석 탭의 [내 출석]
 initBackupAdmin(); // 관리 탭의 [아이템/정산 구글 백업]
+initPartToggle();  // 출석 탭 맨 아래의 [참여도 출석률 반영] (관리자)
+initGuide();       // 하단 메뉴 [사이트이용법] 탭
 updateNav();      // 정산 메뉴는 관리자·담당자에게만
 })();

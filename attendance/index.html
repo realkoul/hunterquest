@@ -71,13 +71,16 @@
             <span class="nav-icon">💸</span>복구비
         </button>
         <button class="bottom-nav-item" id="nav-settle" onclick="switchTab('settle')" style="display:none;">
-            <span class="nav-icon">💰</span>아이템/정산
+            <span class="nav-icon">💰</span>아이템/<wbr>정산
         </button>
         <button class="bottom-nav-item" id="nav-schedules" onclick="switchTab('schedules')">
             <span class="nav-icon">📊</span>주간 현황
         </button>
         <button class="bottom-nav-item" id="nav-stats" onclick="switchTab('stats')">
             <span class="nav-icon">📈</span>통계
+        </button>
+        <button class="bottom-nav-item" id="nav-guide" onclick="switchTab('guide')">
+            <span class="nav-icon">📖</span>사이트<wbr>이용법
         </button>
         <button class="bottom-nav-item admin-only" id="nav-users" onclick="switchTab('users')" style="display:none;">
             <span class="nav-icon">⚙️</span>관리
@@ -251,6 +254,16 @@
     <!-- 💰 정산 (관리자·담당자: 아이템 보관함·입찰·정산 / 복구비 관리) — 화면은 settlement.js 가 채움 -->
     <div id="tab-settle" class="tab-content">
         <div id="settle-root"></div>
+    </div>
+
+    <!-- 📖 사이트이용법 (길드원용 안내) — 안내 내용은 같은 폴더의 guide.html, 화면은 settlement.js 가 탭을 처음 열 때 채움 -->
+    <div id="tab-guide" class="tab-content">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #f0f0f0; background:white;">
+            <span style="font-weight:bold; color:#2c3e50; font-size:0.95rem;">📖 사이트이용법</span>
+            <a href="guide.html" target="_blank" rel="noopener" style="font-size:0.8rem; color:#2980b9; font-weight:bold; text-decoration:none; white-space:nowrap;">↗ 새 창으로 열기</a>
+        </div>
+        <div id="guide-msg" style="display:none; padding:22px 16px; text-align:center; color:#7f8c8d; font-size:0.9rem; line-height:1.6;"></div>
+        <iframe id="guide-frame" title="사이트이용법" scrolling="no" style="width:100%; height:520px; border:0; display:block; background:#eef2f7;"></iframe>
     </div>
 
     <!-- Tab 4: 명단 관리 -->
