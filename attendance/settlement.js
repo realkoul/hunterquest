@@ -65,8 +65,9 @@ const state = {
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
+    dist: { minRate: 50, tiers: [{ size: 10, pct: 50 }, { size: 10, pct: 30 }, { size: 10, pct: 20 }], ready: false },   // 분배 기준 (출석률 50% 이상 · 1~10등 50% / 11~20등 30% / 21~30등 20%)
     bids: {}, bidSel: new Set(), bidAdmin: '',
-    itemPrices: {}, part: { attendanceWeight: 70, supportWeight: 30, exclude: {}, configured: false, ready: false }, partRaw: null, partStats: null, partAt: 0, partBusy: false, partWeek: '',   // 아이템별 입찰가 / 참여도 기준 / 이번 주 출석 통계                                                          // 입찰 신청: { 사용자ID: { 아이템ID: 입찰 } } / 체크한 아이템 / 관리자 패널 상태
+    itemPrices: {}, part: { exclude: {}, configured: false, ready: false }, partRaw: null, partStats: null, partAt: 0, partBusy: false, partWeek: '',   // 아이템별 입찰가 / 출석률 설정(제외 보스) / 이번 주 출석 통계                                                          // 입찰 신청: { 사용자ID: { 아이템ID: 입찰 } } / 체크한 아이템 / 관리자 패널 상태
                                                                      // 구글시트 백업 상태(Apps Script 가 기록) / 연속 요청 방지
     supportTeam: [], calcSupportPct: 50                                                                  // 지원조 명단(userId[], 관리자만 설정) / 지원조 몫(%)
 };
@@ -145,7 +146,8 @@ function buildRoot() {
                 <h2 style="font-size:1.05rem; margin:0;">📊 정산</h2>
                 <div id="settle-calc-actions" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
             </div>
-            <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 8px;">판매가 끝난 아이템의 낙찰액을 합산해 선택한 인원에게 배분합니다. (균등 · 지원조 비율 · 서버별 비율, 특정인 금액 직접 지정 가능) 한 번 정산한 아이템은 다시 합산되지 않습니다.</p>
+            <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 8px; line-height:1.55;">판매가 끝난 아이템의 낙찰액은 <b>분배 누적금</b>으로 쌓입니다. <b>[분배 정산]</b>을 누르면 그때의 출석률로 순위별 금액을 계산해 보여주고, <b>[분배 완료]</b>를 누르면 그 달의 개인별 금액으로 확정되어 누적금이 0이 됩니다. (균등 · 지원조 비율 · 서버별 비율 방식도 고를 수 있어요)</p>
+            <div id="settle-accum"></div>
             <div id="settle-calc-area"></div>
             <div id="settle-history-area"></div>
         </div>
@@ -214,6 +216,7 @@ function onModeChange() {
     renderBackupCard();
     partToggleTick();
     renderPartCard(true);
+    renderDistCard(true);
     navFit();
     if (state.inited) { syncBidListeners(); refreshAll(); renderSeg(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
     rbRenderUser();
@@ -254,10 +257,11 @@ function ensureSupportTeam() {
     db.ref('hunter_config/supportTeam').on('value', snap => {
         state.supportTeam = Object.values(snap.val() || {}).map(Number).filter(n => !isNaN(n));
         renderCalcActions();
+        teamRulesRefresh();
         if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
     });
 }
-function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureItemPrices(); ensureStorage(); syncBidListeners(); }
+function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureItemPrices(); ensureDist(); ensureStorage(); syncBidListeners(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -746,6 +750,7 @@ async function adminOpen() {
     state.admLoading = true;
     ensureCatRules(); ensureItemTags(); ensureItemPrices();                      // 아이템별 분류 선택칸에 쓸 분류 목록과 지정 내용
     renderPartCard(true);
+    renderDistCard(true);
     ensureBackupStatus(); renderBackupCard();                // 아이템/정산 구글 백업 카드의 상태
     try { state.admVariants = (await db.ref('boss_variants').once('value')).val() || {}; }
     catch (e) { state.admVariants = {}; }
@@ -1789,18 +1794,31 @@ async function saveManagers() {
 async function openSupportTeam() {
     if (!(await requireAdmin())) return;
     const list = getUsers().slice().sort((a, b) => koCmp(a.name, b.name));
+    const need = (u) => state.supportTeam.includes(Number(u.id)) || u.server === 'support';      // 지원조였거나 서버가 "지원"인 사람은 빼면 서버를 새로 골라야 함
     showModal(`
         <h3 style="margin:0 0 4px; color:#2c3e50;">🤝 지원조 설정</h3>
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px; line-height:1.5;">정산 계산에서 [지원조 비율]을 고르면, 여기서 지정한 사람들이 정해진 비율(%)만큼을 받고 나머지 인원은 그 비율을 뺀 나머지를 나눠 받습니다. 지원조 명단은 관리자만 바꿀 수 있습니다.</p>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 6px; line-height:1.55;">체크한 사람이 <b>지원조</b>입니다. 지원조는 <b>서버가 "지원"으로 고정</b>됩니다. 출석은 다른 사람처럼 <b>[출석하기]를 눌러야</b> 합니다.</p>
+        <p style="font-size:0.8rem; color:#d35400; margin:0 0 10px; line-height:1.55;">지원조에서 <b>뺀 사람은 진기르 / 판도라 중에서 서버를 선택</b>해야 하고, 출석하기를 눌러야 출석됩니다. 지원조 명단은 관리자만 바꿀 수 있습니다.</p>
         <input type="text" id="settle-sup-search" placeholder="이름 검색" oninput="Settle.filterSupportRows()" style="${inputStyle} margin-bottom:8px;">
-        <div id="settle-sup-list" style="max-height:46vh; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
-            ${list.map(u => `<label class="settle-sup-row" data-name="${esc(u.name)}" style="display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid #f3f3f3; cursor:pointer;">
-                <input type="checkbox" style="${cbStyle}" value="${Number(u.id)}" ${state.supportTeam.includes(Number(u.id)) ? 'checked' : ''}> ${esc(u.name)}${serverBadge(u.server)}</label>`).join('')}
+        <div style="display:flex; gap:6px; align-items:center; margin-bottom:8px; flex-wrap:wrap; font-size:0.76rem; color:#7f8c8d;">서버를 골라야 하는 사람 모두: ${actBtn('진기르로', "Settle.supBulk('jingir')", '#3498db')}${actBtn('판도라로', "Settle.supBulk('pandora')", '#9b59b6')}</div>
+        <div id="settle-sup-list" style="max-height:44vh; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
+            ${list.map(u => { const chk = state.supportTeam.includes(Number(u.id)), nd = need(u); return `<div class="settle-sup-row" data-name="${esc(u.name)}" style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 10px; border-bottom:1px solid #f3f3f3;">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; flex:1; min-width:0;"><input type="checkbox" style="${cbStyle}" value="${Number(u.id)}" ${chk ? 'checked' : ''} onchange="Settle.supRowChange(${Number(u.id)})"> <span style="min-width:0; word-break:break-all;">${esc(u.name)}${serverBadge(u.server)}</span></label>
+                <select class="settle-sup-srv" data-uid="${Number(u.id)}" data-need="${nd ? 1 : 0}" style="width:auto; margin:0; padding:4px 6px; border:1.5px solid #e67e22; border-radius:6px; font-size:0.8rem; ${(!chk && nd) ? '' : 'display:none;'}"><option value="">서버 선택</option><option value="jingir">진기르</option><option value="pandora">판도라</option></select>
+            </div>`; }).join('')}
         </div>
         <div style="display:flex; gap:8px; margin-top:14px;">
             ${actBtn('저장', 'Settle.saveSupportTeam()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
             ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
         </div>`);
+}
+function supRowChange(uid) {                                   // 지원조에서 체크를 끄면(서버를 새로 골라야 하는 사람만) 서버 선택칸을 보여 줌
+    const cb = document.querySelector('#settle-sup-list input[type=checkbox][value="' + uid + '"]'), sel = document.querySelector('#settle-sup-list select[data-uid="' + uid + '"]');
+    if (!cb || !sel) return;
+    sel.style.display = (!cb.checked && sel.dataset.need === '1') ? '' : 'none';
+}
+function supBulk(srv) {
+    document.querySelectorAll('#settle-sup-list select.settle-sup-srv').forEach(sel => { if (sel.style.display !== 'none') sel.value = srv; });
 }
 function filterSupportRows() {
     const q = ($('settle-sup-search').value || '').trim();
@@ -1809,8 +1827,18 @@ function filterSupportRows() {
 async function saveSupportTeam() {
     if (!(await requireAdmin())) return;                       // 저장 시점에도 관리자 확인
     const ids = Array.from(document.querySelectorAll('#settle-sup-list input[type=checkbox]')).filter(c => c.checked).map(c => Number(c.value));
+    const idset = new Set(ids), missing = [], updates = {};
+    getUsers().forEach(u => {
+        const uid = Number(u.id);
+        if (idset.has(uid)) { if (u.server !== 'support') updates['boss_attendance_users/' + u.id + '/server'] = 'support'; return; }          // 지원조: 서버는 지원으로 고정
+        if (!(state.supportTeam.includes(uid) || u.server === 'support')) return;
+        const sel = document.querySelector('#settle-sup-list select[data-uid="' + uid + '"]'), v = sel ? sel.value : '';
+        if (v === 'jingir' || v === 'pandora') updates['boss_attendance_users/' + u.id + '/server'] = v; else missing.push(u.name);              // 뺀 사람: 진기르/판도라 중 선택 필수
+    });
+    if (missing.length) { alert('지원조에서 뺀 사람(또는 서버가 지원인 지원조 아닌 사람)은 진기르 또는 판도라 서버를 선택해야 합니다.\n선택이 필요한 사람: ' + missing.slice(0, 8).join(', ') + (missing.length > 8 ? ' 외 ' + (missing.length - 8) + '명' : '')); return; }
+    updates['hunter_config/supportTeam'] = ids.length ? ids : null;
     try {
-        await db.ref('hunter_config/supportTeam').set(ids.length ? ids : null);
+        await db.ref().update(updates);
         closeModal();
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
@@ -1940,9 +1968,9 @@ async function backupNowRequest() {
 }
 
 // ============================================================
-// 🙋 입찰 신청 — 길드원이 보관함 아이템에 입찰을 신청하고, 관리자가 참여도 등을 보고 낙찰자를 확정
+// 🙋 입찰 신청 — 길드원이 보관함 아이템에 입찰을 신청하고, 관리자가 출석률 등을 보고 낙찰자를 확정
 //   · 입찰가는 길드원이 입력하지 않고, 관리자가 아이템 설정에서 아이템 이름별로 정해 둔 값(hunter_config/itemPrices)을 씁니다.
-//   · 순서는 참여도(임시: 이번 주 출석률 × 반영 비율 + 지원조 가산점, 비율·점수는 hunter_config/participation 에서 조정)
+//   · 순서는 이번 주 출석률이 높은 순 (같으면 먼저 신청한 순). 출석률은 통계 탭과 같은 값
 //   boss_bids/{사용자ID}/{아이템ID} = { itemId, itemName, bossName, date, userId, name, amount(신청 당시 입찰가·선택), createdAt, updatedAt }
 //   · 일반 사용자는 내 캐릭터의 노드만 구독합니다 (다른 사람의 입찰가는 내려받지 않음). 관리자는 전체를 구독합니다.
 //   · 낙찰/낙찰 실패/대기 중 표시는 보관함 아이템의 판매 정보(buyerId)로 계산합니다. → 판매를 취소하면 자동으로 "대기 중"으로 돌아갑니다.
@@ -2038,7 +2066,7 @@ function openBidModal(k, uid) {
     const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
     showModal(`
         <h3 style="margin:0 0 6px; color:#2c3e50;">🙋 입찰 신청</h3>
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">아래 아이템에 입찰을 신청합니다. 입찰가는 <b>관리자가 정해 둔 가격</b>이고, 낙찰자는 <b>관리자가 참여도 등을 보고 확정</b>합니다. 확정 전에는 카드에서 신청을 취소할 수 있어요.</p>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">아래 아이템에 입찰을 신청합니다. 입찰가는 <b>관리자가 정해 둔 가격</b>이고, 낙찰자는 <b>관리자가 출석률 등을 보고 확정</b>합니다. 확정 전에는 카드에서 신청을 취소할 수 있어요.</p>
         <label style="${lab}">입찰 캐릭터</label>
         ${who.length > 1
             ? `<select id="settle-bid-char" onchange="Settle.bidCharChange()" style="${inputStyle}">${who.map(u => `<option value="${Number(u.id)}">${esc(u.name)}</option>`).join('')}</select>`
@@ -2110,36 +2138,46 @@ async function cancelMyBid(k, uid) {
     catch (err) { alert('❌ 취소 실패: ' + err.message); }
 }
 
-// ── 참여도 (임시 기준) ──
-//   참여도 = 이번 주(수~화) 출석률(%) × 출석 반영 비율(%) + (지원조이면) 지원조 가산점
-//   출석률은 통계 탭·내 출석과 같은 calculateStats() 값. 반영 비율·가산점은 관리자가 ⚙️ 에서 조정 (hunter_config/participation)
-//   보스별로 출석률 계산에 넣을지도 고를 수 있음: excludeBosses = { 보스이름키: 보스이름 } — 제외한 보스의 출석 기록은 참여도의 출석률에서만 빠짐 (통계 탭은 그대로)
-const PART_DEFAULT = { attendanceWeight: 70, supportWeight: 30 };
-const PART_DEFAULT_EXCLUDE_WORDS = ['신념', '무너지는섬', '마스터지배', '마족'];      // 처음(기본값) 설정에서 출석률에서 빼는 보스: 이름(공백 제거)에 이 글자가 들어 있으면 제외. 오만 보스 등은 모두 포함
+// ── 출석률 설정: 출석률에 넣지 않을 보스 (hunter_config/participation = { excludeBosses: { 보스이름키: 보스이름 }, bossesConfigured }) ──
+//   제외한 보스의 출석 기록은 통계 탭 · 내 출석 · 입찰 순서 · 분배 모두의 출석률에서 빠짐 (calculateStats 래퍼가 반영)
+//   처음(설정을 저장한 적 없음)에는 신념 · 무너지는 섬 · 마스터 지배 · 마족 보스가 빠져 있음
+const PART_DEFAULT_EXCLUDE_WORDS = ['신념', '무너지는섬', '마스터지배', '마족'];      // 처음(기본값)에 출석률에서 빼는 보스: 이름(공백 제거)에 이 글자가 들어 있으면 제외. 오만 보스 등은 모두 포함
 let partOn = false;
 function ensureParticipation() {
     if (partOn || !depsOk()) return;
     partOn = true;
     db.ref('hunter_config/participation').on('value', snap => {
         const v = snap.val() || {};
-        const num = (x, d) => { const n = Number(x); return (x === undefined || x === null || isNaN(n)) ? d : Math.max(0, Math.min(100, n)); };
         const ex = {};
         if (v.excludeBosses && typeof v.excludeBosses === 'object') Object.keys(v.excludeBosses).forEach(k => { if (v.excludeBosses[k]) ex[k] = String(v.excludeBosses[k]); });
         const configured = v.bossesConfigured === true || Object.keys(ex).length > 0;                // 예전 방식으로 저장된 제외 목록도 "설정함"으로 취급
-        state.part = { attendanceWeight: num(v.attendanceWeight, PART_DEFAULT.attendanceWeight), supportWeight: num(v.supportWeight, PART_DEFAULT.supportWeight), exclude: ex, configured: configured, ready: true };
+        state.part = { exclude: ex, configured: configured, ready: true };
         if (state.partRaw) partCompute(); else renderBidAdmin();
         partToggleTick();
         renderPartCard(true);
+        teamRulesRefresh();
     });
 }
-function partOf(userId) {
+
+let distOn = false;
+function ensureDist() {                                        // 분배 기준: hunter_config/distribution = { basePct, minRate }
+    if (distOn || !depsOk()) return;
+    distOn = true;
+    db.ref('hunter_config/distribution').on('value', snap => {
+        const v = snap.val() || {};
+        const num = (x, d) => { const n = Number(x); return (x === undefined || x === null || isNaN(n)) ? d : Math.max(0, Math.min(100, n)); };
+        const tv = v.tiers ? (Array.isArray(v.tiers) ? v.tiers : Object.values(v.tiers)) : null;
+        const tiers = (tv && tv.length === DIST_DEFAULT.tiers.length) ? tv.map((t, i) => ({ size: Math.max(1, Math.floor(Number(t && t.size)) || DIST_DEFAULT.tiers[i].size), pct: (t && !isNaN(Number(t.pct))) ? Math.max(0, Math.min(100, Number(t.pct))) : DIST_DEFAULT.tiers[i].pct })) : DIST_DEFAULT.tiers.map(t => ({ size: t.size, pct: t.pct }));
+        state.dist = { minRate: num(v.minRate, DIST_DEFAULT.minRate), tiers: tiers, ready: true };
+        renderAttendBox();
+        renderDistCard(true);
+    });
+}
+
+function rateOf(userId) {                                      // 이번 주 출석률 (통계 탭과 같은 값, 제외 보스 반영)
     const st = state.partStats ? state.partStats[String(userId)] : null;
-    const have = !!(st && st.serverTotal);
-    const rate = have ? Math.max(0, Math.min(100, Number(st.rate) || 0)) : 0;
-    const team = state.supportTeam.map(Number).includes(Number(userId));
-    const att = rate * state.part.attendanceWeight / 100, sup = team ? state.part.supportWeight : 0;
-    const r1 = (x) => Math.round(x * 10) / 10;
-    return { raw: att + sup, score: r1(att + sup), rate: r1(rate), have: have, team: team, att: r1(att), sup: sup, loaded: !!state.partStats };
+    const have = !!(st && st.serverTotal), raw = have ? Math.max(0, Math.min(100, Number(st.rate) || 0)) : 0;
+    return { raw: raw, rate: Math.round(raw * 10) / 10, have: have, team: isTeamUser({ id: userId }), loaded: !!state.partStats };
 }
 
 function partDefaultExclude() {                                // 기본값으로 제외할 보스 (지금 일정에 있는 보스 중)
@@ -2159,21 +2197,18 @@ function partBossGroups() {                                    // 일정에서 �
     Object.keys(exm).forEach(k => { if (!m.has(k)) m.set(k, { key: k, name: exm[k], ids: [] }); });   // 지금은 없는 보스를 제외해 둔 경우도 목록에 남김
     return Array.from(m.values()).sort((a, b) => numCmp(a.name, b.name));
 }
-function partCompute() {                                       // 이미 읽은 이번 주 출석에서 제외한 보스의 기록을 뺀 뒤 통계 탭과 같은 방식으로 계산
+function partCompute() {                                       // 이미 읽은 이번 주 출석으로 통계 탭과 같은 계산 (제외 보스는 calculateStats 래퍼가 반영)
     if (!state.partRaw || typeof calculateStats !== 'function') return;
-    const ex = partExcludeMap(), skip = new Set();
-    partBossGroups().forEach(g => { if (ex[g.key]) g.ids.forEach(id => skip.add(id)); });
-    const data = {};
-    Object.keys(state.partRaw).forEach(k => { if (!skip.has(k.split('_').slice(1).join('_'))) data[k] = state.partRaw[k]; });
     const log = console.log; console.log = function () {};
     let stats = null;
-    try { stats = calculateStats(data).userStats; } catch (e) { stats = null; } finally { console.log = log; }
+    try { stats = calculateStats(state.partRaw).userStats; } catch (e) { stats = null; } finally { console.log = log; }
     state.partStats = stats || {};
     renderBidAdmin();
+    renderAttendBox();
 }
 
 async function partLoad(force) {                               // 이번 주 출석 기록을 한 번 읽어 둠 (1분 안에는 다시 읽지 않음). 계산은 partCompute
-    if (!isAdmin || state.partBusy || typeof getWeekStart !== 'function' || typeof calculateStats !== 'function' || typeof formatLocalDate !== 'function') return;
+    if (!canManage() || state.partBusy || typeof getWeekStart !== 'function' || typeof calculateStats !== 'function' || typeof formatLocalDate !== 'function') return;
     if (!force && state.partAt && Date.now() - state.partAt < 60000) return;
     state.partBusy = true;
     try {
@@ -2192,36 +2227,17 @@ async function partLoad(force) {                               // 이번 주 출
     renderBidAdmin();
 }
 const PART_LAB = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
-function partFormHtml(pfx) {                                   // 참여도 설정 폼: pfx = 입력칸 ID 머리말 (창: 'settle-part', 관리 탭 카드: 'pa')
-    const p = state.part, gs = partBossGroups(), ex = partExcludeMap();
+function partFormHtml(pfx) {                                   // 출석률 설정 폼(보스 목록): pfx = 입력칸 ID 머리말 ('pa')
+    const gs = partBossGroups(), ex = partExcludeMap();
     return `
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">입찰 신청의 순서를 정하는 참여도 점수의 <b>임시 계산식</b>입니다. 기준이 정해지면 여기서 바꿀 수 있어요.</p>
-        <div style="margin-top:8px; font-size:0.84rem; background:#f8f9fa; border-radius:8px; padding:8px 10px; line-height:1.6;">참여도 = <b>이번 주 출석률(%) × 출석 반영 비율(%)</b> + <b>지원조 가산점</b>(지원조일 때만)</div>
-        <label style="${PART_LAB}">출석 반영 비율 (%)</label>
-        <input type="number" id="${pfx}-att" min="0" max="100" step="1" value="${p.attendanceWeight}" oninput="Settle.partDemo('${pfx}')" style="${inputStyle}">
-        <label style="${PART_LAB}">지원조 가산점 (점)</label>
-        <input type="number" id="${pfx}-sup" min="0" max="100" step="1" value="${p.supportWeight}" oninput="Settle.partDemo('${pfx}')" style="${inputStyle}">
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">출석률에 <b>넣을 보스</b>를 고릅니다. 체크를 끈 보스의 출석 기록은 <b>통계 탭 · 내 출석 · 입찰 순서 · 분배</b>의 출석률에서 모두 빠집니다.<br>처음(기본값)에는 <b>신념 · 무너지는 섬 · 마스터 지배 · 마족</b> 보스가 빠져 있고 오만 등 나머지는 모두 포함입니다.</p>
         <label style="${PART_LAB}">출석률에 넣을 보스</label>
-        <div style="font-size:0.74rem; color:#7f8c8d; line-height:1.5; margin-bottom:5px;">체크를 끈 보스의 출석 기록은 <b>참여도의 출석률 계산에서만</b> 빠집니다. (통계 탭의 출석률에는 영향 없음)<br>처음(기본값)에는 <b>신념 · 무너지는 섬 · 마스터 지배 · 마족</b> 보스가 빠져 있고 오만 등 나머지는 모두 포함입니다.</div>
         <div id="${pfx}-bosses" style="max-height:190px; overflow-y:auto; border:1px solid #eee; border-radius:8px; padding:2px 10px;">${gs.length ? gs.map(g => `<label style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #f3f3f3; font-size:0.88rem; cursor:pointer;"><input type="checkbox" data-pk="${esc(g.key)}" data-pn="${esc(g.name)}" ${ex[g.key] ? '' : 'checked'} style="${cbStyle}"> <span style="flex:1; min-width:0; word-break:break-all;">${esc(g.name)}</span></label>`).join('') : '<div style="padding:10px 0; color:#95a5a6; font-size:0.84rem;">등록된 보스가 없습니다.</div>'}</div>
-        <div style="margin-top:6px;">${actBtn('모두 포함', `Settle.partBossAll('${pfx}')`, '#16a085')}</div>
-        <div id="${pfx}-demo" style="margin-top:10px; font-size:0.8rem; color:#555; line-height:1.6;"></div>`;
+        <div style="margin-top:6px;">${actBtn('모두 포함', `Settle.partBossAll('${pfx}')`, '#16a085')}</div>`;
 }
-async function openPartSettings() {
-    if (!(await requireAdmin())) return;
-    showModal(`
-        <h3 style="margin:0 0 6px; color:#2c3e50;">⚙️ 참여도 기준</h3>
-        ${partFormHtml('settle-part')}
-        <div style="display:flex; gap:8px; margin-top:14px;">
-            ${actBtn('저장', "Settle.savePartSettings('settle-part')", '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
-            ${actBtn('기본값(' + PART_DEFAULT.attendanceWeight + '·' + PART_DEFAULT.supportWeight + ')', "Settle.resetPartSettings('settle-part')", '#7f8c8d').replace('padding:6px 11px', 'padding:11px')}
-            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'padding:11px')}
-        </div>`);
-    partDemo('settle-part');
-}
-function partBossAll(pfx) { document.querySelectorAll('#' + (pfx || 'settle-part') + '-bosses input[type=checkbox]').forEach(c => { c.checked = true; }); }
+function partBossAll(pfx) { document.querySelectorAll('#' + (pfx || 'pa') + '-bosses input[type=checkbox]').forEach(c => { c.checked = true; }); }
 
-// ── 출석 체크 화면 맨 아래 (관리자 모드): 지금 보고 있는 보스를 참여도 출석률에 넣을지 바로 체크 ──
+// ── 출석 체크 화면 ([출석하기]와 [내 출석] 사이, 관리자 모드): 지금 보고 있는 스케줄을 출석률에 넣을지 바로 체크 ──
 function initPartToggle() {
     const mine = $('my-attendance-box');
     if (!mine || $('part-toggle-box')) return;
@@ -2236,7 +2252,8 @@ function partCurrentBoss() {                                   // 출석 화면�
     return id ? (getSchedules().find(x => String(x.id) === String(id)) || null) : null;
 }
 function partToggleTick() {
-    renderPartCard(false);                                                          // 관리 탭 카드도 설정·보스 목록이 바뀌었으면 갱신
+    renderPartCard(false);
+    renderDistCard(false);                                                          // 관리 탭 카드도 설정·보스 목록이 바뀌었으면 갱신
     const box = $('part-toggle-box');
     if (!box) return;
     const hide = () => { if (box.style.display !== 'none' || box.innerHTML) { box.style.display = 'none'; box.innerHTML = ''; box.dataset.sig = ''; } };
@@ -2252,9 +2269,9 @@ function partToggleTick() {
     box.innerHTML = `<div style="border:1.5px solid #d6c3ea; background:#faf5ff; border-radius:10px; padding:8px 12px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
         <label style="display:flex; align-items:center; gap:9px; cursor:pointer; flex:1; min-width:0;">
             <input type="checkbox" id="part-toggle-cb" ${inc ? 'checked' : ''} onchange="Settle.partToggleBoss('${esc(key)}', this.checked)" style="${cbStyle} accent-color:#8e44ad;">
-            <span style="min-width:0; line-height:1.4;"><b style="font-size:0.88rem; color:#2c3e50; word-break:break-all;">${esc(sch.name)}</b><br><span style="font-size:0.76rem; color:${inc ? '#27ae60' : '#c0392b'};">${inc ? '✅ 이 스케줄을 참여도에 포함' : '⛔ 이 스케줄은 참여도에서 제외'}</span></span>
+            <span style="min-width:0; line-height:1.4;"><b style="font-size:0.88rem; color:#2c3e50; word-break:break-all;">${esc(sch.name)}</b><br><span style="font-size:0.76rem; color:${inc ? '#27ae60' : '#c0392b'};">${inc ? '✅ 이 스케줄을 출석률에 포함' : '⛔ 이 스케줄은 출석률에서 제외'}</span></span>
         </label>
-        <button onclick="Settle.openPartAdmin()" title="참여도 설정(관리 탭)" style="flex:none; padding:5px 9px; border:1px solid #d6c3ea; border-radius:8px; background:white; color:#8e44ad; font-size:0.74rem; font-weight:bold; cursor:pointer; white-space:nowrap;">⚙️ 설정</button>
+        <button onclick="Settle.openPartAdmin()" title="출석률 설정(관리 탭)" style="flex:none; padding:5px 9px; border:1px solid #d6c3ea; border-radius:8px; background:white; color:#8e44ad; font-size:0.74rem; font-weight:bold; cursor:pointer; white-space:nowrap;">⚙️ 설정</button>
     </div>`;
 }
 async function partToggleBoss(key, include) {                  // 체크 칸: 한 보스를 출석률에 넣거나 뺌 (기본값 상태에서 처음 바꾸면 기본 제외 목록 위에 반영해 저장)
@@ -2264,13 +2281,116 @@ async function partToggleBoss(key, include) {                  // 체크 칸: �
     if (include) delete ex[key]; else ex[key] = g ? g.name : key;
     const groups = partBossGroups();
     if (groups.length && groups.every(x => ex[x.key])) { alert('최소 한 개 보스는 출석률에 포함해야 합니다.'); const box = $('part-toggle-box'); if (box) box.dataset.sig = ''; partToggleTick(); return; }
-    const rec = { attendanceWeight: state.part.attendanceWeight, supportWeight: state.part.supportWeight, bossesConfigured: true };
+    const rec = { bossesConfigured: true };
     if (Object.keys(ex).length) rec.excludeBosses = ex;
     try { await db.ref('hunter_config/participation').set(rec); }
     catch (e) { alert('❌ 저장 실패: ' + e.message); const box = $('part-toggle-box'); if (box) box.dataset.sig = ''; partToggleTick(); }
 }
 
-// ── 관리 탭 [📊 참여도 설정] 카드: 참여도 계산 기준(출석 반영 비율·지원조 가산점)과 출석률에 넣을 보스를 정함 ──
+// ============================================================
+// 🤝 지원조 규칙 + 통계 통일
+//   · 통계 탭 · 내 출석 · 입찰 순서 · 분배가 모두 같은 출석률(calculateStats)을 쓰도록, 공용 계산에 아래 규칙을 끼워 넣음
+//       1) 출석률 설정에서 "출석률에 넣지 않기"로 한 보스의 출석 기록은 뺌
+//       2) 지원조는 서버가 항상 "지원"으로 고정 (출석은 다른 사람처럼 [출석하기]를 눌러야 함)
+//   · 지원조가 아닌 사람은 진기르/판도라 중에서 서버를 골라야 함 (이름 카드에 적용). 지원조도 출석하기를 눌러야 출석됨
+// ============================================================
+const teamIds = () => new Set(state.supportTeam.map(Number));
+const isTeamUser = (u) => !!u && teamIds().has(Number(u.id));
+function excludedBossIds() {
+    const ex = partExcludeMap(), ids = new Set();
+    partBossGroups().forEach(g => { if (ex[g.key]) g.ids.forEach(id => ids.add(String(id))); });
+    return ids;
+}
+function statsInput(data) {                                    // 이번 주 기록에서 제외 보스의 기록을 뺌 (원본은 건드리지 않고 복사)
+    const ws = getWeekStart(), we = new Date(ws);
+    we.setDate(ws.getDate() + 6);
+    const a = formatLocalDate(ws), b = formatLocalDate(we), skip = excludedBossIds(), out = {};
+    Object.keys(data || {}).forEach(k => {
+        const d = k.split('_')[0];
+        if (d >= a && d <= b && skip.has(k.split('_').slice(1).join('_'))) return;
+        out[k] = data[k];
+    });
+    return out;
+}
+function teamRulesRefresh() {                                  // 지원조 명단·출석률 설정이 바뀌면 화면의 출석 관련 숫자를 다시 그림
+    try { if (typeof updateMyNameDisplay === 'function') updateMyNameDisplay(); } catch (e) { /* 무시 */ }
+    try { if (typeof renderAttendanceTable === 'function') renderAttendanceTable(); } catch (e) { /* 무시 */ }
+    try { renderMyAtt(); } catch (e) { /* 무시 */ }
+    try { const t = $('tab-stats'); if (t && t.classList.contains('active') && typeof loadStats === 'function') loadStats(); } catch (e) { /* 무시 */ }
+    if (state.partRaw) partCompute();
+}
+const SRV_OK = { jingir: 1, pandora: 1 };
+function nameServerInfo(name) {                                // 이름 카드의 한 사람: 지원조인지, 진기르/판도라 중 고른 서버가 있는지
+    const user = getUsers().find(u => u.name === name);
+    if (!user) return null;
+    let slotSrv = '';
+    try { const sl = (typeof getMyNameSlots === 'function' ? getMyNameSlots() : []).find(x => x.name === name); slotSrv = (sl && sl.server) || ''; } catch (e) { slotSrv = ''; }
+    const eff = slotSrv || user.server || 'jingir';
+    const tm = isTeamUser(user);
+    return { user: user, team: tm, eff: eff, valid: tm || !!SRV_OK[eff] };                  // 지원조는 서버 "지원"이 정상 (고정)
+}
+function adjustNameCards() {                                   // [내 이름] 카드: 지원조는 서버 "지원" 고정, 그 외는 진기르/판도라만 + 서버를 골라야 출석하기 가능
+    const list = $('my-names-quick-list'), area = $('quick-attend-btn-area');
+    if (!list || !area || typeof getMyNameSlots !== 'function') return;
+    let slots = [];
+    try { slots = getMyNameSlots(); } catch (e) { return; }
+    if (!slots.length || list.children.length !== slots.length) return;
+    const dim = 'flex:1; padding:6px 4px; border-radius:7px; border:1px solid #d0d0d0; background:#f0f0f0; color:#aaaaaa; font-weight:normal; font-size:0.78rem; cursor:pointer;';
+    slots.forEach((slot, i) => {
+        const info = nameServerInfo(slot.name), card = list.children[i], btn = area.children[i];
+        if (!info || !card) return;
+        const sbtns = Array.from(card.querySelectorAll('button[id^="quick-slot-"]')), keyOf = (b) => b.id.split('-').pop();
+        if (info.team) {
+            sbtns.forEach(b => {
+                if (keyOf(b) === 'support') { b.disabled = true; b.title = '지원조는 서버가 지원으로 고정됩니다'; b.classList.add('quick-server-active'); b.style.cssText = 'flex:1; padding:8px 6px; border-radius:7px; border:2px solid #27ae60; background:#27ae60; color:white; font-weight:bold; font-size:0.9rem; cursor:default;'; }
+                else b.style.display = 'none';
+            });
+            if (slot.server !== 'support') { try { slot.server = 'support'; setMyNames(slots); } catch (e) { /* 무시 */ } }
+            if (!card.querySelector('[data-team-hint]')) { const h = document.createElement('div'); h.setAttribute('data-team-hint', '1'); h.style.cssText = 'font-size:0.74rem; color:#1e8449;'; h.textContent = '지원조는 서버가 지원으로 고정돼요. 출석하기를 눌러야 출석돼요.'; card.appendChild(h); }
+            return;
+        }
+        if (!info.valid) {
+            sbtns.forEach(b => { b.classList.remove('quick-server-active'); b.style.cssText = dim; });
+            if (btn && btn.hasAttribute('data-quick-name')) { btn.disabled = true; btn.textContent = '⚠️ 서버를 먼저 선택하세요'; btn.style.background = '#e67e22'; btn.style.cursor = 'not-allowed'; }
+            if (!card.querySelector('[data-srv-hint]')) { const h = document.createElement('div'); h.setAttribute('data-srv-hint', '1'); h.style.cssText = 'font-size:0.76rem; color:#d35400; font-weight:bold;'; h.textContent = '진기르 / 판도라 중에서 서버를 선택해야 출석할 수 있어요.'; card.appendChild(h); }
+        }
+        sbtns.forEach(b => { if (keyOf(b) === 'support') b.style.display = 'none'; });                    // 지원조가 아니면 "지원"은 고를 수 없음 (스타일을 되돌린 뒤에 숨겨야 유지됨)
+    });
+}
+function installTeamRules() {                                  // app.js 의 함수를 손대지 않고, 같은 이름으로 감싸서 규칙을 끼워 넣음 (한 번만)
+    const wrap = (name, make) => { const f = window[name]; if (typeof f === 'function' && !f.__settle) { const w = make(f); w.__settle = true; window[name] = w; } };
+    wrap('calculateStats', (orig) => function (data) {
+        let d = data;
+        try { d = statsInput(data); } catch (e) { d = data; }
+        const saved = (typeof users !== 'undefined' && Array.isArray(users)) ? users : null, ts = teamIds();
+        let swapped = false;
+        if (saved && ts.size && saved.some(u => ts.has(Number(u.id)) && u.server !== 'support')) {      // 지원조는 데이터의 서버가 달라도 지원으로 계산
+            users = saved.map(u => (ts.has(Number(u.id)) && u.server !== 'support') ? Object.assign({}, u, { server: 'support' }) : u);
+            swapped = true;
+        }
+        try { return orig.call(this, d); } finally { if (swapped) users = saved; }
+    });
+    wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } return r; });
+    wrap('quickAttendanceByName', (orig) => function (name, slotId) {
+        const info = nameServerInfo(name);
+        if (info && !info.valid) { alert('진기르 또는 판도라 서버를 먼저 선택하세요. (지원은 지원조만 쓸 수 있어요)'); return; }
+        return orig.apply(this, arguments);
+    });
+    wrap('updateAttendance', (orig) => function (userId, requestedStatus, targetServer) {
+        const u = getUsers().find(x => Number(x.id) === Number(userId));
+        if (u && requestedStatus === 'present' && !isAdmin) {
+            if (targetServer === 'support' && !isTeamUser(u)) { alert('진기르 또는 판도라 서버를 먼저 선택하세요. (지원은 지원조만 쓸 수 있어요)'); return null; }
+        }
+        return orig.apply(this, arguments);
+    });
+}
+function initTeamRules() {
+    installTeamRules();
+    afterAuth(() => { ensureSupportTeam(); ensureParticipation(); teamRulesRefresh(); });
+}
+
+
+// ── 관리 탭 [📊 출석률 설정] 카드: 출석률에 넣을 보스를 정함 ──
 function partCardMsg(t) {
     const m = $('pa-msg');
     if (!m) return;
@@ -2290,17 +2410,16 @@ function renderPartCard(force) {
     const act = document.activeElement;
     if (!force && act && body.contains(act)) return;                               // 입력 중에는 덮어쓰지 않음
     body.dataset.sig = sig;
-    const ex = partExcludeMap(), n = Object.keys(ex).length;
-    if (badge) badge.textContent = state.part.ready ? '출석 ' + state.part.attendanceWeight + '% · 지원조 +' + state.part.supportWeight + (n ? ' · 제외 ' + n : '') : '';
+    const n = Object.keys(partExcludeMap()).length;
+    if (badge) badge.textContent = state.part.ready ? (n ? '출석률에서 제외한 보스 ' + n + '개' : '모든 보스 포함') : '';
     if (!state.part.ready) { body.innerHTML = '<div style="padding:14px 0; color:#95a5a6; font-size:0.85rem;">설정을 불러오는 중…</div>'; return; }
     body.innerHTML = `<div style="margin-top:12px;">${partFormHtml('pa')}
         <div style="display:flex; gap:8px; margin-top:14px; align-items:center; flex-wrap:wrap;">
             ${actBtn('저장', "Settle.savePartSettings('pa')", '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
-            ${actBtn('기본값(' + PART_DEFAULT.attendanceWeight + '·' + PART_DEFAULT.supportWeight + ')', "Settle.resetPartSettings('pa')", '#7f8c8d').replace('padding:6px 11px', 'padding:11px')}
+            ${actBtn('기본값', "Settle.resetPartSettings('pa')", '#7f8c8d').replace('padding:6px 11px', 'padding:11px')}
         </div>
         <div id="pa-msg" style="margin-top:8px; font-size:0.8rem; color:#27ae60; min-height:1.1em;"></div>
         <div style="margin-top:2px; font-size:0.74rem; color:#95a5a6; line-height:1.5;">출석 체크 화면의 [출석하기] 아래 체크 칸에서도 지금 보고 있는 스케줄을 바로 넣거나 뺄 수 있어요.${state.part.configured ? '' : ' (지금은 기본값 상태)'}</div></div>`;
-    partDemo('pa');
 }
 function initPartAdmin() {                                     // "아이템/정산 구글 백업" 카드 바로 아래(없으면 통계 내보내기 아래)에 만듦
     if ($('acc-part')) return;
@@ -2312,13 +2431,13 @@ function initPartAdmin() {                                     // "아이템/정
     acc.style.display = 'none';
     acc.innerHTML = `
         <div class="accordion-header" onclick="toggleAccordion('acc-part')">
-            <h2>📊 참여도 설정 <span id="pa-badge" style="display:block; font-size:0.76rem; font-weight:normal; color:#8e44ad; margin-top:2px;"></span></h2>
+            <h2>📊 출석률 설정 <span id="pa-badge" style="display:block; font-size:0.76rem; font-weight:normal; color:#8e44ad; margin-top:2px;"></span></h2>
             <span class="accordion-arrow">▼</span>
         </div>
         <div class="accordion-body"><div id="pa-body"></div></div>`;
     anchor.insertAdjacentElement('afterend', acc);
 }
-function openPartAdmin() {                                     // 출석 체크 화면의 [⚙️ 설정] → 관리 탭의 참여도 설정 카드를 펼쳐서 보여 줌
+function openPartAdmin() {                                     // 출석 체크 화면의 [⚙️ 설정] → 관리 탭의 출석률 설정 카드를 펼쳐서 보여 줌
     if (typeof switchTab === 'function') switchTab('users');
     const acc = $('acc-part');
     if (!acc) return;
@@ -2395,33 +2514,20 @@ function initGuide() {
 }
 
 
-function partDemo(pfx) {                                       // 입력한 값으로 계산 예시를 바로 보여 줌
-    pfx = pfx || 'settle-part';
-    const el = $(pfx + '-demo'), a = Number(($(pfx + '-att') || {}).value), s = Number(($(pfx + '-sup') || {}).value);
-    if (!el) return;
-    if (isNaN(a) || isNaN(s)) { el.textContent = ''; return; }
-    const r1 = (x) => Math.round(x * 10) / 10;
-    el.innerHTML = '예) 출석률 80%인 <b>지원조</b> = 80 × ' + a + '% + ' + s + ' = <b>' + r1(80 * a / 100 + s) + '점</b><br>예) 출석률 80%인 <b>지원조가 아닌 사람</b> = 80 × ' + a + '% = <b>' + r1(80 * a / 100) + '점</b> · 만점 ' + r1(100 * a / 100 + s) + '점';
-}
 async function savePartSettings(pfx) {
-    pfx = pfx || 'settle-part';
-    const A = $(pfx + '-att'), U = $(pfx + '-sup');
-    if (!A || !U) return;
-    const a = Number(A.value), s = Number(U.value);
-    if (A.value.trim() === '' || U.value.trim() === '' || isNaN(a) || isNaN(s) || a < 0 || a > 100 || s < 0 || s > 100) { alert('두 값 모두 0~100 사이의 숫자로 입력하세요.'); return; }
+    pfx = pfx || 'pa';
     const boxes = Array.from(document.querySelectorAll('#' + pfx + '-bosses input[type=checkbox]')), excl = {};
     boxes.forEach(c => { if (!c.checked) excl[c.dataset.pk] = c.dataset.pn; });
     if (boxes.length && Object.keys(excl).length === boxes.length) { alert('최소 한 개 보스는 출석률에 포함해야 합니다.'); return; }
     if (!(await requireAdmin())) return;
-    const rec = { attendanceWeight: a, supportWeight: s, bossesConfigured: true };                 // 한 번 저장하면 기본 제외 목록 대신 여기서 고른 대로
+    const rec = { bossesConfigured: true };                                                              // 한 번 저장하면 기본 제외 목록 대신 여기서 고른 대로
     if (Object.keys(excl).length) rec.excludeBosses = excl;
-    try { await db.ref('hunter_config/participation').set(rec); if (pfx === 'settle-part') closeModal(); else partCardMsg('✅ 저장했습니다.'); }
+    try { await db.ref('hunter_config/participation').set(rec); partCardMsg('✅ 저장했습니다.'); }
     catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 async function resetPartSettings(pfx) {
-    pfx = pfx || 'settle-part';
     if (!(await requireAdmin())) return;
-    try { await db.ref('hunter_config/participation').remove(); if (pfx === 'settle-part') closeModal(); else partCardMsg('✅ 기본값으로 되돌렸습니다.'); }
+    try { await db.ref('hunter_config/participation').remove(); partCardMsg('✅ 기본값으로 되돌렸습니다.'); }
     catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 
@@ -2431,7 +2537,7 @@ async function openBidAdmin(k) {
     if (!(await requireAdmin())) return;
     state.bidAdmin = k ? String(k) : 'all';
     renderBidAdmin();
-    partLoad(true);                                            // 참여도에 쓸 이번 주 출석을 새로 읽음
+    partLoad(true);                                            // 순서에 쓸 이번 주 출석을 새로 읽음
     const a = $('settle-bids-area'); if (a && a.scrollIntoView) a.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 function closeBidAdmin() { state.bidAdmin = ''; renderBidAdmin(); }
@@ -2447,24 +2553,23 @@ function renderBidAdmin() {
     });
     const gl = Object.keys(groups).map(id => groups[id]).sort((a, b) => Math.max.apply(null, b.bids.map(x => Date.parse(x.updatedAt) || 0)) - Math.max.apply(null, a.bids.map(x => Date.parse(x.updatedAt) || 0)));
     const when = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
-    const P = state.part;
     box.innerHTML = `
     <div style="border:2px solid #e67e22; border-radius:10px; overflow:hidden; margin-bottom:12px;">
         <div style="background:#e67e22; color:white; padding:10px 14px; display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
             <b style="font-size:0.95rem;">🙋 입찰 신청 ${state.bidAdmin === 'all' ? '' : '(아이템 하나)'}</b>
-            <span style="display:flex; gap:6px;">${actBtn('⚙️ 참여도 기준', 'Settle.openPartSettings()', '#d35400')}${actBtn('🔄', 'Settle.partRefresh()', '#d35400')}${actBtn('닫기', 'Settle.closeBidAdmin()', '#d35400')}</span>
+            <span style="display:flex; gap:6px;">${actBtn('🔄', 'Settle.partRefresh()', '#d35400')}${actBtn('닫기', 'Settle.closeBidAdmin()', '#d35400')}</span>
         </div>
         <div style="padding:8px 12px 12px;">
-            <div style="font-size:0.76rem; color:#7f8c8d; margin:4px 0 4px; line-height:1.55;"><b>참여도가 높은 순서</b>입니다. 참여도 = 이번 주 출석률 × ${P.attendanceWeight}% + 지원조 가산점 ${P.supportWeight}점 <span style="color:#d35400;">(임시 기준 · ⚙️에서 조정)</span><br>출석 기준: ${state.partWeek ? esc(state.partWeek) : (state.partBusy ? '불러오는 중…' : '-')}${state.partAt ? ' · ' + when(new Date(state.partAt).toISOString()) + ' 기준' : ''}${Object.keys(partExcludeMap()).length ? '<br>출석률에서 제외한 보스: <b>' + esc(Object.keys(partExcludeMap()).map(k => partExcludeMap()[k]).join(', ')) + '</b>' + (state.part.configured ? '' : ' <span style="color:#95a5a6;">(기본값)</span>') : ''}</div>
-            <div style="font-size:0.76rem; color:#7f8c8d; margin:0 0 8px; line-height:1.5;">[낙찰 확정]을 누르면 그 사람이 낙찰자로 기록되고 아이템이 판매완료가 되며, 낙찰가는 아이템에 정해 둔 입찰가가 됩니다. 이후 정산 계산 대상이 됩니다. 나머지 입찰은 낙찰 실패로 표시됩니다.</div>
+            <div style="font-size:0.76rem; color:#7f8c8d; margin:4px 0 4px; line-height:1.55;"><b>이번 주 출석률이 높은 순서</b>입니다. (통계 탭과 같은 값이고, 출석률이 같으면 먼저 신청한 순서)<br>출석 기준: ${state.partWeek ? esc(state.partWeek) : (state.partBusy ? '불러오는 중…' : '-')}${state.partAt ? ' · ' + when(new Date(state.partAt).toISOString()) + ' 기준' : ''}${Object.keys(partExcludeMap()).length ? '<br>출석률에서 제외한 보스: <b>' + esc(Object.keys(partExcludeMap()).map(k => partExcludeMap()[k]).join(', ')) + '</b>' + (state.part.configured ? '' : ' <span style="color:#95a5a6;">(기본값)</span>') : ''}</div>
+            <div style="font-size:0.76rem; color:#7f8c8d; margin:0 0 8px; line-height:1.5;">[낙찰 확정]을 누르면 그 사람이 낙찰자로 기록되고 아이템이 판매완료가 되며, 낙찰가는 아이템에 정해 둔 입찰가가 됩니다. 이후 분배 정산 대상이 됩니다. 나머지 입찰은 낙찰 실패로 표시됩니다.</div>
             ${gl.length ? gl.map(g => {
-                const bs = g.bids.map(x => ({ b: x, p: partOf(x.userId) })).sort((a, c) => c.p.raw - a.p.raw || String(a.b.createdAt || '').localeCompare(String(c.b.createdAt || '')));
+                const bs = g.bids.map(x => ({ b: x, p: rateOf(x.userId) })).sort((a, c) => c.p.raw - a.p.raw || String(a.b.createdAt || '').localeCompare(String(c.b.createdAt || '')));
                 const pr = priceOf(g.it.itemName) || 0;
                 return `<div style="border:1px solid #f0e0cc; border-radius:8px; padding:8px 10px; margin-top:8px;">
                     <div style="font-weight:bold; color:#2c3e50;">${esc(g.it.itemName)} <span style="font-size:0.75rem; color:#7f8c8d; font-weight:normal;">입찰 ${bs.length}건</span> <span style="font-size:0.78rem; ${pr ? 'color:#e67e22; font-weight:bold;' : 'color:#c0392b;'}">${pr ? '💎 입찰가 ' + fmt(pr) + ' ' + UNIT : '입찰가 미정 (확정할 때 입력)'}</span></div>
                     <div style="font-size:0.76rem; color:#7f8c8d;">📅 ${esc(g.it.date)} ⚔️ ${esc(g.it.bossName)} · 획득: ${esc(g.it.winner)}</div>
                     ${bs.map((x, i) => { const b = x.b, p = x.p; return `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap; padding:6px 0; border-top:1px dashed #eee; margin-top:6px;">
-                        <span style="font-size:0.88rem; line-height:1.5;">${i === 0 ? '🥇' : (i + 1) + '.'} <b>${esc(b.name)}</b>${serverBadge((userById(b.userId) || {}).server)}${p.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.7rem; font-weight:bold;">지원조</span>' : ''} <b style="color:#8e44ad;">참여도 ${p.loaded ? p.score + '점' : '계산 중…'}</b>${i === 0 && bs.length > 1 && bs[1].p.score === p.score ? ' <span style="font-size:0.72rem; color:#d35400;">(동점 · 먼저 신청한 순)</span>' : ''}<br><span style="font-size:0.74rem; color:#7f8c8d;">${p.loaded ? (p.have ? '출석 ' + p.rate + '% → ' + p.att + '점' : '이번 주 출석 기록 없음 → 0점') + (p.team ? ' + 지원조 ' + p.sup + '점' : '') : ''} · 신청 ${when(b.createdAt)}</span></span>
+                        <span style="font-size:0.88rem; line-height:1.5;">${i === 0 ? '🥇' : (i + 1) + '.'} <b>${esc(b.name)}</b>${serverBadge((userById(b.userId) || {}).server)}${p.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.7rem; font-weight:bold;">지원조</span>' : ''} <b style="color:#8e44ad;">출석률 ${p.loaded ? p.rate + '%' : '계산 중…'}</b>${i === 0 && bs.length > 1 && p.loaded && bs[1].p.raw === p.raw ? ' <span style="font-size:0.72rem; color:#d35400;">(동률 · 먼저 신청한 순)</span>' : ''}<br><span style="font-size:0.74rem; color:#7f8c8d;">${p.loaded && !p.have ? '이번 주 출석 기록 없음 · ' : ''}신청 ${when(b.createdAt)}</span></span>
                         <span style="display:flex; gap:4px;">${actBtn('🏆 낙찰 확정', `Settle.confirmBid('${sid(g.it.id)}', ${Number(b.userId)})`, '#27ae60')}${actBtn('🗑️', `Settle.deleteBid('${sid(g.it.id)}', ${Number(b.userId)})`, '#e74c3c')}</span></div>`; }).join('')}
                 </div>`;
             }).join('') : '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">대기 중인 입찰 신청이 없습니다.</p>'}
@@ -2485,8 +2590,8 @@ async function confirmBid(k, uid) {
         price = Number(String(raw).trim());
         if (!Number.isInteger(price) || price < 1 || price > BID_MAX) { alert('낙찰가는 1 이상의 정수(' + UNIT + ')로 입력하세요.'); return; }
     }
-    const others = bidsOfItem(it.id).length - 1, p = partOf(b.userId);
-    if (!confirm('"' + it.itemName + '" 을(를)\n' + b.name + '님에게 ' + fmt(price) + ' ' + UNIT + '에 낙찰 확정할까요?' + (p.loaded ? '\n(참여도 ' + p.score + '점)' : '') + (others > 0 ? '\n(다른 입찰 ' + others + '건은 낙찰 실패로 표시됩니다)' : ''))) return;
+    const others = bidsOfItem(it.id).length - 1, p = rateOf(b.userId);
+    if (!confirm('"' + it.itemName + '" 을(를)\n' + b.name + '님에게 ' + fmt(price) + ' ' + UNIT + '에 낙찰 확정할까요?' + (p.loaded ? '\n(이번 주 출석률 ' + p.rate + '%)' : '') + (others > 0 ? '\n(다른 입찰 ' + others + '건은 낙찰 실패로 표시됩니다)' : ''))) return;
     try {
         const res = await db.ref('boss_storage/' + it.id).transaction(cur => {        // 그 사이 다른 담당자가 먼저 판매했다면 중단
             if (!cur || cur.sold) return;
@@ -2610,7 +2715,9 @@ function calcCurrent() {
     const opts = { supportIds: new Set(state.supportTeam.map(Number)), supportPct: state.calcSupportPct };
     return Object.assign({ items: items, total: total, recips: recips }, computeSplit(total, recips, state.calcMode, state.calcRatios, state.calcFixed, opts));
 }
-const calcModeText = (mode, ratios, supportPct) => mode === 'support'
+const calcModeText = (mode, ratios, supportPct, rank) => mode === 'rank'
+    ? '순위별 차등 분배 (출석률 ' + (Math.round(Number((rank || {}).minRate === undefined ? 50 : rank.minRate) * 10) / 10) + '% 이상 · ' + (rank && rank.tiers ? Object.values(rank.tiers).map((t, i) => (t.group || i + 1) + '그룹 ' + (Math.round(Number(t.pct) * 10) / 10) + '%').join(' / ') : '1그룹 50% / 2그룹 30% / 3그룹 20%') + (rank && rank.thirds ? ' · 3등분' : '') + ')'
+    : mode === 'support'
     ? '지원조 비율 (지원조 ' + (Math.round(Number(supportPct) * 100) / 100) + '% · 나머지 ' + (Math.round((100 - Number(supportPct)) * 100) / 100) + '%)'
     : mode === 'ratio'
     ? '서버별 비율 (' + RATIO_GROUPS.filter(([g]) => Number((ratios || {})[g]) > 0).map(([g, n]) => n + ' ' + (Math.round(Number(ratios[g]) * 100) / 100) + '%').join(' · ') + ')'
@@ -2619,10 +2726,13 @@ const calcModeText = (mode, ratios, supportPct) => mode === 'support'
 function renderCalcActions() {
     const box = $('settle-calc-actions');
     if (!box) return;
-    const n = unsettledItems().length;
-    box.innerHTML = (canManage() ? actBtn('📊 정산 계산' + (n ? ' (' + n + ')' : ''), 'Settle.openCalc()', '#27ae60') : '')
+    const its = unsettledItems(), n = its.length, total = its.reduce((t, i) => t + (Number(i.bidPrice) || 0), 0);
+    box.innerHTML = (canManage() ? actBtn('📊 분배 정산' + (n ? ' (' + n + ')' : ''), 'Settle.openDist()', '#27ae60') : '')
                   + actBtn('📋 정산 내역', 'Settle.showHistory()', '#3498db')
                   + (isAdmin ? actBtn('🤝 지원조 설정' + (state.supportTeam.length ? ' (' + state.supportTeam.length + '명)' : ''), 'Settle.openSupportTeam()', '#8e44ad') : '');
+    const acc = $('settle-accum');                                                  // 분배 누적금: 판매는 끝났지만 아직 정산하지 않은 낙찰액의 합 (정산완료하면 0)
+    if (acc) acc.innerHTML = canManage()
+        ? `<div style="background:#fff4e5; border:1px solid #f5cba7; border-radius:10px; padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:8px;"><span style="font-size:0.85rem; color:#7f8c8d; line-height:1.4;">💰 분배 누적금<br><span style="font-size:0.72rem;">${n ? '판매 완료 · 미정산 ' + n + '건' : '정산할 금액이 없습니다'}</span></span><b style="font-size:1.35rem; color:#e67e22; white-space:nowrap;">${fmt(total)} ${UNIT}</b></div>` : '';
 }
 
 function openCalc() {
@@ -2635,6 +2745,264 @@ function openCalc() {
     renderCalc();
 }
 function closeCalc() { const b = $('settle-calc-area'); if (b) b.innerHTML = ''; }
+
+// ============================================================
+// 📊 순위별 차등 분배 (분배 정산 → 분배 완료)
+//   · 분배 누적금(판매 완료 · 미정산 낙찰액)을, 출석률이 기준(minRate%) 이상인 사람을 3개 그룹으로 나눠 그룹별로 차등 분배
+//     기본 비율: 1그룹 50% / 2그룹 30% / 3그룹 20% — 각 그룹의 몫은 그 그룹에 든 사람끼리 균등
+//   · 그룹 나누기: 기준을 넘은 사람이 30명(= 그룹 인원 합계) 이상이면 상위 10·10·10명, 30명보다 적으면 전체 인원을 3등분(33%씩, 남는 사람은 앞 그룹부터)
+//   · 순위는 출석률(통계 탭과 같은 값, 제외 보스 반영)이 높은 순. 점수가 같으면 공동 등수이고, 그룹 경계에 걸린 동점자는 모두 앞 그룹에 넣음
+//     (예: 3그룹 경계인 30등에 동점자가 있어 3그룹이 13명이 되면, 그 13명이 3그룹 몫을 나눔)
+//   · [분배 정산]을 누른 그때의 이번 주 출석률로 계산하고, [분배 완료]를 누르면 그 달의 개인별 금액으로 저장되며 누적금은 0이 됨
+// ============================================================
+const DIST_DEFAULT = { minRate: 50, tiers: [{ size: 10, pct: 50 }, { size: 10, pct: 30 }, { size: 10, pct: 20 }] };
+const monthKey = (d) => { d = d || new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
+const rankTxt = (f, t) => f === t ? f + '등' : f + '~' + t + '등';                  // 한 명짜리 구간은 "3등"
+const monthLabel = (k) => { const m = /^(\d{4})-(\d{2})/.exec(String(k || '')); return m ? m[1] + '년 ' + Number(m[2]) + '월' : ''; };
+function distEntries() {
+    return getUsers().map(u => {
+        const team = isTeamUser(u), st = state.partStats ? state.partStats[String(u.id)] : null;
+        const have = !!(st && st.serverTotal), rate = have ? Math.max(0, Math.min(100, Number(st.rate) || 0)) : 0;
+        return { userId: Number(u.id), name: u.name, server: u.server || '', team: team, rate: rate };
+    });
+}
+function computeRank(total, entries, cfg) {
+    const warnings = [], infos = [], errors = [];
+    const minRate = Math.min(100, Math.max(0, Number(cfg.minRate)));
+    const tiers = (cfg.tiers || DIST_DEFAULT.tiers).map(t => ({ size: Math.max(0, Math.floor(Number(t.size) || 0)), pct: Math.max(0, Number(t.pct) || 0) }));
+    const pctSum = sumOf(tiers.map(t => t.pct)), cap = sumOf(tiers.map(t => t.size));
+    if (Math.abs(pctSum - 100) > 0.01) errors.push(`그룹 비율의 합계가 ${Math.round(pctSum * 100) / 100}%입니다. 100%로 맞춰주세요.`);
+    const disp = (a, b) => b.rate - a.rate || koCmp(a.name, b.name);                                        // 출석률 높은 순 (같은 점수 안에서의 순서는 이름순 — 표시용)
+    const ranked = entries.filter(e => e.rate >= minRate).map(e => Object.assign({}, e)).sort(disp);
+    const below = entries.filter(e => e.rate < minRate).sort(disp);
+    ranked.forEach((e, i) => { e.rank = (i > 0 && ranked[i - 1].rate === e.rate) ? ranked[i - 1].rank : i + 1; });      // 같은 점수는 공동 등수 (예: 1, 1, 1, 4)
+    const N = ranked.length, thirds = N < cap;
+    const bs = Math.floor(N / 3), rm = N % 3;
+    const sizes = thirds ? tiers.map((t, i) => bs + (i < rm ? 1 : 0)) : tiers.map(t => t.size);               // 30명 미만이면 3등분(남는 사람은 앞 그룹부터), 그 이상이면 정해 둔 그룹 인원
+    const cuts = [];
+    sizes.reduce((acc, sz) => { cuts.push(acc + sz); return acc + sz; }, 0);
+    const members = tiers.map(() => []), outside = [];
+    ranked.forEach(e => { const k = cuts.findIndex(c => e.rank <= c); if (k < 0) outside.push(e); else members[k].push(e); });   // 등수가 그룹 끝 등수 이하인 첫 그룹 → 경계에 걸린 동점자는 모두 앞 그룹
+    const exact = tiers.map(t => total * t.pct / 100), pools = exact.map(Math.floor);
+    let left = total - sumOf(pools);                                                                          // 소수점 정리: 소수 부분이 큰 그룹부터 1씩
+    const ord = tiers.map((t, i) => ({ i: i, frac: exact[i] - pools[i] })).filter(o => exact[o.i] > 0).sort((a, b) => b.frac - a.frac || a.i - b.i);
+    for (let k = 0; left > 0 && ord.length && Math.abs(pctSum - 100) <= 0.01; k++, left--) pools[ord[k % ord.length].i]++;
+    if (thirds && N > 0) infos.push(`출석률 기준을 넘은 ${N}명이 ${cap}명보다 적어서, 인원을 3등분(33%씩)해 1그룹 ${sizes[0]}명 · 2그룹 ${sizes[1]}명 · 3그룹 ${sizes[2]}명으로 나눴습니다.`);
+    let unallocated = 0;
+    const rows = [], tierInfo = tiers.map((t, i) => {
+        const mem = members[i], info = { index: i, group: i + 1, pct: t.pct, size: sizes[i], pool: pools[i], members: mem, per: [], from: mem.length ? mem[0].rank : 0, to: mem.length ? mem[mem.length - 1].rank : 0 };
+        if (!mem.length) {
+            if (info.pool > 0) { unallocated += info.pool; warnings.push(`${i + 1}그룹(${Math.round(t.pct * 10) / 10}%) 몫 ${fmt(info.pool)} ${UNIT}은 해당하는 사람이 없어 미배분입니다.`); }
+            return info;
+        }
+        const base = Math.floor(info.pool / mem.length);
+        let rem = info.pool - base * mem.length;                                                             // 남는 금액은 그룹 안에서 앞사람부터 1씩
+        mem.forEach(m => { const amt = base + (rem-- > 0 ? 1 : 0); info.per.push(amt); rows.push({ userId: m.userId, name: m.name, server: m.server, team: m.team, rate: m.rate, score: m.score, rank: m.rank, tier: i + 1, amount: amt }); });
+        if (mem.length > sizes[i]) infos.push(`${i + 1}그룹은 동점자를 같은 그룹에 넣어 ${mem.length}명이 되었습니다 (기준 ${sizes[i]}명). 이 ${mem.length}명이 ${Math.round(t.pct * 10) / 10}% 몫(${fmt(info.pool)} ${UNIT})을 나눕니다.`);
+        else if (mem.length < sizes[i]) infos.push(`${i + 1}그룹은 앞 그룹에 동점자가 먼저 들어가 ${mem.length}명이 되었습니다 (기준 ${sizes[i]}명).`);
+        return info;
+    });
+    const paid = sumOf(rows.map(r => r.amount));
+    return { rows: rows, tierInfo: tierInfo, ranked: ranked, below: below, outside: outside, cap: cap, N: N, thirds: thirds, sizes: sizes, minRate: minRate, tiers: tiers, unallocated: unallocated, warnings: warnings, infos: infos, errors: errors, valid: errors.length === 0 && paid > 0, paid: paid, balanced: paid + unallocated === total, eligibleN: N };
+}
+function rankCurrent() {
+    const { items, total } = calcItems();
+    return Object.assign({ items: items, total: total }, computeRank(total, distEntries(), state.dist));
+}
+async function openDist() {                                    // [분배 정산]: 모든 미정산 아이템을 한꺼번에 대상으로, 그 시점의 출석률을 새로 읽어 계산
+    if (!canManage()) return;
+    const items = unsettledItems();
+    if (!items.length) { alert('정산할 아이템이 없습니다.\n(분배 누적금이 0입니다. 판매 완료 상태이고 아직 정산되지 않은 아이템만 대상입니다)'); return; }
+    ensureDist(); ensureParticipation(); ensureSupportTeam();
+    state.calcItemIds = items.map(i => String(i.id));
+    state.recipients = new Set(getUsers().map(u => Number(u.id)));
+    state.calcMode = 'rank'; state.calcRatios = { jingir: 0, pandora: 0, support: 0, other: 0 }; state.calcFixed = {}; state.calcSupportPct = 50;
+    renderCalc();
+    await partLoad(true);                                      // 출석 기록을 지금 새로 읽음 (읽는 동안 "불러오는 중…")
+    renderAttendBox();
+}
+function distRecalc() { partLoad(true); renderAttendBox(); }
+function renderAttendBox() {
+    const box = $('settle-attend-box');
+    if (!box || state.calcMode !== 'rank') return;
+    const sb = $('settle-save-btn'), setSave = (on) => { if (sb) { sb.disabled = !on; sb.style.opacity = on ? '' : '0.45'; } };
+    if (state.partBusy || !state.partStats) { box.innerHTML = '<div style="padding:12px; text-align:center; color:#7f8c8d; font-size:0.88rem;">⏳ 이번 주 출석률을 불러와서 계산하는 중…</div>'; setSave(false); return; }
+    const c = rankCurrent(), r1 = (x) => Math.round(Number(x) * 10) / 10;
+    const range = (arr) => arr.length ? fmt(Math.min.apply(null, arr)) + (Math.min.apply(null, arr) !== Math.max.apply(null, arr) ? ' ~ ' + fmt(Math.max.apply(null, arr)) : '') : '-';
+    const ex = partExcludeMap(), exNames = Object.keys(ex).map(k => ex[k]);
+    const when = state.partAt ? new Date(state.partAt) : null, hm = when ? String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0') : '';
+    const medal = ['🥇', '🥈', '🥉'], tieCount = {};
+    c.ranked.forEach(r => { tieCount[r.rank] = (tieCount[r.rank] || 0) + 1; });
+    box.innerHTML = `
+        <div style="background:#f0fff4; border:1px solid #a9dfbf; border-radius:8px; padding:10px 12px; font-size:0.84rem; line-height:1.65;">
+            <div>분배 누적금 <b>${fmt(c.total)} ${UNIT}</b> → 출석률 <b>${r1(c.minRate)}% 이상</b> <b>${c.N}명</b>을 ${c.thirds ? '<b>3그룹(33%씩)</b>으로 나눠' : '상위 <b>' + c.cap + '명(동점 포함)</b>을 3그룹으로 나눠'} 그룹별로 차등 분배</div>
+            ${c.tierInfo.map(t => `<div>${medal[t.index] || '▪️'} <b>${t.group}그룹</b>${t.members.length ? ' (' + (t.from === t.to ? t.from : t.from + '~' + t.to) + '등)' : ''} · ${r1(t.pct)}% (${fmt(t.pool)}) → ${t.members.length ? '<b>' + t.members.length + '명</b> · 1인당 <b style="color:#27ae60;">' + range(t.per) + '</b>' : '<span style="color:#c0392b;">해당 없음</span>'}</div>`).join('')}
+            <div style="font-size:0.74rem; color:#7f8c8d; margin-top:3px;">출석률 기준: ${state.partWeek ? esc(state.partWeek) : '이번 주'}${hm ? ' · ' + hm + ' 계산' : ''}${exNames.length ? ' · 출석률에서 제외한 보스: ' + esc(exNames.join(', ')) : ''}<br>순위는 출석률이 높은 순입니다. 점수(출석률)가 같으면 공동 등수이고, 같은 점수는 항상 같은 그룹에 넣습니다.</div>
+            <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">${actBtn('🔄 다시 계산', 'Settle.distRecalc()', '#5D6D7E')}${isAdmin ? actBtn('⚙️ 분배 기준', 'Settle.openDistSettings()', '#8e44ad') : ''}</div>
+        </div>
+        ${c.rows.length ? `<div style="max-height:320px; overflow-y:auto; border:1px solid #eee; border-radius:8px; margin-top:8px;">
+            <div style="display:flex; gap:6px; padding:6px 10px; background:#f8f9fa; font-size:0.74rem; color:#7f8c8d; font-weight:bold; position:sticky; top:0;"><span style="width:40px;">등수</span><span style="flex:1;">이름 · 출석률</span><span style="width:70px; text-align:right;">받을 금액</span></div>
+            ${c.rows.map(r => `<div class="settle-attend-row" data-rank="${r.rank}" data-tier="${r.tier}" data-amt="${r.amount}" style="display:flex; align-items:center; gap:6px; padding:6px 10px; border-top:1px solid #f3f3f3; font-size:0.84rem;"><span style="width:40px; color:#2c3e50;"><b>${r.rank}</b>${tieCount[r.rank] > 1 ? '<br><span style="font-size:0.66rem; color:#d35400;">공동</span>' : ''}</span><span style="flex:1; min-width:0;"><span style="word-break:keep-all;">${esc(r.name)}</span><br><span style="font-size:0.72rem; color:#7f8c8d;">${r1(r.rate)}%${r.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.68rem; font-weight:bold;">지원조</span>' : ''} · ${r.tier}그룹</span></span><b style="width:70px; text-align:right; color:#27ae60;">${fmt(r.amount)}</b></div>`).join('')}
+        </div>` : '<div style="margin-top:8px; padding:10px; color:#c0392b; font-size:0.85rem; text-align:center;">받을 사람이 없습니다. 출석률 기준을 낮춰 주세요.</div>'}
+        ${c.outside.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">출석률은 충족했지만 상위 ${c.cap}명(동점 포함) 밖인 ${c.outside.length}명</summary><div style="margin-top:4px; line-height:1.7;">${c.outside.map(r => esc(r.name) + ' <span style="color:#95a5a6;">' + r1(r.rate) + '%</span>').join(' · ')}</div></details>` : ''}
+        ${c.below.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">출석률 ${r1(c.minRate)}% 미만이라 제외된 ${c.below.length}명</summary><div style="margin-top:4px; line-height:1.7;">${c.below.map(r => esc(r.name) + ' <span style="color:#95a5a6;">' + r1(r.rate) + '%</span>').join(' · ')}</div></details>` : ''}
+        <div style="margin-top:6px; font-size:0.8rem; color:#555;">총액 <b>${fmt(c.total)}</b> = 지급 <b>${fmt(c.paid)}</b> + 미배분 <b style="color:${c.unallocated ? '#c0392b' : '#555'};">${fmt(c.unallocated)}</b></div>
+        ${c.errors.map(m => `<div style="color:#c0392b; font-size:0.8rem; margin-top:3px;">⛔ ${esc(m)}</div>`).join('')}
+        ${c.infos.map(m => `<div style="color:#2471a3; font-size:0.8rem; margin-top:3px;">ℹ️ ${esc(m)}</div>`).join('')}
+        ${c.warnings.map(m => `<div style="color:#d35400; font-size:0.8rem; margin-top:3px;">⚠️ ${esc(m)}</div>`).join('')}`;
+    setSave(c.valid && c.balanced);
+}
+const DIST_LAB = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
+function distFormHtml(pfx) {                                   // 분배 기준 폼: pfx = 입력칸 ID 머리말 (창: 'settle-dist', 관리 탭 카드: 'pd')
+    const d = state.dist, sm = 'width:100%; margin:0; padding:7px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.9rem; box-sizing:border-box; text-align:right;';
+    return `
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">[분배 정산]에서 <b>출석률에 따라 분배 누적금을 나누는 방식</b>입니다. 출석률이 <b>기준 이상</b>인 사람을 출석률 순으로 줄 세워 <b>3개 그룹</b>으로 나누고, <b>그룹마다 정한 비율</b>로 나눕니다. 각 그룹의 몫은 그 그룹에 든 사람끼리 균등합니다.<br>기준을 넘은 사람이 <b>그룹 인원의 합계(기본 30명) 이상</b>이면 정해 둔 인원대로(1그룹 10명·2그룹 10명·3그룹 10명), <b>그보다 적으면 전체 인원을 3등분(33%씩)</b>합니다. <b>출석률이 같은 사람은 같은 그룹</b>에 넣고, 경계에 걸리면 앞 그룹에 넣어 그 그룹 인원이 늘어난 대로 몫을 나눕니다.</p>
+        <label style="${DIST_LAB}">출석률 기준 (% 이상)</label>
+        <input type="number" id="${pfx}-min" min="0" max="100" step="1" value="${d.minRate}" oninput="Settle.distDemo('${pfx}')" style="${inputStyle}">
+        <label style="${DIST_LAB}">그룹별 인원과 분배 비율</label>
+        <div style="display:grid; grid-template-columns:44px 1fr 1fr; gap:6px 10px; font-size:0.8rem; color:#7f8c8d; align-items:center;">
+            <span></span><span>그룹 인원 (명)</span><span>분배 비율 (%)</span>
+            ${d.tiers.map((t, i) => `<b style="color:#2c3e50;">${i + 1}그룹</b><input type="number" id="${pfx}-size-${i}" min="1" max="200" step="1" value="${t.size}" oninput="Settle.distDemo('${pfx}')" style="${sm}"><input type="number" id="${pfx}-pct-${i}" min="0" max="100" step="0.5" value="${t.pct}" oninput="Settle.distDemo('${pfx}')" style="${sm}">`).join('')}
+        </div>
+        <div id="${pfx}-demo" style="margin-top:10px; font-size:0.8rem; color:#555; line-height:1.6;"></div>`;
+}
+async function openDistSettings() {
+    if (!(await requireAdmin())) return;
+    showModal(`
+        <h3 style="margin:0 0 6px; color:#2c3e50;">⚙️ 분배 기준</h3>
+        ${distFormHtml('settle-dist')}
+        <div style="display:flex; gap:8px; margin-top:14px;">
+            ${actBtn('저장', "Settle.saveDistSettings('settle-dist')", '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('기본값', "Settle.resetDistSettings('settle-dist')", '#7f8c8d').replace('padding:6px 11px', 'padding:11px')}
+            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'padding:11px')}
+        </div>`);
+    distDemo('settle-dist');
+}
+function distFormRead(pfx) {                                   // 입력값 읽기 (잘못되면 { error })
+    pfx = pfx || 'settle-dist';
+    const m = $(pfx + '-min');
+    if (!m) return null;
+    const minRate = Number(m.value), tiers = [];
+    if (m.value.trim() === '' || isNaN(minRate) || minRate < 0 || minRate > 100) return { error: '출석률 기준은 0~100 사이의 숫자로 입력하세요.' };
+    for (let i = 0; i < DIST_DEFAULT.tiers.length; i++) {
+        const sz = $(pfx + '-size-' + i), pc = $(pfx + '-pct-' + i);
+        if (!sz || !pc) return null;
+        const size = Number(sz.value), pct = Number(pc.value);
+        if (sz.value.trim() === '' || !Number.isInteger(size) || size < 1 || size > 200) return { error: '그룹 인원은 1 이상의 정수로 입력하세요.' };
+        if (pc.value.trim() === '' || isNaN(pct) || pct < 0 || pct > 100) return { error: '분배 비율은 0~100 사이의 숫자로 입력하세요.' };
+        tiers.push({ size: size, pct: pct });
+    }
+    const sum = sumOf(tiers.map(t => t.pct));
+    if (Math.abs(sum - 100) > 0.01) return { error: '그룹 비율의 합계가 ' + (Math.round(sum * 100) / 100) + '%입니다. 100%로 맞춰주세요.' };
+    return { minRate: minRate, tiers: tiers };
+}
+function distDemo(pfx) {
+    pfx = pfx || 'settle-dist';
+    const el = $(pfx + '-demo'), f = distFormRead(pfx);
+    if (!el) return;
+    if (!f || f.error) { el.innerHTML = f && f.error ? '<span style="color:#c0392b;">⛔ ' + esc(f.error) + '</span>' : ''; return; }
+    el.innerHTML = '예) 1,000 ' + UNIT + ' → ' + f.tiers.map((t, i) => (i + 1) + '그룹 <b>' + fmt(Math.round(1000 * t.pct / 100)) + '</b>').join(' · ') + '<br>(출석률 ' + f.minRate + '% 이상인 사람만 · 기준 인원 ' + f.tiers.map(t => t.size).join('·') + '명, 그보다 적으면 3등분 · 그룹 안에서는 균등)';
+}
+async function saveDistSettings(pfx) {
+    pfx = pfx || 'settle-dist';
+    const f = distFormRead(pfx);
+    if (!f) return;
+    if (f.error) { alert(f.error); return; }
+    if (!(await requireAdmin())) return;
+    try { await db.ref('hunter_config/distribution').set({ minRate: f.minRate, tiers: f.tiers }); if (pfx === 'settle-dist') closeModal(); else distCardMsg('✅ 저장했습니다.'); }
+    catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+async function resetDistSettings(pfx) {
+    pfx = pfx || 'settle-dist';
+    if (!(await requireAdmin())) return;
+    try { await db.ref('hunter_config/distribution').remove(); if (pfx === 'settle-dist') closeModal(); else distCardMsg('✅ 기본값으로 되돌렸습니다.'); }
+    catch (e) { alert('❌ 저장 실패: ' + e.message); }
+}
+// ── 관리 탭 [💰 분배 비율] 카드: 출석률에 따른 분배 비율을 언제든 조절 (분배 정산 화면의 ⚙️ 분배 기준과 같은 설정) ──
+function distCardMsg(t) {
+    const m = $('pd-msg');
+    if (!m) return;
+    m.textContent = t;
+    clearTimeout(distCardMsg.t);
+    distCardMsg.t = setTimeout(() => { const x = $('pd-msg'); if (x) x.textContent = ''; }, 3500);
+}
+function renderDistCard(force) {
+    const acc = $('acc-dist'), body = $('pd-body'), badge = $('pd-badge');
+    if (!acc || !body) return;
+    if (!isAdmin) { acc.style.display = 'none'; return; }
+    acc.style.display = '';
+    ensureDist();
+    const sig = JSON.stringify(state.dist);
+    if (!force && body.dataset.sig === sig) return;
+    const act = document.activeElement;
+    if (!force && act && body.contains(act)) return;                               // 입력 중에는 덮어쓰지 않음
+    body.dataset.sig = sig;
+    const d = state.dist;
+    if (badge) badge.textContent = '출석률 ' + (Math.round(d.minRate * 10) / 10) + '% 이상 · ' + d.tiers.map(t => (Math.round(t.pct * 10) / 10)).join(' / ') + '%';
+    body.innerHTML = `<div style="margin-top:12px;">${distFormHtml('pd')}
+        <div style="display:flex; gap:8px; margin-top:14px; align-items:center; flex-wrap:wrap;">
+            ${actBtn('저장', "Settle.saveDistSettings('pd')", '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('기본값', "Settle.resetDistSettings('pd')", '#7f8c8d').replace('padding:6px 11px', 'padding:11px')}
+        </div>
+        <div id="pd-msg" style="margin-top:8px; font-size:0.8rem; color:#27ae60; min-height:1.1em;"></div>
+        <div style="margin-top:2px; font-size:0.74rem; color:#95a5a6; line-height:1.5;">여기서 바꾼 값은 아이템/정산 탭의 [분배 정산]에 바로 적용됩니다. (정산 화면의 [⚙️ 분배 기준]에서도 같은 설정을 바꿀 수 있어요)</div></div>`;
+    distDemo('pd');
+}
+function initDistAdmin() {                                     // "출석률 설정" 카드 바로 아래에 만듦
+    if ($('acc-dist')) return;
+    const anchor = $('acc-part') || $('acc-backup') || $('acc-export') || $('acc-items');
+    if (!anchor) return;
+    const acc = document.createElement('div');
+    acc.className = 'accordion-card';
+    acc.id = 'acc-dist';
+    acc.style.display = 'none';
+    acc.innerHTML = `
+        <div class="accordion-header" onclick="toggleAccordion('acc-dist')">
+            <h2>💰 분배 비율 (출석률 기준) <span id="pd-badge" style="display:block; font-size:0.76rem; font-weight:normal; color:#8e44ad; margin-top:2px;"></span></h2>
+            <span class="accordion-arrow">▼</span>
+        </div>
+        <div class="accordion-body"><div id="pd-body"></div></div>`;
+    anchor.insertAdjacentElement('afterend', acc);
+}
+async function saveRankSettlement() {                          // [분배 완료]
+    if (!(await requireManage())) return;
+    if (state.partBusy || !state.partStats) { alert('출석률을 불러오는 중입니다. 잠시 뒤에 다시 눌러 주세요.'); return; }
+    const c = rankCurrent(), items = c.items, total = c.total, pays = c.rows.filter(r => r.amount > 0), month = monthKey();
+    if (!items.length) { alert('정산할 아이템이 없습니다. (이미 정산되었을 수 있습니다)'); return; }
+    if (c.errors.length) { alert(c.errors[0]); return; }
+    if (!pays.length) { alert('받을 사람이 없습니다. 출석률 기준을 낮춰 주세요.'); return; }
+    if (!c.balanced) { alert('금액 계산이 맞지 않습니다. (배분 합계 ' + fmt(c.paid) + ' + 미배분 ' + fmt(c.unallocated) + ' ≠ 총액 ' + fmt(total) + ')'); return; }
+    if (c.unallocated > 0 && !confirm(`미배분 금액이 ${fmt(c.unallocated)} ${UNIT} 있습니다. (해당하는 사람이 없는 그룹의 몫)\n이 금액은 누구에게도 지급되지 않습니다. 그대로 분배를 완료할까요?`)) return;
+    if (!confirm(`${monthLabel(month)} 분배를 완료할까요?\n분배 누적금 ${fmt(total)} ${UNIT}을(를) 출석률 ${Math.round(c.minRate * 10) / 10}% 이상 ${pays.length}명에게 그룹별로 나눕니다.\n${c.tierInfo.filter(t => t.members.length).map(t => '· ' + t.group + '그룹 ' + (Math.round(t.pct * 10) / 10) + '% (' + fmt(t.pool) + ') → ' + t.members.length + '명').join('\n')}\n(분배 완료 후 분배 누적금은 0이 되고, 같은 아이템은 다시 정산되지 않습니다)`)) return;
+    try {
+        const fresh = await Promise.all(items.map(i => db.ref('boss_storage/' + i.id + '/settledId').once('value')));       // 다른 사람이 먼저 정산했는지 서버 값으로 재확인
+        if (fresh.some(x => x.val())) { alert('다른 사람이 이미 정산한 아이템이 포함되어 있습니다. 화면을 새로 연 뒤 다시 시도하세요.'); return; }
+        const sidv = 'S' + Date.now(), recMap = {};
+        pays.forEach(d => {
+            recMap['u' + d.userId] = { userId: d.userId, name: d.name, server: d.server, amount: d.amount, received: false, rate: Math.round(d.rate * 10) / 10, rank: d.rank, tier: d.tier };
+            if (d.team) recMap['u' + d.userId].team = true;                                                                  // 정산 당시 지원조 (이후 명단이 바뀌어도 기록 유지)
+        });
+        const record = {
+            id: sidv, createdAt: nowIso(), month: month, totalAmount: total, count: pays.length, mode: 'rank',
+            items: items.map(i => ({ id: String(i.id), itemName: i.itemName, bossName: i.bossName, bossServer: i.bossServer || '', bossVariant: i.bossVariant || '', date: i.date, buyer: i.buyer, bidPrice: i.bidPrice })),
+            recipients: recMap,
+            rank: { minRate: c.minRate, eligible: c.eligibleN, thirds: c.thirds, week: state.partWeek || '', tiers: c.tierInfo.map(t => ({ group: t.group, from: t.from, to: t.to, pct: t.pct, pool: t.pool, count: t.members.length })) }
+        };
+        if (c.unallocated) record.unallocated = c.unallocated;
+        const updates = {};
+        updates['boss_settlement/' + sidv] = record;
+        items.forEach(i => { updates['boss_storage/' + i.id + '/settledId'] = sidv; });
+        await db.ref().update(updates);
+        closeCalc();
+        renderCalcActions();
+        alert('✅ ' + monthLabel(month) + ' 분배가 완료되었습니다.\n분배 누적금이 0으로 바뀌었어요.');
+        showHistory();
+    } catch (e) {
+        alert('❌ 분배 저장 실패: ' + e.message);
+    }
+}
+
+
 
 function renderCalc() {
     const box = $('settle-calc-area');
@@ -2656,6 +3024,7 @@ function renderCalc() {
         <div style="padding:0 14px 10px;">
             <div style="font-size:0.85rem; font-weight:bold; margin:6px 0;">⚖️ 분배 방식</div>
             <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <button id="settle-mode-rank" onclick="Settle.setCalcMode('rank')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.8rem;">순위 분배</button>
                 <button id="settle-mode-equal" onclick="Settle.setCalcMode('equal')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;">균등 배분</button>
                 <button id="settle-mode-support" onclick="Settle.setCalcMode('support')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;">지원조 비율</button>
                 <button id="settle-mode-ratio" onclick="Settle.setCalcMode('ratio')" style="flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;">서버별 비율</button>
@@ -2672,6 +3041,8 @@ function renderCalc() {
                 ${RATIO_GROUPS.filter(([g]) => g !== 'other' || showOther).map(([g, n]) => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:3px 0; font-size:0.85rem;"><span>${g === 'support' ? '지원 <small style="color:#1e8449; font-weight:bold;">(지원조)</small>' : n}</span><span><input type="number" id="settle-ratio-${g}" min="0" max="100" step="0.5" value="${Number(state.calcRatios[g]) || 0}" oninput="Settle.setRatio('${g}', this.value)" style="${inp}"> %</span></div>`).join('')}
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:0.82rem;"><span id="settle-ratio-sum"></span>${actBtn('대상 인원 비례로 채우기', 'Settle.fillRatioByHeadcount()', '#5D6D7E')}</div>
             </div>
+            <div id="settle-attend-box" style="display:none; margin-bottom:6px;"></div>
+            <div id="settle-rcpt-wrap">
             <div style="font-size:0.85rem; font-weight:bold; margin:8px 0 6px;">👥 정산 대상자 <span id="settle-rcpt-count" style="color:#27ae60;"></span></div>
             <div style="font-size:0.76rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">오른쪽 칸에 금액을 입력하면 그 사람에게는 <b>그 금액</b>을 줍니다. (직접 지정한 금액을 먼저 빼고 남은 금액을 위 방식으로 나눕니다. 비워두면 자동)</div>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
@@ -2686,10 +3057,11 @@ function renderCalc() {
                     <input type="number" data-fix="${Number(u.id)}" min="0" step="1" oninput="Settle.setFixed(${Number(u.id)}, this.value)" style="${inp} width:96px;" title="이 사람에게 줄 금액을 직접 지정">
                 </div>`).join('')}
             </div>
+            </div>
             <div id="settle-calc-preview" style="margin-top:10px;"></div>
         </div>
         <div style="padding:10px 14px; border-top:1px solid #eee; display:flex; gap:8px;">
-            ${actBtn('💾 정산 확정 저장', 'Settle.saveSettlement()', '#27ae60').replace('<button', '<button id="settle-save-btn"')}
+            ${actBtn('✅ 분배 완료', 'Settle.saveSettlement()', '#27ae60').replace('<button', '<button id="settle-save-btn"')}
             ${actBtn('닫기', 'Settle.closeCalc()', '#95a5a6')}
         </div>
     </div>`;
@@ -2699,20 +3071,26 @@ function renderCalc() {
 
 function renderCalcModeUi() {
     const on = 'background:#2c3e50; color:white; border:2px solid #2c3e50;', off = 'background:white; color:#2c3e50; border:2px solid #d5d8dc;';
-    const css = ' flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem;';
-    ['equal', 'support', 'ratio'].forEach(m => { const b = $('settle-mode-' + m); if (b) b.style.cssText = (state.calcMode === m ? on : off) + css; });
-    const rb2 = $('settle-ratio-box'), sb = $('settle-support-box');
+    const css = ' flex:1; padding:8px 4px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.8rem;';
+    ['rank', 'equal', 'support', 'ratio'].forEach(m => { const b = $('settle-mode-' + m); if (b) b.style.cssText = (state.calcMode === m ? on : off) + css; });
+    const rb2 = $('settle-ratio-box'), sb = $('settle-support-box'), ab = $('settle-attend-box'), rw = $('settle-rcpt-wrap'), pv = $('settle-calc-preview');
     if (rb2) rb2.style.display = state.calcMode === 'ratio' ? 'block' : 'none';
     if (sb) sb.style.display = state.calcMode === 'support' ? 'block' : 'none';
+    if (ab) ab.style.display = state.calcMode === 'rank' ? 'block' : 'none';
+    if (rw) rw.style.display = state.calcMode === 'rank' ? 'none' : 'block';                       // 출석 기준은 대상자를 출석률로 자동 결정 (직접 고르지 않음)
+    if (pv) pv.style.display = state.calcMode === 'rank' ? 'none' : 'block';
     document.querySelectorAll('.settle-team-badge').forEach(b => { b.style.display = (state.calcMode === 'support' || state.calcMode === 'ratio') ? 'inline' : 'none'; });
     RATIO_GROUPS.forEach(([g]) => { const el = $('settle-ratio-' + g); if (el && document.activeElement !== el) el.value = Number(state.calcRatios[g]) || 0; });
     const sp = $('settle-support-pct'); if (sp && document.activeElement !== sp) sp.value = Number(state.calcSupportPct) || 0;
 }
 function setCalcMode(m) {
-    state.calcMode = (m === 'ratio' || m === 'support') ? m : 'equal';
+    state.calcMode = (m === 'ratio' || m === 'support' || m === 'rank') ? m : 'equal';
     if (state.calcMode === 'ratio' && RATIO_GROUPS.every(([g]) => !Number(state.calcRatios[g]))) fillRatioByHeadcount();
     renderCalcModeUi();
-    renderCalcPreview();
+    if (state.calcMode === 'rank') {                                                               // 출석 기준으로 바꾸면 그때의 출석을 새로 읽어서 계산
+        if (!state.partStats || !state.partAt || Date.now() - state.partAt > 60000) partLoad(true);
+        renderAttendBox();
+    } else renderCalcPreview();
 }
 function setSupportPct(v) {
     state.calcSupportPct = (v === '' || v === null) ? 0 : Math.max(0, Number(v) || 0);
@@ -2742,6 +3120,7 @@ function setFixed(uid, v) {
 }
 
 function renderCalcPreview() {
+    if (state.calcMode === 'rank') { renderAttendBox(); return; }
     const el = $('settle-calc-preview'), cnt = $('settle-rcpt-count');
     if (!el) return;
     const c = calcCurrent();
@@ -2817,6 +3196,7 @@ function setRecipientsServer(sv) {
 }
 
 async function saveSettlement() {
+    if (state.calcMode === 'rank') return saveRankSettlement();
     if (!(await requireManage())) return;
     const c = calcCurrent();
     const items = c.items, total = c.total;
@@ -2886,13 +3266,33 @@ const recipientsOf = (r) => Object.entries(r.recipients || {})
     .map(([k, v]) => Object.assign({ _key: k }, v))
     .sort((a, b) => koCmp(a.name, b.name));
 
+function monthSummaryHtml() {                                  // 해당 월에 개인별로 받을 금액: 그 달의 분배 완료 기록을 사람별로 합산 (최근 2개월)
+    const groups = {};
+    state.settlements.forEach(r => { const k = r.month || monthKey(new Date(r.createdAt)); (groups[k] = groups[k] || []).push(r); });
+    const keys = Object.keys(groups).sort().reverse().slice(0, 2);
+    return keys.map((k, gi) => {
+        const per = {};
+        let tot = 0;
+        groups[k].forEach(r => recipientsOf(r).forEach(x => {
+            const id = String(x.userId !== undefined ? x.userId : x.name);
+            per[id] = per[id] || { name: x.name, amount: 0, got: 0 };
+            per[id].amount += Number(x.amount) || 0; if (x.received) per[id].got += Number(x.amount) || 0; tot += Number(x.amount) || 0;
+        }));
+        const list = Object.values(per).sort((a, b) => b.amount - a.amount || koCmp(a.name, b.name));
+        return `<details class="settle-month-sum" ${gi === 0 ? 'open' : ''} style="border:1.5px solid #f5cba7; background:#fff8ee; border-radius:8px; padding:8px 12px; margin-bottom:8px;">
+            <summary style="cursor:pointer; font-size:0.88rem;"><b>📅 ${esc(monthLabel(k))} 개인별 받을 금액</b> <span style="font-size:0.78rem; color:#7f8c8d;">분배 ${groups[k].length}건 · ${list.length}명 · 총 ${fmt(tot)} ${UNIT}</span></summary>
+            <div style="margin-top:6px; max-height:240px; overflow-y:auto;">${list.map(x => `<div style="display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-top:1px dashed #f0e0cc; font-size:0.85rem;"><span>${esc(x.name)}</span><span><b style="color:#27ae60;">${fmt(x.amount)}</b>${x.got ? ' <span style="font-size:0.72rem; color:#7f8c8d;">(수령 ' + fmt(x.got) + ')</span>' : ''}</span></div>`).join('')}</div>
+        </details>`;
+    }).join('');
+}
+
 function renderHistory() {
     const area = $('settle-history-area');
     if (!area) return;
     const mg = canManage();
     const head = `<div style="display:flex; justify-content:space-between; align-items:center; margin:10px 0 8px;"><b style="font-size:0.9rem;">📋 정산 내역 (최근 ${state.settlements.length}건)</b>${actBtn('닫기', 'Settle.hideHistory()', '#95a5a6')}</div>`;
     if (!state.settlements.length) { area.innerHTML = head + '<p style="color:#95a5a6; text-align:center; padding:12px; margin:0; font-size:0.88rem;">저장된 정산 내역이 없습니다.</p>'; return; }
-    area.innerHTML = head + state.settlements.map(r => {
+    area.innerHTML = head + monthSummaryHtml() + state.settlements.map(r => {
         const rid = sid(r.id);
         const rc = recipientsOf(r);
         const done = rc.filter(x => x.received).length;
@@ -2900,11 +3300,11 @@ function renderHistory() {
         return `
         <div style="border:1px solid #dee2e6; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:white;">
             <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px;">
-                <div><b>${esc(new Date(r.createdAt).toLocaleDateString('ko-KR'))}</b>
+                <div><b>${esc(new Date(r.createdAt).toLocaleDateString('ko-KR'))}</b>${r.month ? ' <span style="font-size:0.75rem; color:#e67e22; font-weight:bold;">' + esc(monthLabel(r.month)) + ' 분배</span>' : ''}
                     <span style="font-size:0.8rem; color:#7f8c8d;"> 아이템 ${its.length}개 · ${rc.length}명</span></div>
                 <b style="color:#2980b9;">${fmt(r.totalAmount)} ${UNIT}</b>
             </div>
-            <div style="font-size:0.78rem; color:#7f8c8d; margin-top:3px;">분배: ${esc(calcModeText(r.mode, r.ratios, r.supportPct))}${rc.filter(x => x.fixed).length ? ' · 직접 지정 ' + rc.filter(x => x.fixed).length + '명' : ''}${Number(r.unallocated) ? ' · <span style="color:#c0392b;">미배분 ' + fmt(r.unallocated) + '</span>' : ''}</div>
+            <div style="font-size:0.78rem; color:#7f8c8d; margin-top:3px;">분배: ${esc(calcModeText(r.mode, r.ratios, r.supportPct, r.rank))}${rc.filter(x => x.fixed).length ? ' · 직접 지정 ' + rc.filter(x => x.fixed).length + '명' : ''}${Number(r.unallocated) ? ' · <span style="color:#c0392b;">미배분 ' + fmt(r.unallocated) + '</span>' : ''}</div>
             <div id="settle-hist-prog-${rid}" style="font-size:0.78rem; color:#7f8c8d; margin-top:3px;">수령 확인 ${done}/${rc.length}</div>
             <details style="margin-top:6px;">
                 <summary style="cursor:pointer; font-size:0.85rem; color:#2c3e50;">낙찰 아이템 / 대상자 보기</summary>
@@ -2913,7 +3313,7 @@ function renderHistory() {
                 </div>
                 <div style="max-height:220px; overflow-y:auto; border:1px solid #eee; border-radius:6px;">
                     ${rc.map(x => `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 10px; border-bottom:1px solid #f3f3f3; font-size:0.85rem;">
-                        <span>${esc(x.name)}${serverBadge(x.server)}${x.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.7rem;">지원조</span>' : ''}${x.fixed ? ' <span style="padding:1px 6px; background:#fdebd0; color:#d35400; border-radius:4px; font-size:0.7rem;">직접 지정</span>' : ''}</span>
+                        <span>${esc(x.name)}${serverBadge(x.server)}${x.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.7rem;">지원조</span>' : ''}${x.fixed ? ' <span style="padding:1px 6px; background:#fdebd0; color:#d35400; border-radius:4px; font-size:0.7rem;">직접 지정</span>' : ''}${x.rate !== undefined ? ' <span style="font-size:0.72rem; color:#7f8c8d;">' + (x.tier ? x.tier + '그룹 · ' : '') + (x.rank ? x.rank + '등 · ' : '') + '출석률 ' + (Math.round(Number(x.rate) * 10) / 10) + '%</span>' : ''}</span>
                         <span style="display:flex; align-items:center; gap:8px;"><b style="color:#27ae60;">${fmt(x.amount)}</b>
                         ${mg ? `<input type="checkbox" style="${cbStyle}" ${x.received ? 'checked' : ''} onchange="Settle.toggleReceived('${rid}', '${sid(x._key)}', this.checked)" title="수령 확인">`
                              : (x.received ? '<span style="color:#27ae60; font-size:0.75rem;">수령</span>' : '')}</span>
@@ -3960,7 +4360,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, openPartSettings, partDemo, partBossAll, partToggleBoss, openPartAdmin, guideRetry, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, partBossAll, partToggleBoss, openPartAdmin, guideRetry, supRowChange, supBulk, openDist, distRecalc, openDistSettings, distDemo, saveDistSettings, resetDistSettings, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
@@ -3971,8 +4371,10 @@ initAdminItems(); // 관리 탭의 [보스 아이템 설정] 편집기
 initUserReimb();  // 사용자용 [복구비] 탭
 initMyAtt();      // 출석 탭의 [내 출석]
 initBackupAdmin(); // 관리 탭의 [아이템/정산 구글 백업]
-initPartAdmin();   // 관리 탭의 [📊 참여도 설정] 카드
-initPartToggle();  // 출석 탭 [출석하기]와 [내 출석] 사이의 "이 스케줄을 참여도에 포함" 체크 칸 (관리자)
+initPartAdmin();   // 관리 탭의 [📊 출석률 설정] 카드
+initDistAdmin();   // 관리 탭의 [💰 분배 비율] 카드
+initPartToggle();  // 출석 탭 [출석하기]와 [내 출석] 사이의 "이 스케줄을 출석률에 포함" 체크 칸 (관리자)
 initGuide();       // 하단 메뉴 [사이트이용법] 탭
+initTeamRules();   // 지원조 규칙 + 통계 통일
 updateNav();      // 정산 메뉴는 관리자·담당자에게만
 })();
