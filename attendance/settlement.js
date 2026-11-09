@@ -65,6 +65,7 @@ const state = {
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
+    bidRule: { minRate: 50, ready: false }, bidElig: { att: {}, today: '', at: 0 },            // 입찰 자격: 2순위 출석률 기준 / 신청 시점에 읽은 당일 출석
     dist: { minRate: 50, tiers: [{ size: 10, pct: 50 }, { size: 10, pct: 30 }, { size: 10, pct: 20 }], ready: false },   // 분배 기준 (출석률 50% 이상 · 1~10등 50% / 11~20등 30% / 21~30등 20%)
     bids: {}, bidSel: new Set(), bidAdmin: '',
     itemPrices: {}, part: { exclude: {}, configured: false, ready: false }, partRaw: null, partStats: null, partAt: 0, partBusy: false, partWeek: '',   // 아이템별 입찰가 / 출석률 설정(제외 보스) / 이번 주 출석 통계                                                          // 입찰 신청: { 사용자ID: { 아이템ID: 입찰 } } / 체크한 아이템 / 관리자 패널 상태
@@ -261,7 +262,7 @@ function ensureSupportTeam() {
         if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
     });
 }
-function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureItemPrices(); ensureDist(); ensureStorage(); syncBidListeners(); }
+function ensureListeners() { ensureManagers(); ensureSupportTeam(); ensureCatRules(); ensureItemTags(); ensureItemPrices(); ensureDist(); ensureBidRule(); ensureStorage(); syncBidListeners(); }
 
 // ============================================================
 // 📦 드랍 기록
@@ -1556,6 +1557,7 @@ function renderStorage() {
                     ${mg ? `<div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${it.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(it.bossVariant)}${it.bossVariantName ? ' · ' + esc(it.bossVariantName) : ''}</span>` : ''}${serverBadge(it.bossServer)}</div>` : (it.bossServer ? `<div style="margin-top:3px;">${serverBadge(it.bossServer)}</div>` : '')}
                     ${mg ? `<div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold && mg ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>` : ''}
                     ${!sold && priceOf(it.itemName) ? `<div style="font-size:0.8rem; color:#e67e22; font-weight:bold;">💎 입찰가 ${fmt(priceOf(it.itemName))} ${UNIT}</div>` : ''}
+                    ${!sold ? bidHintHtml(it) : ''}
                     ${bidLineHtml(it)}
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">${btns.join('')}</div>
@@ -1969,6 +1971,8 @@ async function backupNowRequest() {
 
 // ============================================================
 // 🙋 입찰 신청 — 길드원이 보관함 아이템에 입찰을 신청하고, 관리자가 출석률 등을 보고 낙찰자를 확정
+//   · 입찰 자격: 1순위 = 아이템이 나온 당일, 그 보스 시간(날짜_일정번호 출석 기록)에 출석한 사람만 / 2순위 = 당일이 지났거나 당일 출석자가 없으면, 입찰을 누르는 시점의 출석률이 기준(기본 50%) 이상인 사람
+//     (UI에서 확인하는 규칙이며, 신청 기록에 priority·rate 를 남김. 기준은 hunter_config/bidRule = { minRate })
 //   · 입찰가는 길드원이 입력하지 않고, 관리자가 아이템 설정에서 아이템 이름별로 정해 둔 값(hunter_config/itemPrices)을 씁니다.
 //   · 순서는 이번 주 출석률이 높은 순 (같으면 먼저 신청한 순). 출석률은 통계 탭과 같은 값
 //   boss_bids/{사용자ID}/{아이템ID} = { itemId, itemName, bossName, date, userId, name, amount(신청 당시 입찰가·선택), createdAt, updatedAt }
@@ -2029,6 +2033,37 @@ function pendingBids() {                                       // 아직 판매�
     return out;
 }
 const bidCheckbox = (k) => `<input type="checkbox" ${state.bidSel.has(k) ? 'checked' : ''} onchange="Settle.toggleBidSel('${k}', this.checked)" title="입찰할 아이템 선택" style="${cbStyle} margin-right:8px; vertical-align:middle; accent-color:#e67e22;">`;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function bidEligLoad(items) {                            // 입찰을 누르는 그 시점의 출석률 + 당일 아이템의 그 보스 시간 출석자를 새로 읽음
+    await partLoad(true);
+    for (let i = 0; i < 15 && (state.partBusy || !state.partStats); i++) await sleep(100);                  // 다른 곳에서 읽는 중이면 끝날 때까지 잠깐 기다림
+    const today = ymdOf(nowD()), att = {};
+    const keys = Array.from(new Set(items.filter(it => it && it.date === today && it.bossId).map(it => it.date + '_' + it.bossId)));
+    await Promise.all(keys.map(async key => {
+        try {
+            const v = (await db.ref('boss_attendance/' + key + '/attendees').once('value')).val() || {}, set = new Set();
+            Object.keys(v).forEach(uid => { const st = normalizeStatus(v[uid]); if (st === 'present' || st === 'late') set.add(Number(uid)); });
+            att[key] = set;
+        } catch (e) { att[key] = null; }
+    }));
+    state.bidElig = { att: att, today: today, at: Date.now() };
+}
+function bidEligOf(it, user) {                                 // → { ok, priority, label, reason, rate }
+    const today = ymdOf(nowD()), key = it && it.bossId ? it.date + '_' + it.bossId : '', set = state.bidElig.att[key];
+    if (it && it.date === today && it.bossId && set && set.size) {                                         // 당일 아이템: 그 보스 시간 출석자가 1순위
+        if (set.has(Number(user.id))) return { ok: true, priority: 1, label: '1순위 · 오늘 이 보스 시간에 출석', rate: rateOf(user.id).rate };
+        return { ok: false, reason: '오늘 나온 아이템이라, 그 보스 시간에 출석한 사람(1순위)만 입찰할 수 있어요.' };
+    }
+    const r = rateOf(user.id), min = state.bidRule.minRate;                                                // 당일이 지났거나 당일 출석자가 없으면 2순위: 지금 출석률이 기준 이상
+    if (!r.loaded) return { ok: false, reason: '출석률을 불러오지 못했어요. 잠시 뒤에 다시 시도해 주세요.' };
+    if (r.raw >= min) return { ok: true, priority: 2, label: '2순위 · 출석률 ' + r.rate + '%', rate: r.rate };
+    return { ok: false, reason: '출석률 ' + r.rate + '%라서 입찰할 수 없어요. (출석률 ' + (Math.round(min * 10) / 10) + '% 이상만 가능)', rate: r.rate };
+}
+function bidHintHtml(it) {                                     // 카드에 붙는 한 줄: 이 아이템의 입찰 자격
+    const today = ymdOf(nowD());
+    return `<div style="font-size:0.74rem; color:#7f8c8d; margin-top:2px;">🎯 ${it.date === today && it.bossId ? '오늘 나온 아이템 — 그 보스 시간에 출석한 사람이 먼저(1순위)' : '출석률 ' + (Math.round(state.bidRule.minRate * 10) / 10) + '% 이상이면 입찰 가능(2순위)'}</div>`;
+}
+
 function bidLineHtml(it) {                                     // 카드에 붙는 "내 입찰" 줄
     const k = sid(it.id);
     return myBidsOfItem(it.id).map(b => {
@@ -2055,7 +2090,7 @@ function renderBidBar() {                                      // 체크한 아�
 function toggleBidSel(k, on) { if (on) state.bidSel.add(k); else state.bidSel.delete(k); renderBidBar(); }
 function clearBidSel() { state.bidSel = new Set(); renderStorage(); }
 
-function openBidModal(k, uid) {
+async function openBidModal(k, uid) {
     const mine = myUsers();
     if (!mine.length) { alert('먼저 출석 체크 탭의 [⭐ 내 이름] 버튼으로 내 이름을 등록해 주세요.\n(내 이름으로 등록한 캐릭터로 입찰합니다)'); return; }
     const keys = k ? [k] : Array.from(state.bidSel);
@@ -2063,10 +2098,13 @@ function openBidModal(k, uid) {
     if (!items.length) { alert(k ? '이미 판매된 아이템이라 입찰할 수 없습니다.' : '입찰할 아이템을 먼저 체크하세요.'); return; }
     const who = (uid !== undefined && uid !== null) ? mine.filter(u => Number(u.id) === Number(uid)) : mine;
     if (!who.length) { alert('이 입찰의 캐릭터가 내 이름에 등록되어 있지 않습니다.'); return; }
+    ensureBidRule();
+    showModal('<div style="padding:26px 8px; text-align:center; color:#7f8c8d; font-size:0.9rem;">⏳ 입찰 자격(출석)을 확인하는 중…</div>');
+    try { await bidEligLoad(items); } catch (e) { state.bidElig = { att: {}, today: ymdOf(nowD()), at: 0 }; }
     const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin:12px 0 4px;';
     showModal(`
         <h3 style="margin:0 0 6px; color:#2c3e50;">🙋 입찰 신청</h3>
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">아래 아이템에 입찰을 신청합니다. 입찰가는 <b>관리자가 정해 둔 가격</b>이고, 낙찰자는 <b>관리자가 출석률 등을 보고 확정</b>합니다. 확정 전에는 카드에서 신청을 취소할 수 있어요.</p>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">아래 아이템에 입찰을 신청합니다. 입찰가는 <b>관리자가 정해 둔 가격</b>이고, 낙찰자는 <b>관리자가 출석률 등을 보고 확정</b>합니다. 확정 전에는 카드에서 신청을 취소할 수 있어요.<br>입찰 자격: 아이템이 나온 <b>당일</b>에는 그 보스 시간에 출석한 사람(<b>1순위</b>)만, 당일이 지나면 <b>출석률 ${Math.round(state.bidRule.minRate * 10) / 10}% 이상</b>인 사람(<b>2순위</b>)이 누를 수 있어요.</p>
         <label style="${lab}">입찰 캐릭터</label>
         ${who.length > 1
             ? `<select id="settle-bid-char" onchange="Settle.bidCharChange()" style="${inputStyle}">${who.map(u => `<option value="${Number(u.id)}">${esc(u.name)}</option>`).join('')}</select>`
@@ -2078,30 +2116,38 @@ function openBidModal(k, uid) {
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-top:5px; font-size:0.85rem;">
                     <span>${pr ? '💎 입찰가 <b style="color:#e67e22;">' + fmt(pr) + ' ' + UNIT + '</b>' : '<span style="color:#95a5a6;">입찰가 미정 (확정할 때 관리자가 정합니다)</span>'}</span>
                     <span class="settle-bid-done" style="color:#27ae60; font-weight:bold; font-size:0.8rem;"></span></div>
+                <div class="settle-bid-elig" style="font-size:0.78rem; margin-top:4px; line-height:1.5;"></div>
             </div>`; }).join('')}
         </div>
         <div id="settle-bid-sum" style="margin-top:10px; font-size:0.82rem; color:#555; line-height:1.5;"></div>
         <div style="display:flex; gap:8px; margin-top:14px;">
-            ${actBtn('🙋 입찰 신청', 'Settle.submitBids()', '#e67e22').replace('padding:6px 11px', 'flex:1; padding:11px')}
+            ${actBtn('🙋 입찰 신청', 'Settle.submitBids()', '#e67e22').replace('<button', '<button id="settle-bid-submit"').replace('padding:6px 11px', 'flex:1; padding:11px')}
             ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
         </div>`);
     bidCharChange();
 }
-function bidCharChange() {                                     // 캐릭터를 바꾸면 그 캐릭터가 이미 신청한 아이템을 표시하고 합계를 다시 계산
+function bidCharChange() {                                     // 캐릭터를 바꾸면 그 캐릭터의 입찰 자격·이미 신청한 아이템을 표시하고 합계를 다시 계산
     const sel = $('settle-bid-char');
     if (!sel) return;
-    let n = 0, total = 0, unpriced = 0, done = 0;
+    const me = myUsers().find(u => Number(u.id) === Number(sel.value));
+    let n = 0, total = 0, unpriced = 0, done = 0, blocked = 0;
     document.querySelectorAll('#settle-bid-rows [data-bk]').forEach(row => {
         const it = stById(row.dataset.bk), b = it ? (state.bids[String(sel.value)] || {})[String(it.id)] : null;
+        const el = (it && me) ? bidEligOf(it, me) : { ok: false, reason: '' }, line = row.querySelector('.settle-bid-elig');
         row.dataset.done = b ? '1' : '';
+        row.dataset.ok = (!b && el.ok) ? '1' : '';
         row.querySelector('.settle-bid-done').textContent = b ? '✓ 이미 신청함' : '';
+        if (line) line.innerHTML = b ? '' : (el.ok ? '<span style="color:#1e8449; font-weight:bold;">✅ ' + esc(el.label) + '</span>' : '<span style="color:#c0392b; font-weight:bold;">⛔ ' + esc(el.reason) + '</span>');
         if (b) { done++; return; }
+        if (!el.ok) { blocked++; return; }
         n++;
         const pr = it ? priceOf(it.itemName) : 0;
         if (pr) total += pr; else unpriced++;
     });
-    const sum = $('settle-bid-sum');
-    if (sum) sum.innerHTML = n ? '이번에 신청할 아이템 <b>' + n + '개</b>' + (total ? ' · 입찰가 합계 <b style="color:#e67e22;">' + fmt(total) + ' ' + UNIT + '</b>' : '') + (unpriced ? ' <span style="color:#95a5a6;">(입찰가 미정 ' + unpriced + '개 제외)</span>' : '') + (done ? ' <span style="color:#27ae60;">· 이미 신청한 ' + done + '개는 제외</span>' : '') : '<span style="color:#27ae60;">선택한 아이템은 모두 이미 신청했습니다.</span>';
+    const sum = $('settle-bid-sum'), btn = $('settle-bid-submit');
+    if (btn) { btn.disabled = n === 0; btn.style.opacity = n === 0 ? '0.45' : ''; }
+    if (sum) sum.innerHTML = n ? '이번에 신청할 아이템 <b>' + n + '개</b>' + (total ? ' · 입찰가 합계 <b style="color:#e67e22;">' + fmt(total) + ' ' + UNIT + '</b>' : '') + (unpriced ? ' <span style="color:#95a5a6;">(입찰가 미정 ' + unpriced + '개 제외)</span>' : '') + (done ? ' <span style="color:#27ae60;">· 이미 신청한 ' + done + '개는 제외</span>' : '') + (blocked ? ' <span style="color:#c0392b;">· 자격이 없는 ' + blocked + '개는 제외</span>' : '')
+        : (blocked && !done ? '<span style="color:#c0392b;">이 캐릭터는 선택한 아이템에 입찰할 자격이 없습니다.</span>' : (blocked ? '<span style="color:#c0392b;">신청할 수 있는 아이템이 없습니다. (자격이 없는 ' + blocked + '개 · 이미 신청한 ' + done + '개)</span>' : '<span style="color:#27ae60;">선택한 아이템은 모두 이미 신청했습니다.</span>'));
 }
 async function submitBids() {
     const sel = $('settle-bid-char');
@@ -2109,24 +2155,34 @@ async function submitBids() {
     if (!me) { alert('입찰할 캐릭터를 선택하세요. (내 이름으로 등록한 캐릭터만 가능합니다)'); return; }
     const keys = Array.from(document.querySelectorAll('#settle-bid-rows [data-bk]')).filter(r => !r.dataset.done).map(r => r.dataset.bk);
     if (!keys.length) { alert('선택한 아이템은 모두 이미 신청했습니다.'); closeModal(); return; }
-    const updates = {}, done = [], skipped = [];
+    const fresh = [], skipped = [];
     for (const k of keys) {
         const it = await stFresh(k);
         if (!it || it.sold) { skipped.push(it ? it.itemName : '(삭제된 아이템)'); continue; }
+        fresh.push(it);
+    }
+    try { await bidEligLoad(fresh); } catch (e) { state.bidElig = { att: {}, today: ymdOf(nowD()), at: 0 }; }       // 누르는 지금 시점으로 자격을 다시 확인
+    const updates = {}, done = [], denied = [];
+    for (const it of fresh) {
         if ((state.bids[String(me.id)] || {})[String(it.id)]) continue;                                      // 그 사이 이미 신청됨
+        const el = bidEligOf(it, me);
+        if (!el.ok) { denied.push(it.itemName + ' — ' + el.reason); continue; }
         const pr = priceOf(it.itemName);
-        const rec = { itemId: String(it.id), itemName: it.itemName, bossName: it.bossName || '', date: it.date || '', userId: Number(me.id), name: me.name, createdAt: nowIso(), updatedAt: nowIso() };
+        const rec = { itemId: String(it.id), itemName: it.itemName, bossName: it.bossName || '', date: it.date || '', userId: Number(me.id), name: me.name, createdAt: nowIso(), updatedAt: nowIso(), priority: el.priority, rate: el.rate };
         if (pr) rec.amount = pr;                                                                              // 신청 당시 입찰가 (참고용)
         updates['boss_bids/' + me.id + '/' + it.id] = rec;
-        done.push(k);
+        done.push(sid(it.id));
     }
-    if (!done.length) { alert('입찰할 수 있는 아이템이 없습니다. 모두 이미 판매되었거나 삭제되었습니다.'); closeModal(); return; }
+    if (!done.length) {
+        if (denied.length) { alert('입찰할 수 없습니다.\n\n⛔ ' + denied.join('\n⛔ ')); bidCharChange(); return; }
+        alert('입찰할 수 있는 아이템이 없습니다. 모두 이미 판매되었거나 삭제되었습니다.'); closeModal(); return;
+    }
     try { await db.ref().update(updates); }
     catch (err) { alert('❌ 입찰 신청 실패: ' + err.message); return; }
     done.forEach(k => state.bidSel.delete(k));
     closeModal();
     renderStorage();
-    alert('✅ ' + done.length + '건 입찰 신청을 접수했습니다.\n관리자가 확정하면 결과가 아이템 카드에 표시됩니다.' + (skipped.length ? '\n\n⚠️ 이미 판매되어 제외됨: ' + skipped.join(', ') : ''));
+    alert('✅ ' + done.length + '건 입찰 신청을 접수했습니다.\n관리자가 확정하면 결과가 아이템 카드에 표시됩니다.' + (denied.length ? '\n\n⛔ 자격이 없어 제외됨:\n' + denied.join('\n') : '') + (skipped.length ? '\n\n⚠️ 이미 판매되어 제외됨: ' + skipped.join(', ') : ''));
 }
 async function cancelMyBid(k, uid) {
     const it = stById(k);
@@ -2158,6 +2214,18 @@ function ensureParticipation() {
         teamRulesRefresh();
     });
 }
+
+let bidRuleOn = false;
+function ensureBidRule() {                                     // 입찰 2순위 출석률 기준 (모든 길드원이 입찰 자격을 확인하려면 필요)
+    if (bidRuleOn || !depsOk()) return;
+    bidRuleOn = true;
+    db.ref('hunter_config/bidRule').on('value', snap => {
+        const v = snap.val() || {}, n = Number(v.minRate);
+        state.bidRule = { minRate: (v.minRate === undefined || v.minRate === null || isNaN(n)) ? 50 : Math.max(0, Math.min(100, n)), ready: true };
+        renderStorage(); renderPartCard(true);
+    });
+}
+
 
 let distOn = false;
 function ensureDist() {                                        // 분배 기준: hunter_config/distribution = { basePct, minRate }
@@ -2208,7 +2276,7 @@ function partCompute() {                                       // 이미 읽은 
 }
 
 async function partLoad(force) {                               // 이번 주 출석 기록을 한 번 읽어 둠 (1분 안에는 다시 읽지 않음). 계산은 partCompute
-    if (!canManage() || state.partBusy || typeof getWeekStart !== 'function' || typeof calculateStats !== 'function' || typeof formatLocalDate !== 'function') return;
+    if (state.partBusy || typeof getWeekStart !== 'function' || typeof calculateStats !== 'function' || typeof formatLocalDate !== 'function') return;
     if (!force && state.partAt && Date.now() - state.partAt < 60000) return;
     state.partBusy = true;
     try {
@@ -2233,7 +2301,10 @@ function partFormHtml(pfx) {                                   // 출석률 설�
         <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">출석률에 <b>넣을 보스</b>를 고릅니다. 체크를 끈 보스의 출석 기록은 <b>통계 탭 · 내 출석 · 입찰 순서 · 분배</b>의 출석률에서 모두 빠집니다.<br>처음(기본값)에는 <b>신념 · 무너지는 섬 · 마스터 지배 · 마족</b> 보스가 빠져 있고 오만 등 나머지는 모두 포함입니다.</p>
         <label style="${PART_LAB}">출석률에 넣을 보스</label>
         <div id="${pfx}-bosses" style="max-height:190px; overflow-y:auto; border:1px solid #eee; border-radius:8px; padding:2px 10px;">${gs.length ? gs.map(g => `<label style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #f3f3f3; font-size:0.88rem; cursor:pointer;"><input type="checkbox" data-pk="${esc(g.key)}" data-pn="${esc(g.name)}" ${ex[g.key] ? '' : 'checked'} style="${cbStyle}"> <span style="flex:1; min-width:0; word-break:break-all;">${esc(g.name)}</span></label>`).join('') : '<div style="padding:10px 0; color:#95a5a6; font-size:0.84rem;">등록된 보스가 없습니다.</div>'}</div>
-        <div style="margin-top:6px;">${actBtn('모두 포함', `Settle.partBossAll('${pfx}')`, '#16a085')}</div>`;
+        <div style="margin-top:6px;">${actBtn('모두 포함', `Settle.partBossAll('${pfx}')`, '#16a085')}</div>
+        <label style="${PART_LAB}">입찰 자격(2순위) 출석률 기준 (% 이상)</label>
+        <div style="font-size:0.74rem; color:#7f8c8d; line-height:1.5; margin-bottom:5px;">아이템 입찰은 <b>나온 당일에는 그 보스 시간에 출석한 사람(1순위)</b>만 누를 수 있고, <b>당일이 지나면(또는 당일 출석자가 없으면)</b> 입찰을 누르는 시점의 출석률이 이 기준 이상인 사람(2순위)이 누를 수 있습니다.</div>
+        <input type="number" id="${pfx}-bidmin" min="0" max="100" step="1" value="${state.bidRule.minRate}" style="${inputStyle}">`;
 }
 function partBossAll(pfx) { document.querySelectorAll('#' + (pfx || 'pa') + '-bosses input[type=checkbox]').forEach(c => { c.checked = true; }); }
 
@@ -2386,7 +2457,7 @@ function installTeamRules() {                                  // app.js 의 함
 }
 function initTeamRules() {
     installTeamRules();
-    afterAuth(() => { ensureSupportTeam(); ensureParticipation(); teamRulesRefresh(); });
+    afterAuth(() => { ensureSupportTeam(); ensureParticipation(); ensureBidRule(); teamRulesRefresh(); });
 }
 
 
@@ -2398,7 +2469,7 @@ function partCardMsg(t) {
     clearTimeout(partCardMsg.t);
     partCardMsg.t = setTimeout(() => { const x = $('pa-msg'); if (x) x.textContent = ''; }, 3500);
 }
-function partCardSig() { return JSON.stringify([state.part, partBossGroups().map(g => g.key + ':' + g.name), partExcludeMap()]); }
+function partCardSig() { return JSON.stringify([state.part, state.bidRule, partBossGroups().map(g => g.key + ':' + g.name), partExcludeMap()]); }
 function renderPartCard(force) {
     const acc = $('acc-part'), body = $('pa-body'), badge = $('pa-badge');
     if (!acc || !body) return;
@@ -2519,15 +2590,17 @@ async function savePartSettings(pfx) {
     const boxes = Array.from(document.querySelectorAll('#' + pfx + '-bosses input[type=checkbox]')), excl = {};
     boxes.forEach(c => { if (!c.checked) excl[c.dataset.pk] = c.dataset.pn; });
     if (boxes.length && Object.keys(excl).length === boxes.length) { alert('최소 한 개 보스는 출석률에 포함해야 합니다.'); return; }
+    const bi = $(pfx + '-bidmin'), bm = bi ? Number(bi.value) : state.bidRule.minRate;
+    if (bi && (bi.value.trim() === '' || isNaN(bm) || bm < 0 || bm > 100)) { alert('입찰 출석률 기준은 0~100 사이의 숫자로 입력하세요.'); return; }
     if (!(await requireAdmin())) return;
     const rec = { bossesConfigured: true };                                                              // 한 번 저장하면 기본 제외 목록 대신 여기서 고른 대로
     if (Object.keys(excl).length) rec.excludeBosses = excl;
-    try { await db.ref('hunter_config/participation').set(rec); partCardMsg('✅ 저장했습니다.'); }
+    try { await db.ref().update({ 'hunter_config/participation': rec, 'hunter_config/bidRule': { minRate: bm } }); partCardMsg('✅ 저장했습니다.'); }
     catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 async function resetPartSettings(pfx) {
     if (!(await requireAdmin())) return;
-    try { await db.ref('hunter_config/participation').remove(); partCardMsg('✅ 기본값으로 되돌렸습니다.'); }
+    try { await db.ref().update({ 'hunter_config/participation': null, 'hunter_config/bidRule': null }); partCardMsg('✅ 기본값으로 되돌렸습니다.'); }
     catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 
@@ -2560,16 +2633,16 @@ function renderBidAdmin() {
             <span style="display:flex; gap:6px;">${actBtn('🔄', 'Settle.partRefresh()', '#d35400')}${actBtn('닫기', 'Settle.closeBidAdmin()', '#d35400')}</span>
         </div>
         <div style="padding:8px 12px 12px;">
-            <div style="font-size:0.76rem; color:#7f8c8d; margin:4px 0 4px; line-height:1.55;"><b>이번 주 출석률이 높은 순서</b>입니다. (통계 탭과 같은 값이고, 출석률이 같으면 먼저 신청한 순서)<br>출석 기준: ${state.partWeek ? esc(state.partWeek) : (state.partBusy ? '불러오는 중…' : '-')}${state.partAt ? ' · ' + when(new Date(state.partAt).toISOString()) + ' 기준' : ''}${Object.keys(partExcludeMap()).length ? '<br>출석률에서 제외한 보스: <b>' + esc(Object.keys(partExcludeMap()).map(k => partExcludeMap()[k]).join(', ')) + '</b>' + (state.part.configured ? '' : ' <span style="color:#95a5a6;">(기본값)</span>') : ''}</div>
+            <div style="font-size:0.76rem; color:#7f8c8d; margin:4px 0 4px; line-height:1.55;"><b>1순위(당일 그 보스 시간 출석자) → 2순위(출석률 ${Math.round(state.bidRule.minRate * 10) / 10}% 이상)</b> 순서이고, 같은 순위 안에서는 <b>이번 주 출석률이 높은 순</b>, 같으면 먼저 신청한 순서입니다. (출석률은 통계 탭과 같은 값)<br>출석 기준: ${state.partWeek ? esc(state.partWeek) : (state.partBusy ? '불러오는 중…' : '-')}${state.partAt ? ' · ' + when(new Date(state.partAt).toISOString()) + ' 기준' : ''}${Object.keys(partExcludeMap()).length ? '<br>출석률에서 제외한 보스: <b>' + esc(Object.keys(partExcludeMap()).map(k => partExcludeMap()[k]).join(', ')) + '</b>' + (state.part.configured ? '' : ' <span style="color:#95a5a6;">(기본값)</span>') : ''}</div>
             <div style="font-size:0.76rem; color:#7f8c8d; margin:0 0 8px; line-height:1.5;">[낙찰 확정]을 누르면 그 사람이 낙찰자로 기록되고 아이템이 판매완료가 되며, 낙찰가는 아이템에 정해 둔 입찰가가 됩니다. 이후 분배 정산 대상이 됩니다. 나머지 입찰은 낙찰 실패로 표시됩니다.</div>
             ${gl.length ? gl.map(g => {
-                const bs = g.bids.map(x => ({ b: x, p: rateOf(x.userId) })).sort((a, c) => c.p.raw - a.p.raw || String(a.b.createdAt || '').localeCompare(String(c.b.createdAt || '')));
+                const bs = g.bids.map(x => ({ b: x, p: rateOf(x.userId) })).sort((a, c) => (Number(a.b.priority) || 2) - (Number(c.b.priority) || 2) || c.p.raw - a.p.raw || String(a.b.createdAt || '').localeCompare(String(c.b.createdAt || '')));
                 const pr = priceOf(g.it.itemName) || 0;
                 return `<div style="border:1px solid #f0e0cc; border-radius:8px; padding:8px 10px; margin-top:8px;">
                     <div style="font-weight:bold; color:#2c3e50;">${esc(g.it.itemName)} <span style="font-size:0.75rem; color:#7f8c8d; font-weight:normal;">입찰 ${bs.length}건</span> <span style="font-size:0.78rem; ${pr ? 'color:#e67e22; font-weight:bold;' : 'color:#c0392b;'}">${pr ? '💎 입찰가 ' + fmt(pr) + ' ' + UNIT : '입찰가 미정 (확정할 때 입력)'}</span></div>
                     <div style="font-size:0.76rem; color:#7f8c8d;">📅 ${esc(g.it.date)} ⚔️ ${esc(g.it.bossName)} · 획득: ${esc(g.it.winner)}</div>
                     ${bs.map((x, i) => { const b = x.b, p = x.p; return `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap; padding:6px 0; border-top:1px dashed #eee; margin-top:6px;">
-                        <span style="font-size:0.88rem; line-height:1.5;">${i === 0 ? '🥇' : (i + 1) + '.'} <b>${esc(b.name)}</b>${serverBadge((userById(b.userId) || {}).server)}${p.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.7rem; font-weight:bold;">지원조</span>' : ''} <b style="color:#8e44ad;">출석률 ${p.loaded ? p.rate + '%' : '계산 중…'}</b>${i === 0 && bs.length > 1 && p.loaded && bs[1].p.raw === p.raw ? ' <span style="font-size:0.72rem; color:#d35400;">(동률 · 먼저 신청한 순)</span>' : ''}<br><span style="font-size:0.74rem; color:#7f8c8d;">${p.loaded && !p.have ? '이번 주 출석 기록 없음 · ' : ''}신청 ${when(b.createdAt)}</span></span>
+                        <span style="font-size:0.88rem; line-height:1.5;">${i === 0 ? '🥇' : (i + 1) + '.'} <b>${esc(b.name)}</b>${serverBadge((userById(b.userId) || {}).server)}${p.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.7rem; font-weight:bold;">지원조</span>' : ''} <span style="padding:1px 6px; border-radius:4px; font-size:0.7rem; font-weight:bold; ${(Number(b.priority) || 2) === 1 ? 'background:#fdebd0; color:#d35400;' : 'background:#eaeded; color:#566573;'}">${(Number(b.priority) || 2)}순위</span> <b style="color:#8e44ad;">출석률 ${p.loaded ? p.rate + '%' : '계산 중…'}</b>${i === 0 && bs.length > 1 && p.loaded && bs[1].p.raw === p.raw && (Number(bs[1].b.priority) || 2) === (Number(b.priority) || 2) ? ' <span style="font-size:0.72rem; color:#d35400;">(동률 · 먼저 신청한 순)</span>' : ''}<br><span style="font-size:0.74rem; color:#7f8c8d;">${p.loaded && !p.have ? '이번 주 출석 기록 없음 · ' : ''}신청 ${when(b.createdAt)}</span></span>
                         <span style="display:flex; gap:4px;">${actBtn('🏆 낙찰 확정', `Settle.confirmBid('${sid(g.it.id)}', ${Number(b.userId)})`, '#27ae60')}${actBtn('🗑️', `Settle.deleteBid('${sid(g.it.id)}', ${Number(b.userId)})`, '#e74c3c')}</span></div>`; }).join('')}
                 </div>`;
             }).join('') : '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">대기 중인 입찰 신청이 없습니다.</p>'}
