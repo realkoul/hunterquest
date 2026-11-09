@@ -55,7 +55,8 @@ const cbStyle = 'width:16px; height:16px; margin:0; padding:0; border:none; flex
 
 // ── 상태 ─────────────────────────────────────────────────
 const state = {
-    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {}, variants: [], variantSel: '', variantMem: {}, undeliv: [], undelivLoaded: false, undelivLoading: false, undelivStale: false, admVariants: {}, admEntries: [], admBoss: '', adm: null, admLoading: false,
+    inited: false, pane: 'items', storageLoaded: false, dropTarget: 'follow', dropStRefs: {}, dropStorage: {}, variants: [], variantNames: {},                                                       // variantNames: 층 이름(공백 제거) → 어느 스케줄에든 등록된 보스 이름
+     variantSel: '', variantMem: {}, undeliv: [], undelivLoaded: false, undelivLoading: false, undelivStale: false, admVariants: {}, admEntries: [], admBoss: '', adm: null, admLoading: false,
     managers: [],                 // 담당자 userId[]
     storage: [], stFilter: 'all', stServer: '',
     drops: [], dropKey: '', dropRef: null, bossItems: [],
@@ -504,10 +505,37 @@ function deriveVariants(name) {
 const variantKey = (label) => String(label).replace(/[.$#\[\]\/]/g, '_');
 
 let varReq = 0, itemsReq = 0;
+// ── 같은 층 이름의 보스 이름 가져오기 ──
+//   보스 이름("오만 1층 · 왕곡의 제니스 퀸")은 스케줄마다 따로 저장(boss_variants/{스케줄번호})되는데,
+//   관리 탭의 [보스 아이템 설정]은 모든 스케줄의 것을 층 이름 기준으로 합쳐서 보여 주므로, 드랍 기록도 같게 맞춤:
+//   이 스케줄에 보스 이름이 없는 층은, 다른 스케줄에 같은 층 이름으로 등록된 보스 이름을 가져다 씀 (이 스케줄에 직접 등록한 이름이 있으면 그것이 우선)
+let varNamesOn = false;
+function ensureVariantNames() {
+    if (varNamesOn || !depsOk()) return;
+    varNamesOn = true;
+    db.ref('boss_variants').on('value', snap => {
+        const all = snap.val() || {}, map = {};
+        Object.keys(all).sort().forEach(sid => {
+            Object.values(all[sid] || {}).forEach(v => {
+                if (!v || typeof v !== 'object') return;
+                const label = String(v.label || '').trim(), nm = String(v.bossName || '').trim();
+                if (label && nm && !map[normName(label)]) map[normName(label)] = nm;
+            });
+        });
+        state.variantNames = map;
+        if (dropTarget().bossId && state.variants.length) { fillVariantNames(); renderVariantSelect(); }
+    });
+}
+function fillVariantNames() {                                  // 이 스케줄에 직접 등록한 이름(own)이 있으면 그것, 없으면 다른 스케줄에 같은 층 이름으로 등록된 이름 (매번 다시 계산하므로 원래 쪽이 바뀌면 따라감)
+    state.variants.forEach(v => { if (v.own === undefined) v.own = v.bossName || ''; v.bossName = v.own || state.variantNames[normName(v.label)] || ''; });
+}
+
 function loadVariants(bossId) {
     const boss = bossId ? getSchedules().find(b => b.id === bossId) : null;
     const remember = (list) => (state.variantMem[bossId] && list.some(v => v.label === state.variantMem[bossId])) ? state.variantMem[bossId] : '';
+    ensureVariantNames();
     state.variants = boss ? deriveVariants(boss.name).map(l => ({ label: l, bossName: '' })) : [];
+    fillVariantNames();
     state.variantSel = remember(state.variants);
     renderVariantSelect();
     loadBossItems();
@@ -520,6 +548,7 @@ function loadVariants(bossId) {
             .map(v => ({ label: String(v.label).trim(), bossName: String(v.bossName || '').trim() }));
         if (!stored.length) return;
         state.variants = stored;
+        fillVariantNames();
         state.variantSel = remember(stored);
         renderVariantSelect();
         loadBossItems();
