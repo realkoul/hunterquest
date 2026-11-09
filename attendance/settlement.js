@@ -122,13 +122,6 @@ function closeModal() {
 function buildRoot() {
     const root = $('settle-root');
     root.innerHTML = `
-    <div class="card" id="settle-seg-bar" style="padding:10px 18px;">
-        <div style="display:flex; gap:8px;">
-            <button id="settle-seg-items" onclick="Settle.showPane('items')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">📦 아이템·정산</button>
-            <button id="settle-seg-reimb" onclick="Settle.showPane('reimb')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">💸 복구비 관리</button>
-        </div>
-    </div>
-
     <div id="settle-pane-items">
         <!-- 내 분배금 (본인 것만) -->
         <div class="card" id="settle-mypay-card" style="display:none; border:2px solid #f5cba7; background:#fffaf2;">
@@ -162,27 +155,15 @@ function buildRoot() {
         </div>
 
     </div>
-
-    <div id="settle-pane-reimb" style="display:none;"></div>`;
+`;
 }
 
-function showPane(p) {
-    if (p === 'reimb' && !isAdmin) p = 'items';                 // 복구비 관리는 관리자만
-    state.pane = p;
-    const on = 'background:#2c3e50; color:white; border:2px solid #2c3e50;';
-    const off = 'background:white; color:#2c3e50; border:2px solid #d5d8dc;';
-    const bi = $('settle-seg-items'), br = $('settle-seg-reimb');
-    if (bi) bi.style.cssText = (p === 'items' ? on : off) + ' flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;';
-    if (br) { br.style.cssText = (p === 'reimb' ? on : off) + ' flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;'; br.style.display = isAdmin ? '' : 'none'; }
-    $('settle-pane-items').style.display = p === 'items' ? 'block' : 'none';
-    $('settle-pane-reimb').style.display = p === 'reimb' ? 'block' : 'none';
-    if (p === 'reimb') rbAdminInit();
+function showPane() {                                           // 아이템/정산 탭은 아이템·정산 화면 하나뿐 (복구비 관리는 [복구비] 탭으로 옮김)
+    state.pane = 'items';
+    const it = $('settle-pane-items');
+    if (it) it.style.display = 'block';
 }
-function renderSeg() {
-    const br = $('settle-seg-reimb');
-    if (br) br.style.display = isAdmin ? '' : 'none';
-    if (!isAdmin && state.pane === 'reimb') showPane('items');
-}
+function renderSeg() { /* 예전의 [아이템·정산 / 복구비 관리] 전환 막대는 복구비 탭으로 옮겨져서 하는 일 없음 */ }
 
 // 하단 [정산] 메뉴는 관리자·담당자에게만 보임 (일반 사용자는 출석 · 복구비 신청 · 내 정보 중심)
 // 하단 [정산] 메뉴는 모두에게 보임. 관리자·담당자는 전체 기능, 일반 사용자는 아이템 보관함만 (낙찰자·낙찰가·정산·복구비 관리·백업은 숨김)
@@ -196,7 +177,6 @@ function viewerSync() {
     if (!mg && state.stFilter === 'undelivered') state.stFilter = 'all';
     if (!mg && state.stSort === 'price') state.stSort = 'recent';
     const calc = $('settle-calc-card'); if (calc) calc.style.display = mg ? '' : 'none';
-    const bar = $('settle-seg-bar'); if (bar) bar.style.display = isAdmin ? '' : 'none';
 }
 
 // ── 탭 진입/모드 변경 ────────────────────────────────────
@@ -215,8 +195,6 @@ function onOpen() {
     if (!state.viewerDefaulted && !canManage()) { state.viewerDefaulted = true; state.stFilter = 'pending'; }     // 일반 사용자는 처음에 "보관중"인 아이템부터
     ensureListeners();
     refreshAll();
-    renderSeg();
-    if (state.pane === 'reimb') rbAdminInit();
 }
 function onModeChange() {
     syncDropBox(true);
@@ -227,8 +205,9 @@ function onModeChange() {
     renderPartCard(true);
     renderDistCard(true);
     navFit();
-    if (state.inited) { syncBidListeners(); refreshAll(); renderSeg(); if (state.pane === 'reimb') { rbRenderPriceLine(); rbRender(); } }
+    if (state.inited) { syncBidListeners(); refreshAll(); }
     rbRenderUser();
+    reimbSegSync();
 }
 function refreshAll() {
     renderStorage();
@@ -3540,7 +3519,7 @@ async function cancelSettlement(rid) {
 // ============================================================
 const RB_MAX_IMAGES = 3;
 const rb = {
-    inited: false, week: '', requests: [], prices: { recovery: 0, blessing: 0, transfer: 0 },
+    inited: false, pane: 'user', week: '', requests: [], prices: { recovery: 0, blessing: 0, transfer: 0 },        // pane: 복구비 탭에서 보는 화면 ('user' 신청 · 내 복구비 / 'admin' 복구비 관리)
     shots: [], shotSeq: 0, ocrQ: Promise.resolve(), workerP: null,
     uInited: false, userData: {}, userRefs: {}, weekCb: null,          // 사용자 탭: 최근 3주 데이터
     weekRef: null, priceBound: false, imgCache: {}, open: new Set()
@@ -3605,9 +3584,9 @@ function rbParts(r) {
 function rbAmount(r) { return rbParts(r).total; }
 const rbCntText = (o) => '복구 ' + fmt(o.recoveryCnt) + '회 · 축복 ' + fmt(o.blessingCnt) + '회' + (Number(o.transferCnt) > 0 ? ' · 이전 ' + fmt(o.transferCnt) + '회' : '');
 
-// 관리자 화면 (정산 탭 > 복구비 관리): 전체 신청 목록 · 확정/반려/지급 · 단가 · 주간 지급 요약
+// 관리자 화면 (복구비 탭 > [복구비 관리]): 전체 신청 목록 · 확정/반려/지급 · 단가 · 주간 지급 요약
 function rbBuildAdmin() {
-    $('settle-pane-reimb').innerHTML = `
+    $('reimb-pane-admin').innerHTML = `
     <div class="card">
         <h2 style="font-size:1.05rem; margin:0 0 4px;">💸 복구비 관리</h2>
         <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 10px; line-height:1.5;">전체 신청을 확인하고 확정·지급 처리합니다. 확정하면 횟수 수정이 잠기고 증빙 사진은 삭제됩니다.</p>
@@ -3631,6 +3610,13 @@ function rbBuildAdmin() {
 function rbBuildUser() {
     const lab = 'font-size:0.85rem; font-weight:bold; color:#555; display:block; margin-bottom:4px;';
     $('reimb-root').innerHTML = `
+    <div class="card" id="reimb-seg-bar" style="padding:10px 18px; display:none;">
+        <div style="display:flex; gap:8px;">
+            <button id="reimb-seg-user" onclick="Settle.showReimbPane('user')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">💸 신청 · 내 복구비</button>
+            <button id="reimb-seg-admin" onclick="Settle.showReimbPane('admin')" style="flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;">🧾 복구비 관리</button>
+        </div>
+    </div>
+    <div id="reimb-pane-user">
     <div class="card" style="background:#f4faff;">
         <h2 style="font-size:1.05rem; margin:0 0 6px;">💰 내가 받을 돈</h2>
         <div id="rbu-money"></div>
@@ -3667,7 +3653,32 @@ function rbBuildUser() {
     <div class="card">
         <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">📋 내 신청 내역 <span style="font-weight:normal; color:#95a5a6; font-size:0.78rem;">(최근 3주)</span></h3>
         <div id="rbu-list"></div>
-    </div>`;
+    </div>
+    </div>
+    <div id="reimb-pane-admin" style="display:none;"></div>`;
+}
+
+// 복구비 탭: 관리자는 [신청 · 내 복구비] / [복구비 관리]를 전환 (복구비 관리는 관리자 전용)
+function showReimbPane(p) {
+    if (!$('reimb-pane-user') && typeof rbUserOpen === 'function') rbUserOpen();               // 아직 화면을 만들기 전이면 먼저 만듦
+    if (p === 'admin' && !isAdmin) p = 'user';
+    rb.pane = p;
+    const on = 'background:#2c3e50; color:white; border:2px solid #2c3e50;', off = 'background:white; color:#2c3e50; border:2px solid #d5d8dc;';
+    const css = ' flex:1; padding:10px 6px; border-radius:8px; font-weight:bold; font-size:0.9rem; cursor:pointer;';
+    const bu = $('reimb-seg-user'), ba = $('reimb-seg-admin'), pu = $('reimb-pane-user'), pa = $('reimb-pane-admin');
+    if (!pu || !pa) return;
+    if (bu) bu.style.cssText = (p === 'user' ? on : off) + css;
+    if (ba) ba.style.cssText = (p === 'admin' ? on : off) + css;
+    pu.style.display = p === 'user' ? 'block' : 'none';
+    pa.style.display = p === 'admin' ? 'block' : 'none';
+    if (p === 'admin') rbAdminInit();
+}
+function reimbSegSync() {                                          // 관리자 모드에 맞게 전환 막대를 보이거나 숨김
+    const bar = $('reimb-seg-bar');
+    if (!bar) return;
+    bar.style.display = isAdmin ? '' : 'none';
+    if (!isAdmin && rb.pane === 'admin') showReimbPane('user');
+    else if (isAdmin && rb.pane === 'admin') { rbRenderPriceLine(); rbRender(); }
 }
 
 // 단가는 사용자·관리자 화면이 함께 사용
@@ -3698,6 +3709,8 @@ function rbUserOpen() {
     rbEnsurePrices();
     rbUserAttach();
     rbRenderUser();
+    reimbSegSync();
+    showReimbPane(rb.pane || 'user');                       // 마지막으로 보던 화면(신청 / 관리)을 유지
 }
 function rbUserAttach() {
     const keys = rbRecentWeeks(3);
@@ -4537,7 +4550,7 @@ function rbRenderSummary() {
 // 바깥(inline onclick 등)에 노출하는 함수 — 이 목록 밖의 것은 모두 내부 전용
 // ============================================================
 window.Settle = {
-    onOpen, onModeChange, showPane, closeModal,
+    onOpen, onModeChange, showPane, showReimbPane, closeModal,
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
