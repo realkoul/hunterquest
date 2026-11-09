@@ -65,6 +65,7 @@ const state = {
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
+    mypay: { list: [], loaded: false, err: false, sig: '' },                                   // 내 분배금: 최근 정산 기록(본인 몫만 화면에 보여 줌)
     bidRule: { minRate: 50, ready: false }, bidElig: { att: {}, today: '', at: 0 },            // 입찰 자격: 2순위 출석률 기준 / 신청 시점에 읽은 당일 출석
     dist: { minRate: 50, tiers: [{ size: 10, pct: 50 }, { size: 10, pct: 30 }, { size: 10, pct: 20 }], ready: false },   // 분배 기준 (출석률 50% 이상 · 1~10등 50% / 11~20등 30% / 21~30등 20%)
     bids: {}, bidSel: new Set(), bidAdmin: '',
@@ -128,6 +129,12 @@ function buildRoot() {
     </div>
 
     <div id="settle-pane-items">
+        <!-- 내 분배금 (본인 것만) -->
+        <div class="card" id="settle-mypay-card" style="display:none; border:2px solid #f5cba7; background:#fffaf2;">
+            <h2 style="font-size:1.05rem; margin:0 0 8px;">💰 내 분배금</h2>
+            <div id="settle-mypay"></div>
+        </div>
+
         <!-- 보관함 -->
         <div class="card">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
@@ -225,6 +232,7 @@ function onModeChange() {
 function refreshAll() {
     renderStorage();
     renderCalcActions();
+    renderMyPay();
     if (state.stFilter === 'undelivered' && (!state.undelivLoaded || state.undelivStale) && !state.undelivLoading) loadUndelivered();
 }
 
@@ -724,6 +732,7 @@ function renderMyAtt() {
 // 1초마다: 이름/명단/주가 바뀌었는지 확인 (이름이 없으면 구독하지 않음)
 function myAttTick() {
     navFit();
+    if ($('settle-mypay') && myUsers().map(u => u.id).join(',') !== state.mypay.sig) renderMyPay();        // 내 이름을 새로 등록·해제하면 분배금 칸도 바로 갱신
     const box = $('my-attendance-box');
     if (!box || !depsOk()) return;
     if (!myAttUsers().length) {
@@ -3358,6 +3367,76 @@ function monthSummaryHtml() {                                  // 해당 월에 
         </details>`;
     }).join('');
 }
+
+// ============================================================
+// 💰 내 분배금 — 아이템/정산 탭 맨 위. [내 이름]으로 등록한 캐릭터가 받을 분배금만 보여 줌 (다른 사람의 이름·금액은 화면에 만들지 않음)
+//   · 정산 기록(boss_settlement)의 최근 40건을 읽어 recipients 중 내 캐릭터의 몫만 골라서 월별로 표시
+//   · 수령 여부는 정산 내역에서 관리자·담당자가 [수령 확인]하면 "수령 완료"로 바뀜
+//   · 화면에서 거르는 방식이라, 개발자 도구로 정산 기록을 직접 읽는 것까지 막지는 못함 (Firebase 규칙으로는 본인 몫만 읽도록 제한하기 어려움)
+// ============================================================
+let myPayOn = false;
+function ensureMyPay() {
+    if (myPayOn || !depsOk()) return;
+    myPayOn = true;
+    db.ref('boss_settlement').limitToLast(40).on('value', snap => {
+        const list = [];
+        snap.forEach(ch => { const v = ch.val(); if (v && typeof v === 'object') list.push(v); });
+        state.mypay = Object.assign({}, state.mypay, { list: list, loaded: true, err: false });
+        renderMyPay();
+    }, () => { state.mypay = Object.assign({}, state.mypay, { list: [], loaded: true, err: true }); renderMyPay(); });
+}
+function myPayMatches() {                                      // 정산 기록 중 내 캐릭터의 몫
+    const mine = myUsers(), ids = new Set(mine.map(u => Number(u.id))), names = new Set(mine.map(u => u.name)), out = [];
+    state.mypay.list.forEach(r => {
+        recipientsOf(r).forEach(x => {
+            const hit = (x.userId !== undefined && x.userId !== null) ? ids.has(Number(x.userId)) : names.has(x.name);
+            if (hit && Number(x.amount) > 0) out.push({ r: r, x: x });
+        });
+    });
+    return out.sort((a, b) => String(b.r.createdAt || '').localeCompare(String(a.r.createdAt || '')));
+}
+function renderMyPay() {
+    const card = $('settle-mypay-card'), box = $('settle-mypay');
+    if (!card || !box) return;
+    const mine = myUsers();
+    card.style.display = '';
+    state.mypay.sig = mine.map(u => u.id).join(',');
+    if (!mine.length) {
+        box.innerHTML = '<div style="font-size:0.84rem; color:#7f8c8d; line-height:1.55;">출석 체크 탭의 <b>[⭐ 내 이름]</b>에서 내 이름을 등록하면, 이곳에서 <b>내가 받을 분배금</b>을 볼 수 있어요.</div>';
+        return;
+    }
+    ensureMyPay();
+    if (!state.mypay.loaded) { box.innerHTML = '<div style="font-size:0.84rem; color:#95a5a6;">불러오는 중…</div>'; return; }
+    if (state.mypay.err) { box.innerHTML = '<div style="font-size:0.84rem; color:#c0392b;">분배금을 불러오지 못했어요. 잠시 뒤에 다시 열어 주세요.</div>'; return; }
+    const ms = myPayMatches();
+    if (!ms.length) {
+        box.innerHTML = '<div style="font-size:0.86rem; color:#7f8c8d; line-height:1.55;">아직 받을 분배금이 없어요.<br><span style="font-size:0.78rem; color:#95a5a6;">분배가 완료되면 이곳에 내 몫이 표시돼요. (' + mine.map(u => esc(u.name)).join(', ') + ')</span></div>';
+        return;
+    }
+    const groups = {};
+    ms.forEach(m => { const k = m.r.month || monthKey(new Date(m.r.createdAt)); (groups[k] = groups[k] || []).push(m); });
+    const keys = Object.keys(groups).sort().reverse().slice(0, 3);
+    const shown = [].concat.apply([], keys.map(k => groups[k])), pending = shown.filter(m => !m.x.received).reduce((t, m) => t + (Number(m.x.amount) || 0), 0);
+    const modeLabel = (m) => m === 'rank' ? '순위별 분배' : (m === 'support' ? '지원조 비율' : (m === 'ratio' ? '서버별 비율' : '균등 배분'));
+    const day = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : (d.getMonth() + 1) + '/' + d.getDate(); };
+    box.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 12px; background:#fff1dc; border-radius:8px; margin-bottom:8px;">
+            <span style="font-size:0.82rem; color:#7f8c8d; line-height:1.4;">받을 분배금<br><span style="font-size:0.72rem;">수령 대기 중인 금액</span></span>
+            <b style="font-size:1.3rem; color:${pending ? '#e67e22' : '#95a5a6'}; white-space:nowrap;">${fmt(pending)} ${UNIT}</b>
+        </div>
+        ${keys.map(k => {
+            const list = groups[k], tot = list.reduce((t, m) => t + (Number(m.x.amount) || 0), 0), got = list.filter(m => m.x.received).reduce((t, m) => t + (Number(m.x.amount) || 0), 0);
+            return `<div class="settle-mypay-month" style="margin-bottom:6px;">
+                <div style="display:flex; justify-content:space-between; gap:8px; font-size:0.86rem; padding:4px 0;"><b>📅 ${esc(monthLabel(k))}</b><span>합계 <b>${fmt(tot)}</b> ${UNIT}${got ? ' <span style="font-size:0.72rem; color:#27ae60;">(수령 ' + fmt(got) + ')</span>' : ''}</span></div>
+                ${list.map(m => { const x = m.x; return `<div class="settle-mypay-row" style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 0; border-top:1px dashed #f0e0cc;">
+                    <span style="min-width:0; line-height:1.45;"><b>${esc(x.name)}</b><br><span style="font-size:0.74rem; color:#7f8c8d;">${esc(day(m.r.createdAt))} 분배 · ${x.tier ? esc(x.tier) + '그룹 · ' : ''}${x.rank ? esc(x.rank) + '등 · ' : ''}${x.rate !== undefined && x.rate !== null ? '출석률 ' + esc(Math.round(Number(x.rate) * 10) / 10) + '%' : esc(modeLabel(m.r.mode))}</span></span>
+                    <span style="text-align:right; white-space:nowrap; line-height:1.45;"><b style="color:#27ae60; font-size:1.02rem;">${fmt(x.amount)}</b> ${UNIT}<br><span style="font-size:0.72rem; font-weight:bold; color:${x.received ? '#27ae60' : '#e67e22'};">${x.received ? '✅ 수령 완료' : '⏳ 수령 대기'}</span></span>
+                </div>`; }).join('')}
+            </div>`;
+        }).join('')}
+        <div style="font-size:0.72rem; color:#95a5a6; line-height:1.5; margin-top:2px;">내 이름으로 등록한 캐릭터의 몫만 보여요. 분배금을 전달받으면 관리자가 [수령 확인]으로 "수령 완료"로 바꿉니다.</div>`;
+}
+
 
 function renderHistory() {
     const area = $('settle-history-area');

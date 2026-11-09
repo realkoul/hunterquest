@@ -1691,6 +1691,8 @@ function showAddScheduleModal() {
     document.getElementById('schedule-day').value = '1';
     document.getElementById('schedule-time').value = '20:00';
     document.getElementById('schedule-desc').value = '';
+    // 새로 만들 때는 요일을 여러 개 한 번에 고를 수 있음 (체크한 요일마다 스케줄이 하나씩 생김)
+    setScheduleDayMode(true);
     document.getElementById('modal-schedule').classList.add('active');
 };
 
@@ -1702,6 +1704,7 @@ function editSchedule(schedule) {
     document.getElementById('schedule-day').value = schedule.dayOfWeek;
     document.getElementById('schedule-time').value = schedule.time;
     document.getElementById('schedule-desc').value = schedule.description || '';
+    setScheduleDayMode(false);                       // 수정은 스케줄 하나(요일 하나)만
     document.getElementById('modal-schedule').classList.add('active');
 };
 
@@ -1716,10 +1719,31 @@ function showEditScheduleModal(scheduleId) {
 }
 
 // 스케줄 저장
+// 스케줄 등록 창의 요일 입력 방식 전환: true = 여러 요일 체크(새로 만들기), false = 요일 하나 선택(수정)
+function setScheduleDayMode(multi) {
+    const box = document.getElementById('schedule-days-multi'), sel = document.getElementById('schedule-day'), lab = document.getElementById('schedule-day-label');
+    if (box) {
+        box.style.display = multi ? 'block' : 'none';
+        box.querySelectorAll('input[type=checkbox]').forEach(c => { c.checked = false; });
+    }
+    if (sel) sel.style.display = multi ? 'none' : '';
+    if (lab) lab.textContent = multi ? '요일 (여러 개 선택 가능):' : '요일:';
+}
+
+// 요일 빠른 선택 (평일 · 주말 · 전체 · 해제)
+function scheduleDaysQuick(kind) {
+    const sets = { weekday: [1, 2, 3, 4, 5], weekend: [0, 6], all: [0, 1, 2, 3, 4, 5, 6], none: [] };
+    const on = sets[kind] || [];
+    for (let d = 0; d <= 6; d++) {
+        const c = document.getElementById('sched-day-' + d);
+        if (c) c.checked = on.indexOf(d) >= 0;
+    }
+};
+
+// 스케줄 저장
 function saveSchedule() {
-    const id = document.getElementById('schedule-id').value || `schedule_${Date.now()}`;
+    const editingId = document.getElementById('schedule-id').value;
     const name = document.getElementById('schedule-name').value.trim();
-    const day = parseInt(document.getElementById('schedule-day').value);
     const time = document.getElementById('schedule-time').value;
     const desc = document.getElementById('schedule-desc').value.trim();
     
@@ -1727,6 +1751,38 @@ function saveSchedule() {
         alert('이름과 시간을 입력해주세요.');
         return;
     }
+    
+    const multiBox = document.getElementById('schedule-days-multi');
+    if (!editingId && multiBox && multiBox.style.display !== 'none') {
+        // 새로 만들기: 체크한 요일마다 스케줄을 하나씩 만듦
+        const days = Array.from(multiBox.querySelectorAll('input[type=checkbox]:checked')).map(c => parseInt(c.value)).sort((x, y) => ((x + 6) % 7) - ((y + 6) % 7));   // 월~일 순서
+        if (!days.length) {
+            alert('요일을 하나 이상 선택해주세요.');
+            return;
+        }
+        const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+        const norm = (t) => String(t || '').replace(/\s+/g, '').toLowerCase();
+        const stamp = Date.now(), updates = {}, made = [], skipped = [];
+        days.forEach(d => {
+            if (schedules.some(s => norm(s.name) === norm(name) && Number(s.dayOfWeek) === d && s.time === time)) { skipped.push(d); return; }   // 같은 이름·요일·시간은 건너뜀
+            const sid = `schedule_${stamp}_${d}`;
+            updates[`boss_schedules/${sid}`] = { id: sid, name: name, dayOfWeek: d, time: time, description: desc, isActive: true, createdAt: new Date().toISOString() };
+            made.push(d);
+        });
+        if (!made.length) {
+            alert('선택한 요일에 같은 이름·시간의 스케줄이 이미 모두 있습니다.');
+            return;
+        }
+        db.ref().update(updates).then(() => {
+            alert(`저장되었습니다!\n${made.map(d => dayNames[d]).join('·')}요일 ${made.length}개를 등록했어요.` + (skipped.length ? `\n(이미 있어서 건너뜀: ${skipped.map(d => dayNames[d]).join('·')})` : ''));
+            closeModal();
+        });
+        return;
+    }
+    
+    // 수정(또는 요일 하나): 기존 방식 그대로
+    const id = editingId || `schedule_${Date.now()}`;
+    const day = parseInt(document.getElementById('schedule-day').value);
     
     const schedule = {
         id: id,
