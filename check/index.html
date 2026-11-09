@@ -67,11 +67,20 @@
         <button class="bottom-nav-item active" id="nav-attendance" onclick="switchTab('attendance')">
             <span class="nav-icon">📋</span>출석 체크
         </button>
+        <button class="bottom-nav-item" id="nav-reimb" onclick="switchTab('reimb')">
+            <span class="nav-icon">💸</span>복구비
+        </button>
+        <button class="bottom-nav-item" id="nav-settle" onclick="switchTab('settle')" style="display:none;">
+            <span class="nav-icon">💰</span>아이템/<wbr>정산
+        </button>
         <button class="bottom-nav-item" id="nav-schedules" onclick="switchTab('schedules')">
             <span class="nav-icon">📊</span>주간 현황
         </button>
         <button class="bottom-nav-item" id="nav-stats" onclick="switchTab('stats')">
             <span class="nav-icon">📈</span>통계
+        </button>
+        <button class="bottom-nav-item" id="nav-guide" onclick="switchTab('guide')">
+            <span class="nav-icon">📖</span>사이트<wbr>이용법
         </button>
         <button class="bottom-nav-item admin-only" id="nav-users" onclick="switchTab('users')" style="display:none;">
             <span class="nav-icon">⚙️</span>관리
@@ -110,6 +119,9 @@
             <div id="quick-attend-btn-area" style="margin-bottom:10px;"></div>
         </div>
 
+        <!-- 📊 내 출석 (이번 주 · 통계와 같은 계산) — settlement.js 가 채움 -->
+        <div id="my-attendance-box" style="display:none; padding:0 18px 10px;"></div>
+
         <!-- 보스 선택 드롭다운 -->
         <div style="padding:0 18px 8px; border-bottom:1px solid #f0f0f0;">
             <select id="boss-selector" onchange="changeBoss()" style="width:100%; padding:8px 10px; font-size:0.9rem; border:1.5px solid #d0d0d0; border-radius:8px; background:white; margin-bottom:0;">
@@ -119,6 +131,9 @@
 
         <!-- 오늘 스케줄 + 출석 완료 -->
         <div id="today-schedules" style="padding:0 18px 14px;"></div>
+
+        <!-- 📦 드랍 기록 (settlement.js 가 채움) -->
+        <div id="drop-box" style="padding:0 18px 14px;"></div>
 
         <!-- 성물 필요 인원 -->
         <div class="card" id="relic-alert-section" style="display:none;">
@@ -231,11 +246,31 @@
         </div>
     </div>
     
+    <!-- 💸 복구비 (사용자: 내가 받을 돈 · 복구비 신청 · 내 신청 내역) — 화면은 settlement.js 가 채움 -->
+    <div id="tab-reimb" class="tab-content">
+        <div id="reimb-root"></div>
+    </div>
+
+    <!-- 💰 아이템/정산 (아이템 보관함·입찰·정산, 내 분배금) — 화면은 settlement.js 가 채움. 복구비 관리는 [복구비] 탭 안에 있음 -->
+    <div id="tab-settle" class="tab-content">
+        <div id="settle-root"></div>
+    </div>
+
+    <!-- 📖 사이트이용법 (길드원용 안내) — 안내 내용은 같은 폴더의 guide.html, 화면은 settlement.js 가 탭을 처음 열 때 채움 -->
+    <div id="tab-guide" class="tab-content">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #f0f0f0; background:white;">
+            <span style="font-weight:bold; color:#2c3e50; font-size:0.95rem;">📖 사이트이용법</span>
+            <a href="guide.html" target="_blank" rel="noopener" style="font-size:0.8rem; color:#2980b9; font-weight:bold; text-decoration:none; white-space:nowrap;">↗ 새 창으로 열기</a>
+        </div>
+        <div id="guide-msg" style="display:none; padding:22px 16px; text-align:center; color:#7f8c8d; font-size:0.9rem; line-height:1.6;"></div>
+        <iframe id="guide-frame" title="사이트이용법" scrolling="no" style="width:100%; height:520px; border:0; display:block; background:#eef2f7;"></iframe>
+    </div>
+
     <!-- Tab 4: 명단 관리 -->
     <div id="tab-users" class="tab-content admin-only">
 
         <!-- 👥 길드원 명단 관리 -->
-        <div class="accordion-card open" id="acc-users">
+        <div class="accordion-card" id="acc-users">
             <div class="accordion-header" onclick="toggleAccordion('acc-users')">
                 <h2>👥 길드원 명단 관리</h2>
                 <span class="accordion-arrow">▼</span>
@@ -573,7 +608,7 @@
         <input type="hidden" id="schedule-id">
         <label>스케줄 이름:</label>
         <input type="text" id="schedule-name" placeholder="예: 월요일 저녁 보스">
-        <label>요일:</label>
+        <label id="schedule-day-label">요일:</label>
         <select id="schedule-day">
             <option value="0">일요일</option>
             <option value="1">월요일</option>
@@ -583,6 +618,11 @@
             <option value="5">금요일</option>
             <option value="6">토요일</option>
         </select>
+        <div id="schedule-days-multi" style="display:none;">
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin:4px 0 8px;"><label style="display:inline-flex; align-items:center; gap:4px; margin:0; padding:7px 11px; border:1.5px solid #d5d8dc; border-radius:8px; background:white; cursor:pointer; font-weight:bold; color:#2c3e50;"><input type="checkbox" id="sched-day-1" value="1" style="width:auto; margin:0;"> 월</label><label style="display:inline-flex; align-items:center; gap:4px; margin:0; padding:7px 11px; border:1.5px solid #d5d8dc; border-radius:8px; background:white; cursor:pointer; font-weight:bold; color:#2c3e50;"><input type="checkbox" id="sched-day-2" value="2" style="width:auto; margin:0;"> 화</label><label style="display:inline-flex; align-items:center; gap:4px; margin:0; padding:7px 11px; border:1.5px solid #d5d8dc; border-radius:8px; background:white; cursor:pointer; font-weight:bold; color:#2c3e50;"><input type="checkbox" id="sched-day-3" value="3" style="width:auto; margin:0;"> 수</label><label style="display:inline-flex; align-items:center; gap:4px; margin:0; padding:7px 11px; border:1.5px solid #d5d8dc; border-radius:8px; background:white; cursor:pointer; font-weight:bold; color:#2c3e50;"><input type="checkbox" id="sched-day-4" value="4" style="width:auto; margin:0;"> 목</label><label style="display:inline-flex; align-items:center; gap:4px; margin:0; padding:7px 11px; border:1.5px solid #d5d8dc; border-radius:8px; background:white; cursor:pointer; font-weight:bold; color:#2c3e50;"><input type="checkbox" id="sched-day-5" value="5" style="width:auto; margin:0;"> 금</label><label style="display:inline-flex; align-items:center; gap:4px; margin:0; padding:7px 11px; border:1.5px solid #d5d8dc; border-radius:8px; background:white; cursor:pointer; font-weight:bold; color:#2c3e50;"><input type="checkbox" id="sched-day-6" value="6" style="width:auto; margin:0;"> 토</label><label style="display:inline-flex; align-items:center; gap:4px; margin:0; padding:7px 11px; border:1.5px solid #d5d8dc; border-radius:8px; background:white; cursor:pointer; font-weight:bold; color:#2c3e50;"><input type="checkbox" id="sched-day-0" value="0" style="width:auto; margin:0;"> 일</label></div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;"><button type="button" onclick="scheduleDaysQuick('weekday')" style="padding:6px 11px; border:1px solid #d5d8dc; border-radius:8px; background:#f8f9fa; color:#2c3e50; font-size:0.8rem; cursor:pointer;">평일(월~금)</button><button type="button" onclick="scheduleDaysQuick('weekend')" style="padding:6px 11px; border:1px solid #d5d8dc; border-radius:8px; background:#f8f9fa; color:#2c3e50; font-size:0.8rem; cursor:pointer;">주말</button><button type="button" onclick="scheduleDaysQuick('all')" style="padding:6px 11px; border:1px solid #d5d8dc; border-radius:8px; background:#f8f9fa; color:#2c3e50; font-size:0.8rem; cursor:pointer;">전체</button><button type="button" onclick="scheduleDaysQuick('none')" style="padding:6px 11px; border:1px solid #d5d8dc; border-radius:8px; background:#f8f9fa; color:#2c3e50; font-size:0.8rem; cursor:pointer;">해제</button></div>
+            <div style="font-size:0.78rem; color:#7f8c8d; line-height:1.5; margin-bottom:6px;">체크한 요일마다 같은 이름·시간의 스케줄이 하나씩 만들어집니다. (이미 같은 이름·요일·시간이 있으면 건너뜁니다)</div>
+        </div>
         <label>시간:</label>
         <input type="time" id="schedule-time">
         <label>설명 (선택):</label>
@@ -801,7 +841,7 @@
         <p style="color: #7f8c8d; margin-bottom: 18px; line-height: 1.6; font-size: 0.9rem;">
             여러 캐릭터를 운영하는 경우 1~5번 슬롯에 등록하세요.<br>
             등록된 이름은 출석 체크 리스트 최상단에 표시되며, 빠른 출석 기능을 사용할 수 있습니다.<br>
-            <span style="color: #c0392b; font-size: 0.85rem;">※ 출석은 보스 시간 기준 ±10분 내에만 가능합니다</span>
+            <span style="color: #c0392b; font-size: 0.85rem;">※ 출석은 보스 시간 10분 전부터 보스 시작 시간까지만 가능합니다</span>
         </p>
         <div id="my-name-slots" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px;">
             <!-- 5개 슬롯이 JS로 채워짐 -->
@@ -862,6 +902,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
+<script src="settlement.js"></script>
 
 
 </body>
