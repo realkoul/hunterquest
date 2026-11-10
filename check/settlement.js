@@ -740,6 +740,7 @@ function renderMyAtt() {
 // 1초마다: 이름/명단/주가 바뀌었는지 확인 (이름이 없으면 구독하지 않음)
 function myAttTick() {
     navFit();
+    if ($('rbu-window')) { const wk = String(rbOpenWeek()); if (wk !== rb.windowSig) { rb.windowSig = wk; rbPopulateUserWeeks(); rbRenderUser(); } }          // 신청 기간이 열리고 닫히는 순간 화면을 바로 바꿈
     if ($('settle-mypay') && myUsers().map(u => u.id).join(',') !== state.mypay.sig) renderMyPay();        // 내 이름을 새로 등록·해제하면 분배금 칸도 바로 갱신
     const box = $('my-attendance-box');
     if (!box || !depsOk()) return;
@@ -3519,7 +3520,7 @@ async function cancelSettlement(rid) {
 // ============================================================
 const RB_MAX_IMAGES = 3;
 const rb = {
-    inited: false, pane: 'user', week: '', requests: [], prices: { recovery: 0, blessing: 0, transfer: 0 },        // pane: 복구비 탭에서 보는 화면 ('user' 신청 · 내 복구비 / 'admin' 복구비 관리)
+    inited: false, pane: 'user', windowSig: '', week: '', requests: [], prices: { recovery: 0, blessing: 0, transfer: 0 },        // pane: 복구비 탭에서 보는 화면 ('user' 신청 · 내 복구비 / 'admin' 복구비 관리)
     shots: [], shotSeq: 0, ocrQ: Promise.resolve(), workerP: null,
     uInited: false, userData: {}, userRefs: {}, weekCb: null,          // 사용자 탭: 최근 3주 데이터
     weekRef: null, priceBound: false, imgCache: {}, open: new Set()
@@ -3561,6 +3562,47 @@ function rbWeekName(key) {
     const p = diff === 0 ? '이번 주' : (diff === 1 ? '지난 주' : (diff > 1 ? diff + '주 전' : ''));
     return (p ? p + ' ' : '') + '(' + rbWeekRange(key) + ')';
 }
+
+// ── 복구비 신청 기간 ──
+//   한 주(수 05:00 ~ 다음 수 05:00)의 사용분을, 그 주의 마지막 날(화요일 00:00)부터 금요일 24:00까지만 신청받음.
+//   예) 11/4(수)~11/10(화) 사용분 → 11/10(화) ~ 11/13(금). 놓치면 신청 불가, 이전 주는 받지 않음. (한 번에 신청받는 주는 하나뿐)
+function rbOpenWeek() {                                        // 지금 신청받는 주(시작 수요일 날짜 키). 신청 기간이 아니면 null
+    const n = nowD(), cur = weekStartWed(n), prev = new Date(cur);
+    prev.setDate(cur.getDate() - 7);
+    for (const st of [cur, prev]) {
+        const open = new Date(st), close = new Date(st);
+        open.setDate(st.getDate() + 6);                        // 그 주의 화요일 00:00
+        close.setDate(st.getDate() + 10);                      // 토요일 00:00 (= 금요일이 끝나는 시각)
+        if (n >= open && n < close) return ymd(st);
+    }
+    return null;
+}
+function rbNextWindowKey() { return ymd(weekStartWed(nowD())); }          // 신청 기간이 아닐 때, 다음에 신청받는 주(= 지금 진행 중인 주)
+function rbPeriodText(key) {                                   // "수 11/4 ~ 화 11/10 사용분"
+    const st = new Date(key + 'T00:00:00'), en = new Date(st);
+    en.setDate(st.getDate() + 6);
+    return '수 ' + md(st) + ' ~ 화 ' + md(en) + ' 사용분';
+}
+function rbWindowText(key) {                                   // "화 11/10 ~ 금 11/13"
+    const st = new Date(key + 'T00:00:00'), a = new Date(st), b = new Date(st);
+    a.setDate(st.getDate() + 6); b.setDate(st.getDate() + 9);
+    return '화 ' + md(a) + ' ~ 금 ' + md(b);
+}
+const RB_CLOSED_MSG = '지금은 복구비 신청 기간이 아닙니다.\n신청은 지난 수요일~화요일 사용분을 화요일~금요일에만 받아요.';
+function rbRenderWindow() {                                    // 신청 카드 위의 기간 안내
+    const el = $('rbu-window');
+    if (!el) return;
+    const k = rbOpenWeek();
+    if (k) {
+        el.style.cssText = 'margin-bottom:10px; padding:9px 12px; border-radius:8px; font-size:0.84rem; line-height:1.55; background:#eafaf1; color:#1e8449; border:1px solid #a9dfbf;';
+        el.innerHTML = '✅ <b>지금 신청할 수 있어요</b> — ' + esc(rbPeriodText(k)) + '<br><span style="font-size:0.78rem;">' + esc(rbWindowText(k)) + ' 사이에만 받아요. 금요일 24시가 지나면 신청할 수 없습니다.</span>';
+    } else {
+        const nk = rbNextWindowKey();
+        el.style.cssText = 'margin-bottom:10px; padding:9px 12px; border-radius:8px; font-size:0.84rem; line-height:1.55; background:#fdf2e9; color:#a04000; border:1px solid #f5cba7;';
+        el.innerHTML = '⛔ <b>지금은 신청 기간이 아니에요</b><br><span style="font-size:0.78rem;">다음 신청: ' + esc(rbWindowText(nk)) + ' (' + esc(rbPeriodText(nk)) + ')</span>';
+    }
+}
+
 function rbRecentWeeks(n) {                              // 이번 주부터 n주 (시작 수요일 날짜 키)
     const cur = weekStartWed(nowD()), out = [];
     for (let i = 0; i < n; i++) { const st = new Date(cur); st.setDate(cur.getDate() - i * 7); out.push(ymd(st)); }
@@ -3624,9 +3666,10 @@ function rbBuildUser() {
 
     <div class="card">
         <h2 style="font-size:1.05rem; margin:0 0 4px;">💸 복구비 신청</h2>
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 12px; line-height:1.5;">게임의 <b>[호칭 → 호칭 리스트]</b> 화면 사진을 올리면 종류(복구·축복)와 점수(= 사용 횟수)를 자동으로 읽습니다. 운영진이 확정하면 혈에서 비용을 지급합니다.<br>⏰ 주간 호칭 랭킹은 <b>매주 수요일 05시</b>에 초기화되니, 초기화 전에 올려주세요.</p>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 12px; line-height:1.5;">게임의 <b>[호칭 → 호칭 리스트]</b> 화면 사진을 올리면 종류(복구·축복)와 점수(= 사용 횟수)를 자동으로 읽습니다. 운영진이 확정하면 혈에서 비용을 지급합니다.<br>📅 <b>지난 수요일~화요일 사용분</b>을 <b>화요일~금요일에만</b> 신청받아요. 놓치면 신청할 수 없고, 그 이전 주는 받지 않습니다.<br>⏰ 주간 호칭 랭킹은 <b>매주 수요일 05시</b>에 초기화되니, 초기화 전에 화면을 찍어 두세요.</p>
+        <div id="rbu-window"></div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
-            <label style="font-weight:bold; color:#2c3e50;">주차:</label>
+            <label style="font-weight:bold; color:#2c3e50;">신청 대상:</label>
             <select id="rbu-week" onchange="Settle.rbSubmitState()" style="width:auto; margin:0; padding:9px 12px; border:2px solid #5D6D7E; border-radius:8px; font-size:0.86rem; font-weight:bold;"></select>
         </div>
         <div id="rbu-price-line" style="font-size:0.82rem; color:#7f8c8d; margin-bottom:12px;"></div>
@@ -3747,13 +3790,13 @@ function rbPopulateWeeks() {                              // 관리자: 최근 8
     const sel = $('rb-week');
     if (sel) sel.innerHTML = rbRecentWeeks(8).map(k => `<option value="${k}">${esc(rbWeekName(k))}</option>`).join('');
 }
-function rbPopulateUserWeeks() {                          // 사용자: 이번 주 / 지난 주
+function rbPopulateUserWeeks() {                          // 사용자: 지금 신청받는 주 하나만 (신청 기간이 아니면 비어 있음)
     const sel = $('rbu-week');
     if (!sel) return;
-    const prev = sel.value;
-    const keys = rbRecentWeeks(2);
-    sel.innerHTML = keys.map(k => `<option value="${k}">${esc(rbWeekName(k))}</option>`).join('');
-    sel.value = keys.includes(prev) ? prev : keys[0];
+    const k = rbOpenWeek();
+    sel.innerHTML = k ? `<option value="${k}">${esc(rbPeriodText(k))}</option>` : '<option value="">(신청 기간 아님)</option>';
+    sel.value = k || '';
+    sel.disabled = true;                                    // 고를 수 있는 주가 하나뿐이라 바꿀 수 없음
 }
 
 function rbPopulateUsers() {
@@ -4031,7 +4074,9 @@ async function rbSubmit() {
     const user = userById(parseInt($('rb-user').value));
     const memo = $('rb-memo').value.trim();
     const week = $('rbu-week') ? $('rbu-week').value : rb.week;
-    if (!week) { alert('주차를 선택하세요.'); return; }
+    const openKey = rbOpenWeek();                                              // 신청 기간(화~금)인지, 그 주가 맞는지 제출하는 지금 다시 확인
+    if (!openKey) { alert(RB_CLOSED_MSG); rbPopulateUserWeeks(); rbRenderUser(); return; }
+    if (week !== openKey) { alert('신청 대상 주가 바뀌었습니다. 화면을 새로고침해서 다시 확인하세요.'); rbPopulateUserWeeks(); rbRenderUser(); return; }
     if (!user)    { alert('신청자를 선택하세요.'); return; }
     const localMine = (rb.userData[week] || []).filter(r => Number(r.userId) === Number(user.id));
     if (localMine.some(r => r.status === 'approved')) { alert(rbLockMsg(user.name)); return; }          // 확정된 주차는 제출 불가
@@ -4167,6 +4212,7 @@ function rbRender() {                                      // 관리자: 이 주
 
 // ── 사용자 화면: 내가 받을 돈 / 내 신청 내역 ──
 function rbRenderUser() {
+    rbRenderWindow();
     rbRenderPriceLine();
     rbRenderMoney();
     rbRenderMine();
@@ -4183,6 +4229,11 @@ function rbRenderSubmitState() {
         const lbl = document.querySelector('label[for="rb-files"]');
         if (lbl) { lbl.style.opacity = on ? '0.4' : ''; lbl.style.pointerEvents = on ? 'none' : ''; }
     };
+    if (!rbOpenWeek()) {                                                          // 신청 기간이 아니면 제출 불가 (진행 중인 신청 확인·수정은 아래 [내 신청 내역]에서)
+        note.style.display = 'none'; note.innerHTML = '';                              // 위쪽 기간 안내(#rbu-window)가 이미 알려 줌
+        btn.textContent = '⛔ 신청 기간이 아니에요'; lock(true);
+        return;
+    }
     const user = userById(parseInt($('rb-user').value));
     const week = $('rbu-week') ? $('rbu-week').value : '';
     const mine = (user && week) ? (rb.userData[week] || []).filter(r => Number(r.userId) === Number(user.id)) : [];
