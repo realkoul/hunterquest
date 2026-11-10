@@ -66,6 +66,8 @@ const state = {
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
+    nameChanges: [],                                                                           // 길드원 이름 변경 내역(기기의 [내 이름]을 새 이름으로 옮기는 데 씀)
+    supDirty: false,                                                                           // 지원조 명단을 고르는 중(저장 전)인지
     mypay: { list: [], loaded: false, err: false, sig: '' },                                   // 내 분배금: 최근 정산 기록(본인 몫만 화면에 보여 줌)
     bidRule: { minRate: 50, ready: false }, bidElig: { att: {}, today: '', at: 0 },            // 입찰 자격: 2순위 출석률 기준 / 신청 시점에 읽은 당일 출석
     dist: { minRate: 50, tiers: [{ size: 10, pct: 50 }, { size: 10, pct: 30 }, { size: 10, pct: 20 }], ready: false },   // 분배 기준 (출석률 50% 이상 · 1~10등 50% / 11~20등 30% / 21~30등 20%)
@@ -204,6 +206,7 @@ function onModeChange() {
     partToggleTick();
     renderPartCard(true);
     renderDistCard(true);
+    renderSupportCard(true);
     navFit();
     if (state.inited) { syncBidListeners(); refreshAll(); }
     rbRenderUser();
@@ -245,6 +248,7 @@ function ensureSupportTeam() {
     supportOn = true;
     db.ref('hunter_config/supportTeam').on('value', snap => {
         state.supportTeam = Object.values(snap.val() || {}).map(Number).filter(n => !isNaN(n));
+        renderSupportCard(false);
         renderCalcActions();
         teamRulesRefresh();
         if ($('settle-calc-area') && $('settle-calc-area').innerHTML) renderCalc();        // 정산 계산 화면이 열려 있으면 지원조 표시/계산 갱신
@@ -740,6 +744,7 @@ function renderMyAtt() {
 // 1초마다: 이름/명단/주가 바뀌었는지 확인 (이름이 없으면 구독하지 않음)
 function myAttTick() {
     navFit();
+    if (state.nameChanges.length) migrateMyNames();                                   // 길드원 명단을 나중에 받는 경우에도 옛 이름을 새 이름으로 옮김
     if ($('rbu-window')) { const wk = String(rbOpenWeek()); if (wk !== rb.windowSig) { rb.windowSig = wk; rbPopulateUserWeeks(); rbRenderUser(); } }          // 신청 기간이 열리고 닫히는 순간 화면을 바로 바꿈
     if ($('settle-mypay') && myUsers().map(u => u.id).join(',') !== state.mypay.sig) renderMyPay();        // 내 이름을 새로 등록·해제하면 분배금 칸도 바로 갱신
     const box = $('my-attendance-box');
@@ -1811,12 +1816,30 @@ async function saveManagers() {
 }
 
 // ── 지원조 설정 (관리자 전용) ───────────────────────────────
-async function openSupportTeam() {
-    if (!(await requireAdmin())) return;
+// ── 지원조 명단 관리 (관리자 전용) — 관리 탭 > [🤝 지원조 명단 관리] (길드원 명단 관리 바로 아래) ──
+function supCardMsg(t) {
+    const m = $('sup-msg');
+    if (!m) return;
+    m.textContent = t;
+    clearTimeout(supCardMsg.t);
+    supCardMsg.t = setTimeout(() => { const x = $('sup-msg'); if (x) x.textContent = ''; }, 3500);
+}
+function supCardSig() { return JSON.stringify([state.supportTeam, getUsers().map(u => [u.id, u.name, u.server]).sort((a, b) => Number(a[0]) - Number(b[0]))]); }
+function renderSupportCard(force) {
+    const acc = $('acc-support'), body = $('sup-body'), badge = $('sup-badge');
+    if (!acc || !body) return;
+    if (!isAdmin) { acc.style.display = 'none'; if (body.innerHTML) { body.innerHTML = ''; body.dataset.sig = ''; } state.supDirty = false; return; }          // 관리자가 아니면 숨기고 목록도 비움
+    acc.style.display = '';
+    ensureSupportTeam();
+    if (badge) badge.textContent = state.supportTeam.length ? '지원조 ' + state.supportTeam.length + '명' : '지원조 명단 없음';        // 제목 아래 표시는 항상 최신으로
+    const sig = supCardSig();
+    if (!force && (body.dataset.sig === sig || state.supDirty)) return;                 // 바뀐 게 없거나, 고르는 중이면(저장 전) 목록은 덮어쓰지 않음
+    if (force) state.supDirty = false;
+    body.dataset.sig = sig;
     const list = getUsers().slice().sort((a, b) => koCmp(a.name, b.name));
     const need = (u) => state.supportTeam.includes(Number(u.id)) || u.server === 'support';      // 지원조였거나 서버가 "지원"인 사람은 빼면 서버를 새로 골라야 함
-    showModal(`
-        <h3 style="margin:0 0 4px; color:#2c3e50;">🤝 지원조 설정</h3>
+    if (!list.length) { body.innerHTML = '<div style="padding:14px 0; color:#95a5a6; font-size:0.85rem;">길드원 명단을 불러오는 중…</div>'; return; }
+    body.innerHTML = `<div style="margin-top:12px;">
         <p style="font-size:0.8rem; color:#7f8c8d; margin:0 0 6px; line-height:1.55;">체크한 사람이 <b>지원조</b>입니다. 지원조는 <b>서버가 "지원"으로 고정</b>됩니다. 출석은 다른 사람처럼 <b>[출석하기]를 눌러야</b> 합니다.</p>
         <p style="font-size:0.8rem; color:#d35400; margin:0 0 10px; line-height:1.55;">지원조에서 <b>뺀 사람은 진기르 / 판도라 중에서 서버를 선택</b>해야 하고, 출석하기를 눌러야 출석됩니다. 지원조 명단은 관리자만 바꿀 수 있습니다.</p>
         <input type="text" id="settle-sup-search" placeholder="이름 검색" oninput="Settle.filterSupportRows()" style="${inputStyle} margin-bottom:8px;">
@@ -1824,24 +1847,55 @@ async function openSupportTeam() {
         <div id="settle-sup-list" style="max-height:44vh; overflow-y:auto; border:1px solid #eee; border-radius:8px;">
             ${list.map(u => { const chk = state.supportTeam.includes(Number(u.id)), nd = need(u); return `<div class="settle-sup-row" data-name="${esc(u.name)}" style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 10px; border-bottom:1px solid #f3f3f3;">
                 <label style="display:flex; align-items:center; gap:8px; cursor:pointer; flex:1; min-width:0;"><input type="checkbox" style="${cbStyle}" value="${Number(u.id)}" ${chk ? 'checked' : ''} onchange="Settle.supRowChange(${Number(u.id)})"> <span style="min-width:0; word-break:break-all;">${esc(u.name)}${serverBadge(u.server)}</span></label>
-                <select class="settle-sup-srv" data-uid="${Number(u.id)}" data-need="${nd ? 1 : 0}" style="width:auto; margin:0; padding:4px 6px; border:1.5px solid #e67e22; border-radius:6px; font-size:0.8rem; ${(!chk && nd) ? '' : 'display:none;'}"><option value="">서버 선택</option><option value="jingir">진기르</option><option value="pandora">판도라</option></select>
+                <select class="settle-sup-srv" data-uid="${Number(u.id)}" data-need="${nd ? 1 : 0}" onchange="Settle.supDirty()" style="width:auto; margin:0; padding:4px 6px; border:1.5px solid #e67e22; border-radius:6px; font-size:0.8rem; ${(!chk && nd) ? '' : 'display:none;'}"><option value="">서버 선택</option><option value="jingir">진기르</option><option value="pandora">판도라</option></select>
             </div>`; }).join('')}
         </div>
-        <div style="display:flex; gap:8px; margin-top:14px;">
+        <div style="display:flex; gap:8px; margin-top:14px; align-items:center; flex-wrap:wrap;">
             ${actBtn('저장', 'Settle.saveSupportTeam()', '#8e44ad').replace('padding:6px 11px', 'flex:1; padding:11px')}
-            ${actBtn('취소', 'Settle.closeModal()', '#95a5a6').replace('padding:6px 11px', 'flex:1; padding:11px')}
-        </div>`);
+            ${actBtn('되돌리기', 'Settle.supReset()', '#7f8c8d').replace('padding:6px 11px', 'padding:11px')}
+        </div>
+        <div id="sup-msg" style="margin-top:8px; font-size:0.8rem; color:#27ae60; min-height:1.1em;"></div>
+    </div>`;
 }
+function initSupportAdmin() {                                  // "길드원 명단 관리" 카드 바로 아래에 만듦
+    if ($('acc-support')) return;
+    const anchor = $('acc-users') || $('acc-items');
+    if (!anchor) return;
+    const acc = document.createElement('div');
+    acc.className = 'accordion-card';
+    acc.id = 'acc-support';
+    acc.style.display = 'none';
+    acc.innerHTML = `
+        <div class="accordion-header" onclick="toggleAccordion('acc-support')">
+            <h2>🤝 지원조 명단 관리 <span id="sup-badge" style="display:block; font-size:0.76rem; font-weight:normal; color:#8e44ad; margin-top:2px;"></span></h2>
+            <span class="accordion-arrow">▼</span>
+        </div>
+        <div class="accordion-body"><div id="sup-body"></div></div>`;
+    anchor.insertAdjacentElement('afterend', acc);
+}
+function openSupportAdmin() {                                  // 정산 화면의 바로가기 → 관리 탭의 지원조 명단 관리 카드를 펼쳐서 보여 줌
+    if (!isAdmin) return;                                                           // 관리자만 (저장할 때도 관리자 확인)
+    if (typeof switchTab === 'function') switchTab('users');
+    const acc = $('acc-support');
+    if (!acc) return;
+    acc.classList.add('open');
+    renderSupportCard(true);
+    if (acc.scrollIntoView) acc.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function supDirty() { state.supDirty = true; }                  // 고르는 중에는 다른 갱신이 덮어쓰지 않음
+function supReset() { renderSupportCard(true); supCardMsg('되돌렸습니다.'); }
 function supRowChange(uid) {                                   // 지원조에서 체크를 끄면(서버를 새로 골라야 하는 사람만) 서버 선택칸을 보여 줌
+    state.supDirty = true;
     const cb = document.querySelector('#settle-sup-list input[type=checkbox][value="' + uid + '"]'), sel = document.querySelector('#settle-sup-list select[data-uid="' + uid + '"]');
     if (!cb || !sel) return;
     sel.style.display = (!cb.checked && sel.dataset.need === '1') ? '' : 'none';
 }
 function supBulk(srv) {
+    state.supDirty = true;
     document.querySelectorAll('#settle-sup-list select.settle-sup-srv').forEach(sel => { if (sel.style.display !== 'none') sel.value = srv; });
 }
 function filterSupportRows() {
-    const q = ($('settle-sup-search').value || '').trim();
+    const q = ($('settle-sup-search') ? $('settle-sup-search').value : '').trim();
     document.querySelectorAll('#settle-sup-list .settle-sup-row').forEach(r => { r.style.display = !q || r.dataset.name.indexOf(q) >= 0 ? 'flex' : 'none'; });
 }
 async function saveSupportTeam() {
@@ -1859,7 +1913,9 @@ async function saveSupportTeam() {
     updates['hunter_config/supportTeam'] = ids.length ? ids : null;
     try {
         await db.ref().update(updates);
-        closeModal();
+        state.supDirty = false;
+        renderSupportCard(true);
+        supCardMsg('✅ 저장했습니다.');
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 
@@ -2342,7 +2398,8 @@ function partCurrentBoss() {                                   // 출석 화면�
 }
 function partToggleTick() {
     renderPartCard(false);
-    renderDistCard(false);                                                          // 관리 탭 카드도 설정·보스 목록이 바뀌었으면 갱신
+    renderDistCard(false);
+    renderSupportCard(false);                                                          // 관리 탭 카드도 설정·보스 목록이 바뀌었으면 갱신
     const box = $('part-toggle-box');
     if (!box) return;
     const hide = () => { if (box.style.display !== 'none' || box.innerHTML) { box.style.display = 'none'; box.innerHTML = ''; box.dataset.sig = ''; } };
@@ -2473,6 +2530,141 @@ function installTeamRules() {                                  // app.js 의 함
         return orig.apply(this, arguments);
     });
 }
+// ============================================================
+// ✏️ 길드원 이름 변경 (관리자 전용) — 관리 탭 > 길드원 명단 관리 > [수정] 창에서
+//   이름은 여러 기록에 "글자"로 저장되어 있어서, 이름만 바꾸면 복구비 신청 · 분배금 · 입찰 · 아이템이 "내 것"으로 인식되지 않음
+//   → 바꿀 때 이 길드원의 기존 기록(복구비 · 입찰 · 분배금 · 아이템 보관함 · 드랍 기록)의 이름도 함께 바꾸고,
+//     변경 내역(hunter_config/nameChanges)을 남겨 길드원 기기의 [내 이름]이 다음 접속 때 자동으로 새 이름으로 바뀌게 함
+//   · 기록은 "길드원 번호"로 찾아서 바꾸므로(번호가 없는 옛 기록만 옛 이름으로 찾음) 같은 이름으로 다시 눌러도 이어서 처리됨
+//   · 출석 기록은 번호로 저장되어 있어 바꿀 것이 없음 / 구글 시트에 이미 백업된 줄은 옛 이름 그대로 남음
+// ============================================================
+let nameChOn = false;
+function ensureNameChanges() {
+    if (nameChOn || !depsOk()) return;
+    nameChOn = true;
+    db.ref('hunter_config/nameChanges').on('value', snap => {
+        const v = snap.val() || {};
+        state.nameChanges = Object.keys(v).map(k => v[k]).filter(c => c && c.from && c.to).sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+        migrateMyNames();
+    });
+}
+function migrateMyNames() {                                    // 이 기기에 저장된 [내 이름]이 옛 이름이면 새 이름으로 바꿈
+    if (!state.nameChanges.length || typeof getMyNameSlots !== 'function' || typeof setMyNames !== 'function') return;
+    const us = getUsers();
+    if (!us.length) return;                                                // 길드원 명단을 아직 못 받았으면 잠시 보류
+    const exists = new Set(us.map(u => u.name)), slots = getMyNameSlots();
+    let changed = false;
+    const next = slots.map(sl => {
+        let n = sl.name, guard = 0;
+        while (n && !exists.has(n) && guard++ < 10) {                      // 지금 명단에 있는 이름이면 그대로 (옛 이름을 새 길드원이 쓰고 있어도 건드리지 않음)
+            const hit = state.nameChanges.filter(c => c.from === n).pop();
+            if (!hit) break;
+            n = hit.to;
+        }
+        if (n !== sl.name) { changed = true; return { name: n, server: sl.server || '' }; }
+        return sl;
+    });
+    if (!changed) return;
+    setMyNames(next);
+    try { if (typeof updateMyNameDisplay === 'function') updateMyNameDisplay(); } catch (e) { /* 화면이 아직 없음 */ }
+    try { onModeChange(); } catch (e) { /* 무시 */ }
+}
+async function buildRenameUpdates(user, newName) {              // 이 길드원의 이름이 들어 있는 기록을 모아서 { 경로: 새 이름 } 로 만듦
+    const id = Number(user.id), old = user.name, ups = {}, cnt = { reimburse: 0, bids: 0, settlement: 0, storage: 0, drops: 0 };
+    const mine = (rid, rname) => (rid !== undefined && rid !== null && rid !== '') ? Number(rid) === id : rname === old;         // 번호가 있으면 번호로, 없는 옛 기록은 옛 이름으로
+    const read = async (path) => (await db.ref(path).once('value')).val() || {};
+    const rb = await read('boss_reimburse');
+    Object.keys(rb).forEach(wk => Object.keys(rb[wk] || {}).forEach(k => { const r = rb[wk][k]; if (r && typeof r === 'object' && mine(r.userId, r.name) && r.name !== newName) { ups['boss_reimburse/' + wk + '/' + k + '/name'] = newName; cnt.reimburse++; } }));
+    const bd = await read('boss_bids/' + id);
+    Object.keys(bd).forEach(k => { const r = bd[k]; if (r && typeof r === 'object' && r.name !== newName) { ups['boss_bids/' + id + '/' + k + '/name'] = newName; cnt.bids++; } });
+    const st = await read('boss_settlement');
+    Object.keys(st).forEach(k => {
+        const r = st[k] || {};
+        Object.keys(r.recipients || {}).forEach(rk => { const x = r.recipients[rk]; if (x && typeof x === 'object' && mine(x.userId, x.name) && x.name !== newName) { ups['boss_settlement/' + k + '/recipients/' + rk + '/name'] = newName; cnt.settlement++; } });
+        Object.keys(r.items || {}).forEach(ix => { const it = r.items[ix]; if (it && it.buyer === old && (it.buyerId === undefined || it.buyerId === null || Number(it.buyerId) === id)) ups['boss_settlement/' + k + '/items/' + ix + '/buyer'] = newName; });
+    });
+    const sg = await read('boss_storage');
+    Object.keys(sg).forEach(k => {
+        const it = sg[k];
+        if (!it || typeof it !== 'object') return;
+        let hit = false;
+        if (it.winner && mine(it.winnerId, it.winner) && it.winner !== newName) { ups['boss_storage/' + k + '/winner'] = newName; hit = true; }
+        if (it.buyer && ((it.buyerId !== undefined && it.buyerId !== null) ? Number(it.buyerId) === id : it.buyer === old) && it.buyer !== newName) { ups['boss_storage/' + k + '/buyer'] = newName; hit = true; }
+        if (hit) cnt.storage++;
+    });
+    const dr = await read('boss_drops');
+    Object.keys(dr).forEach(k => Object.keys((dr[k] || {}).items || {}).forEach(ik => { const it = dr[k].items[ik]; if (it && typeof it === 'object' && it.winner && mine(it.winnerId, it.winner) && it.winner !== newName) { ups['boss_drops/' + k + '/items/' + ik + '/winner'] = newName; cnt.drops++; } }));
+    return { ups: ups, cnt: cnt };
+}
+async function applyRename(user, newName, server) {
+    const { ups, cnt } = await buildRenameUpdates(user, newName);
+    const keys = Object.keys(ups);
+    for (let i = 0; i < keys.length; i += 400) {                                  // 기록 먼저(나눠서) — 중간에 멈춰도 같은 이름으로 다시 하면 이어서 처리됨
+        const part = {};
+        keys.slice(i, i + 400).forEach(k => { part[k] = ups[k]; });
+        await db.ref().update(part);
+    }
+    const chKey = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), fin = {};
+    fin['hunter_config/nameChanges/' + chKey] = { userId: Number(user.id), from: user.name, to: newName, at: nowIso() };
+    fin['boss_attendance_users/' + user.id + '/name'] = newName;              // 길드원 이름은 마지막에
+    if (server && server !== user.server) fin['boss_attendance_users/' + user.id + '/server'] = server;
+    await db.ref().update(fin);
+    return cnt;
+}
+async function renameUserFlow(user, newName) {
+    const server = $('edit-user-server') ? $('edit-user-server').value : '';
+    if (!server) { alert('서버를 선택해주세요.'); return; }
+    if (newName.length > 20) { alert('이름은 20자 이하로 입력해주세요.'); return; }
+    if (getUsers().some(u => Number(u.id) !== Number(user.id) && String(u.name).trim().toLowerCase() === newName.toLowerCase())) { alert('"' + newName + '"은(는) 이미 등록된 사용자입니다.'); return; }
+    if (!(await requireAdmin())) return;
+    if (!confirm('"' + user.name + '" 님의 이름을 "' + newName + '"(으)로 바꿀까요?\n\n· 이 길드원의 기존 기록(복구비 · 입찰 · 분배금 · 아이템 · 드랍)의 이름도 함께 바뀝니다.\n· 길드원 기기의 [내 이름]은 다음에 접속할 때 자동으로 바뀝니다.\n· 이전에 공유한 출석 링크는 새 이름으로 다시 복사해야 합니다.')) return;
+    const btn = document.querySelector('#edit-user-modal button.btn-success'), label = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '이름 바꾸는 중…'; }
+    try {
+        const c = await applyRename(user, newName, server);
+        const total = c.reimburse + c.bids + c.settlement + c.storage + c.drops;
+        alert('✅ "' + user.name + '" → "' + newName + '" 이름을 바꿨습니다.\n기록 ' + total + '건의 이름도 함께 바꿨어요. (복구비 ' + c.reimburse + ' · 입찰 ' + c.bids + ' · 분배금 ' + c.settlement + ' · 아이템 ' + c.storage + ' · 드랍 ' + c.drops + ')');
+        if (typeof closeEditUserModal === 'function') closeEditUserModal();
+    } catch (e) {
+        alert('❌ 이름 변경 실패: ' + e.message + '\n같은 내용으로 다시 저장하면 이어서 처리됩니다.');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+}
+const NAME_FIELD_LOCKED = 'width:100%; padding:12px; font-size:1rem; border:2px solid #e0e0e0; border-radius:6px; background:#f5f5f5; color:#7f8c8d;';
+const NAME_FIELD_OPEN = 'width:100%; padding:12px; font-size:1rem; border:2px solid #8e44ad; border-radius:6px; background:white; color:#2c3e50;';
+function unlockNameField() {                                   // 수정 창의 이름 칸: 관리자에게만 풀어 줌
+    const inp = $('edit-user-name');
+    if (!inp) return;
+    inp.readOnly = !isAdmin;
+    inp.style.cssText = isAdmin ? NAME_FIELD_OPEN : NAME_FIELD_LOCKED;
+    inp.maxLength = 20;
+    const top = document.querySelector('#edit-user-modal .modal-content > p');             // 맨 위 설명
+    if (top) top.textContent = isAdmin ? '사용자의 이름과 서버 정보를 변경합니다.' : '사용자의 서버 정보를 변경합니다.';
+    const note = inp.parentElement ? inp.parentElement.querySelector('p') : null;
+    if (note) note.innerHTML = isAdmin ? '✏️ 관리자만 이름을 바꿀 수 있어요. 바꾸면 이 길드원의 <b>기존 기록(복구비 · 입찰 · 분배금 · 아이템 · 드랍)의 이름도 함께 바뀌고</b>, 길드원 기기의 [내 이름]은 다음에 접속할 때 자동으로 바뀝니다.<br>이전에 공유한 출석 링크는 새 이름으로 다시 복사해야 해요.' : '* 이름은 변경할 수 없습니다';
+}
+function installRename() {
+    const wrap = (name, make) => { const f = window[name]; if (typeof f === 'function' && !f.__settle) { const w = make(f); w.__settle = true; window[name] = w; } };
+    wrap('showEditUserModal', (orig) => function () {
+        const r = orig.apply(this, arguments);
+        try { unlockNameField(); } catch (e) { /* 무시 */ }
+        return r;
+    });
+    wrap('updateUser', (orig) => function () {
+        const idEl = $('edit-user-id'), nameEl = $('edit-user-name');
+        const user = idEl ? getUsers().find(u => Number(u.id) === parseInt(idEl.value)) : null;
+        const nn = nameEl ? String(nameEl.value || '').trim() : '';
+        if (!user || !nameEl || nameEl.readOnly || nn === user.name) return orig.apply(this, arguments);       // 이름을 바꾸지 않았으면 기존대로(서버만 변경)
+        if (!nn) { alert('이름을 입력해주세요.'); return; }
+        return renameUserFlow(user, nn);
+    });
+}
+function initRename() {
+    installRename();
+    afterAuth(ensureNameChanges);
+}
+
 function initTeamRules() {
     installTeamRules();
     afterAuth(() => { ensureSupportTeam(); ensureParticipation(); ensureBidRule(); teamRulesRefresh(); });
@@ -2722,7 +2914,7 @@ function calcItems() {
 // 2) 남은 금액을 방식대로 분배: 균등 / 서버별 비율(조건 = 서버, 비율 = %, 각 서버 몫 안에서는 균등)
 // 3) 받을 사람이 없는 서버의 몫은 "미배분"(혈 귀속)으로 따로 표시. 정수(다이아) 단위, 남는 1은 이름순 앞사람부터
 const RATIO_GROUPS = [['jingir', '진기르'], ['pandora', '판도라'], ['support', '지원'], ['other', '그 외']];
-// 서버별 비율의 "지원" 몫 = 지원조 (서버 표시가 아니라 [지원조 설정] 명단이 기준). 지원조는 서버와 상관없이 지원 몫을 받고,
+// 서버별 비율의 "지원" 몫 = 지원조 (서버 표시가 아니라 [지원조 명단 관리] 명단이 기준). 지원조는 서버와 상관없이 지원 몫을 받고,
 // 지원조가 아닌 사람은 진기르/판도라 몫, 그 외(서버 없음 · 서버가 '지원'이어도 지원조가 아닌 사람)는 "그 외" 몫
 const groupOf = (u, supportIds) => {
     if (supportIds && supportIds.has(Number(u.id))) return 'support';
@@ -2819,8 +3011,7 @@ function renderCalcActions() {
     if (!box) return;
     const its = unsettledItems(), n = its.length, total = its.reduce((t, i) => t + (Number(i.bidPrice) || 0), 0);
     box.innerHTML = (canManage() ? actBtn('📊 분배 정산' + (n ? ' (' + n + ')' : ''), 'Settle.openDist()', '#27ae60') : '')
-                  + actBtn('📋 정산 내역', 'Settle.showHistory()', '#3498db')
-                  + (isAdmin ? actBtn('🤝 지원조 설정' + (state.supportTeam.length ? ' (' + state.supportTeam.length + '명)' : ''), 'Settle.openSupportTeam()', '#8e44ad') : '');
+                  + actBtn('📋 정산 내역', 'Settle.showHistory()', '#3498db');
     const acc = $('settle-accum');                                                  // 분배 누적금: 판매는 끝났지만 아직 정산하지 않은 낙찰액의 합 (정산완료하면 0)
     if (acc) acc.innerHTML = canManage()
         ? `<div style="background:#fff4e5; border:1px solid #f5cba7; border-radius:10px; padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:8px;"><span style="font-size:0.85rem; color:#7f8c8d; line-height:1.4;">💰 분배 누적금<br><span style="font-size:0.72rem;">${n ? '판매 완료 · 미정산 ' + n + '건' : '정산할 금액이 없습니다'}</span></span><b style="font-size:1.35rem; color:#e67e22; white-space:nowrap;">${fmt(total)} ${UNIT}</b></div>` : '';
@@ -3124,10 +3315,10 @@ function renderCalc() {
                 <div style="font-size:0.78rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">지원조는 정산 금액의 아래 비율만큼 받고, 나머지 인원은 그 비율을 뺀 나머지를 나눠 받습니다. (각 몫 안에서는 균등)</div>
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:0.85rem;"><span>🤝 지원조 몫</span><span><input type="number" id="settle-support-pct" min="0" max="100" step="0.5" value="${Number(state.calcSupportPct) || 0}" oninput="Settle.setSupportPct(this.value)" style="${inp}"> %</span></div>
                 <div id="settle-support-info" style="font-size:0.8rem; color:#555; margin-top:6px; line-height:1.6;"></div>
-                <div style="font-size:0.74rem; color:#95a5a6; margin-top:4px;">지원조 명단은 관리자만 설정할 수 있습니다.${isAdmin ? ' ' + actBtn('🤝 지원조 설정', 'Settle.openSupportTeam()', '#8e44ad') : ''}</div>
+                <div style="font-size:0.74rem; color:#95a5a6; margin-top:4px;">지원조 명단은 관리 탭의 <b>[지원조 명단 관리]</b>에서 관리자만 설정할 수 있습니다.${isAdmin ? ' ' + actBtn('🤝 지원조 명단 관리 열기', 'Settle.openSupportAdmin()', '#8e44ad') : ''}</div>
             </div>
             <div id="settle-ratio-box" style="display:none; background:#f8f9fa; border-radius:8px; padding:8px 10px; margin-bottom:6px;">
-                <div style="font-size:0.78rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">서버마다 몫(%)을 정하면, 각 몫을 그 서버 대상자끼리 균등하게 나눕니다.<br><b style="color:#1e8449;">지원 몫은 서버가 아니라 [지원조 설정] 명단 기준</b>입니다. 지원조는 서버와 상관없이 지원 몫을 받고, 진기르·판도라 몫에서는 빠집니다.</div>
+                <div style="font-size:0.78rem; color:#7f8c8d; margin-bottom:6px; line-height:1.5;">서버마다 몫(%)을 정하면, 각 몫을 그 서버 대상자끼리 균등하게 나눕니다.<br><b style="color:#1e8449;">지원 몫은 서버가 아니라 [지원조 명단 관리] 명단 기준</b>입니다. 지원조는 서버와 상관없이 지원 몫을 받고, 진기르·판도라 몫에서는 빠집니다.</div>
                 <div id="settle-ratio-info" style="font-size:0.78rem; color:#555; margin-bottom:6px; line-height:1.6;"></div>
                 ${RATIO_GROUPS.filter(([g]) => g !== 'other' || showOther).map(([g, n]) => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:3px 0; font-size:0.85rem;"><span>${g === 'support' ? '지원 <small style="color:#1e8449; font-weight:bold;">(지원조)</small>' : n}</span><span><input type="number" id="settle-ratio-${g}" min="0" max="100" step="0.5" value="${Number(state.calcRatios[g]) || 0}" oninput="Settle.setRatio('${g}', this.value)" style="${inp}"> %</span></div>`).join('')}
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:0.82rem;"><span id="settle-ratio-sum"></span>${actBtn('대상 인원 비례로 채우기', 'Settle.fillRatioByHeadcount()', '#5D6D7E')}</div>
@@ -4605,7 +4796,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, partBossAll, partToggleBoss, openPartAdmin, guideRetry, supRowChange, supBulk, openDist, distRecalc, openDistSettings, distDemo, saveDistSettings, resetDistSettings, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportTeam, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, partBossAll, partToggleBoss, openPartAdmin, guideRetry, supRowChange, supBulk, openDist, distRecalc, openDistSettings, distDemo, saveDistSettings, resetDistSettings, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportAdmin, supDirty, supReset, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
@@ -4618,8 +4809,10 @@ initMyAtt();      // 출석 탭의 [내 출석]
 initBackupAdmin(); // 관리 탭의 [아이템/정산 구글 백업]
 initPartAdmin();   // 관리 탭의 [📊 출석률 설정] 카드
 initDistAdmin();   // 관리 탭의 [💰 분배 비율] 카드
+initSupportAdmin(); // 관리 탭의 [🤝 지원조 명단 관리] 카드 (길드원 명단 관리 바로 아래)
 initPartToggle();  // 출석 탭 [출석하기]와 [내 출석] 사이의 "이 스케줄을 출석률에 포함" 체크 칸 (관리자)
 initGuide();       // 하단 메뉴 [사이트이용법] 탭
 initTeamRules();   // 지원조 규칙 + 통계 통일
+initRename();      // 관리 탭 길드원 수정 창: 관리자 전용 이름 변경 + 기기의 [내 이름] 자동 이전
 updateNav();      // 정산 메뉴는 관리자·담당자에게만
 })();
