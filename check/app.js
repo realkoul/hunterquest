@@ -5084,7 +5084,7 @@ function saveMyNames() {
     renderAttendanceTable();
     
     if (unique.length > 0) {
-        alert(`${unique.length}명 등록되었습니다:\n${unique.join(', ')}`);
+        alert(`${unique.length}명 등록되었습니다:\n${unique.map(s => s.name).join(', ')}`);
     } else {
         alert('내 이름이 모두 해제되었습니다.');
     }

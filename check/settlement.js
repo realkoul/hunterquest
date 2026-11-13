@@ -2588,6 +2588,49 @@ function applyPersonRates(res, data, us, ts) {
     });
 }
 
+// ============================================================
+// ⭐ [내 이름 설정] 창의 서버 버튼: "지원"은 지원조만 · 지원조는 "지원"으로 고정 (이름을 입력하면 바로 바뀜)
+// ============================================================
+const MYNAME_SRV_COLORS = { jingir: '#3498db', pandora: '#9b59b6', support: '#27ae60' };
+function myNameSlotUser(slotIdx) {                             // 그 슬롯에 적힌 이름의 길드원 (명단에 없으면 null)
+    const inp = document.querySelector('.my-name-slot-input[data-slot="' + slotIdx + '"]'), name = inp ? inp.value.trim() : '';
+    return name ? (getUsers().find(x => x.name === name) || null) : null;
+}
+function myNameSlotIsTeam(slotIdx) { const u = myNameSlotUser(slotIdx); return !!(u && isTeamUser(u)); }
+function setMyNameBtn(btn, on) {
+    const c = MYNAME_SRV_COLORS[btn.getAttribute('data-server')] || '#666';
+    btn.classList.toggle('active-server', !!on);
+    btn.style.background = on ? c : 'white';
+    btn.style.color = on ? 'white' : c;
+}
+function applyMyNameServerRule() {
+    document.querySelectorAll('.my-name-slot-input').forEach(inp => {
+        const i = inp.getAttribute('data-slot'), team = myNameSlotIsTeam(i);
+        const btns = Array.from(document.querySelectorAll('.my-server-btn[data-slot="' + i + '"]'));
+        if (!btns.length) return;
+        const row = btns[0].parentNode, hint = row ? row.querySelector('span[style*="italic"]') : null;
+        let cleared = false;
+        btns.forEach(b => {
+            const sv = b.getAttribute('data-server');
+            b.style.display = (team ? sv === 'support' : sv !== 'support') ? '' : 'none';             // 지원조는 "지원"만, 그 외는 "진기르·판도라"만 보임
+            if (team) { setMyNameBtn(b, sv === 'support'); if (sv === 'support') b.dataset.forced = '1'; }       // 지원조는 지원으로 고정 (규칙이 고정한 것이라 표시해 둠)
+            else if (sv === 'support' && b.classList.contains('active-server')) { setMyNameBtn(b, false); cleared = !b.dataset.forced; delete b.dataset.forced; }   // 지원조가 아니면 지원 선택을 해제 — 안내는 옛 데이터에 남은 지원 선택일 때만
+        });
+        if (hint) hint.style.display = (team || btns.some(b => b.classList.contains('active-server'))) ? 'none' : '';
+        let note = row ? row.querySelector('[data-srv-note]') : null;
+        if (!note && row) { note = document.createElement('span'); note.setAttribute('data-srv-note', '1'); row.appendChild(note); }
+        if (!note) return;
+        if (team) { note.style.cssText = 'font-size:0.76rem; color:#1e8449; font-weight:bold;'; note.textContent = '🤝 지원조는 서버가 지원으로 고정돼요'; }
+        else if (cleared) { note.style.cssText = 'font-size:0.76rem; color:#d35400; font-weight:bold;'; note.textContent = '지원은 지원조만 쓸 수 있어요. 진기르 / 판도라 중에서 골라 주세요'; }
+        else if (!btns.some(b => b.classList.contains('active-server') && b.style.display !== 'none')) { note.textContent = ''; }
+        else if (note.textContent && !team) { note.textContent = ''; }
+    });
+}
+function setupMyNameModalRules() {
+    document.querySelectorAll('.my-name-slot-input').forEach(inp => inp.addEventListener('input', () => { try { applyMyNameServerRule(); } catch (e) { /* 무시 */ } }));      // 이름을 쓰는 대로 서버 버튼이 바뀜
+    applyMyNameServerRule();
+}
+
 function installTeamRules() {                                  // app.js 의 함수를 손대지 않고, 같은 이름으로 감싸서 규칙을 끼워 넣음 (한 번만)
     const wrap = (name, make) => { const f = window[name]; if (typeof f === 'function' && !f.__settle) { const w = make(f); w.__settle = true; window[name] = w; } };
     wrap('calculateStats', (orig) => function (data) {
@@ -2605,6 +2648,9 @@ function installTeamRules() {                                  // app.js 의 함
         return res;
     });
     wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } try { addRelicButtons(); } catch (e) { /* 무시 */ } return r; });
+    wrap('showMyNameModal', (orig) => function () { const r = orig.apply(this, arguments); try { setupMyNameModalRules(); } catch (e) { /* 무시 */ } return r; });
+    wrap('saveMyNames', (orig) => function () { try { applyMyNameServerRule(); } catch (e) { /* 무시 */ } return orig.apply(this, arguments); });
+    wrap('selectMyServer', (orig) => function (slotIdx, serverKey) { if (serverKey === 'support' && !myNameSlotIsTeam(slotIdx)) return; return orig.apply(this, arguments); });       // 지원조가 아니면 지원을 고를 수 없음
     wrap('quickAttendanceByName', (orig) => function (name, slotId) {
         const info = nameServerInfo(name);
         if (info && !info.valid) { alert('진기르 또는 판도라 서버를 먼저 선택하세요. (지원은 지원조만 쓸 수 있어요)'); return; }
