@@ -2543,7 +2543,7 @@ function installTeamRules() {                                  // app.js 의 함
         }
         try { return orig.call(this, d); } finally { if (swapped) users = saved; }
     });
-    wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } return r; });
+    wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } try { addRelicButtons(); } catch (e) { /* 무시 */ } return r; });
     wrap('quickAttendanceByName', (orig) => function (name, slotId) {
         const info = nameServerInfo(name);
         if (info && !info.valid) { alert('진기르 또는 판도라 서버를 먼저 선택하세요. (지원은 지원조만 쓸 수 있어요)'); return; }
@@ -2557,6 +2557,46 @@ function installTeamRules() {                                  // app.js 의 함
         return orig.apply(this, arguments);
     });
 }
+// ============================================================
+// 📖 성물 — [내 이름] 카드의 [📖 성물] 버튼: 본인이 직접 보유한 성물을 체크
+//   관리자가 길드원 명단에서 쓰던 "성물 관리" 창(showRelicModal / saveRelics)을 그대로 열어 줌 (저장: boss_attendance_users/{번호}/missingRelics)
+//   · [내 이름]에 등록한 이름(본인 캐릭터)에만 나타나고, 카드가 다시 그려질 때마다 한 번씩 붙음
+// ============================================================
+function addRelicButtons() {
+    const list = $('my-names-quick-list');
+    if (!list || typeof getMyNameSlots !== 'function') return;
+    let slots = [];
+    try { slots = getMyNameSlots(); } catch (e) { return; }
+    if (!slots.length || list.children.length !== slots.length) return;
+    slots.forEach((slot, i) => {
+        const card = list.children[i];
+        if (!card || card.querySelector('[data-relic-btn]')) return;
+        const rm = card.querySelector('button[onclick^="removeMyName"]');                       // 이름 줄 오른쪽의 [해제] 버튼 — 그 옆에 나란히 둠
+        if (!rm || !rm.parentNode) return;
+        const box = document.createElement('span'), b = document.createElement('button');
+        box.style.cssText = 'display:flex; align-items:center; gap:6px; flex-shrink:0; margin-left:auto;';          // 자리가 모자라면 이름 줄 아래로 내려가서 오른쪽에 붙음
+        b.type = 'button';
+        b.setAttribute('data-relic-btn', '1');
+        b.setAttribute('data-name', slot.name);
+        b.title = '내가 가진 성물을 직접 체크해요';
+        b.textContent = '📖 성물';
+        b.style.cssText = 'padding:3px 8px; background:transparent; border:1px solid #8e44ad; color:#8e44ad; border-radius:4px; cursor:pointer; font-size:0.75rem; font-weight:bold; white-space:nowrap;';
+        b.onclick = () => openMyRelic(slot.name);
+        const head = rm.parentNode;
+        head.style.flexWrap = 'wrap';
+        head.style.rowGap = '6px';
+        rm.style.whiteSpace = 'nowrap';
+        head.insertBefore(box, rm);
+        box.appendChild(b);
+        box.appendChild(rm);
+    });
+}
+function openMyRelic(name) {
+    const u = getUsers().find(x => x.name === name);
+    if (!u) { alert('"' + name + '"은(는) 길드원 명단에 없는 이름이라 성물을 설정할 수 없어요.\n관리자에게 명단 등록을 요청하거나 내 이름을 다시 등록해 주세요.'); return; }
+    if (typeof showRelicModal === 'function') showRelicModal(u.id);
+}
+
 // ============================================================
 // ✏️ 길드원 이름 변경 (관리자 전용) — 관리 탭 > 길드원 명단 관리 > [수정] 창에서
 //   이름은 여러 기록에 "글자"로 저장되어 있어서, 이름만 바꾸면 복구비 신청 · 분배금 · 입찰 · 아이템이 "내 것"으로 인식되지 않음
