@@ -2530,6 +2530,64 @@ function adjustNameCards() {                                   // [내 이름] �
         sbtns.forEach(b => { if (keyOf(b) === 'support') b.style.display = 'none'; });                    // 지원조가 아니면 "지원"은 고를 수 없음 (스타일을 되돌린 뒤에 숨겨야 유지됨)
     });
 }
+// ============================================================
+// 📈 출석률은 "그 사람 기준" — 서버를 중간에 바꿔도 다른 사람의 출석률이 흔들리지 않게
+//   예전: 분모를 "지금 그 서버의 보스 수"로 잡아서, 한 명이 서버를 옮기면 같은 서버의 다른 사람 출석률까지 떨어졌음
+//   지금: 출석한 보스마다 그때의 서버를 함께 저장(boss_attendance/{날짜_보스}/servers/{번호})하고, 사람마다 보스별로 따로 셈
+//     · 분자 = 이 사람이 출석한 보스 (담당이 아닌 보스에 간 "쟁참여"도 포함)
+//     · 분모 = 이 사람이 출석한 보스 + (그 시각 이 사람의 서버가 담당이거나 담당 지정이 없는 보스 중 출석 안 한 것)
+//       → 다른 서버 담당 보스는 내가 가지 않았으면 분모에 넣지 않고, 같은 서버 사람이 갔더라도 내 분모에 넣지 않음
+//     · "담당"은 관리자가 서버 배정 화면에서 고른 서버별 출석체크 보스(weekAssignCache) 기준 / 제외한 보스는 calculateStats 래퍼가 이미 뺌
+//     · 이 서버에 배정된 보스가 이번 주에 하나도 없으면(아직 배정 전) 모든 보스를 기준으로 함 (예전과 같은 안전장치)
+//   보스 시각의 서버: 그 보스에 저장된 서버 → 없으면 직전에 출석한 서버를 이어서 → 한 번도 없으면 처음 출석한 서버 → 기록이 아예 없으면 지금 서버
+// ============================================================
+const SNAP_SERVERS = { jingir: 1, pandora: 1, support: 1 };      // 출석 기록에 남길 수 있는 서버 (SRV_OK 는 일반 길드원이 고를 수 있는 진기르·판도라뿐이라 지원이 빠져 있음)
+function recordServerSnapshot(res, key, userId, user, targetServer) {
+    if (!key || !res || typeof res.then !== 'function') return;
+    const sv = (user && isTeamUser(user)) ? 'support' : (SNAP_SERVERS[targetServer] ? targetServer : (user ? user.server : ''));
+    if (!SNAP_SERVERS[sv]) return;
+    res.then(() => db.ref('boss_attendance/' + key + '/servers/' + Number(userId)).set(sv))
+        .catch(e => { try { console.warn('출석한 서버 기록 실패:', e && e.message); } catch (x) { /* 무시 */ } });        // 실패해도 출석 자체에는 영향 없음
+}
+function applyPersonRates(res, data, us, ts) {
+    if (!res || !res.userStats || typeof getWeekStart !== 'function' || typeof formatLocalDate !== 'function') return;
+    const ws = getWeekStart(), we = new Date(ws);
+    we.setDate(ws.getDate() + 6);
+    const from = formatLocalDate(ws), to = formatLocalDate(we);
+    const cacheLoaded = typeof weekAssignCache === 'object' && weekAssignCache && Object.keys(weekAssignCache).length > 0;
+    const timeOf = (bossId) => { const sc = (typeof schedules !== 'undefined' && Array.isArray(schedules)) ? schedules.find(x => x.id === bossId) : null; return sc && sc.time ? String(sc.time) : '99:99'; };
+    const recs = [];
+    Object.keys(data || {}).forEach(key => {
+        const date = key.split('_')[0], bossId = key.split('_').slice(1).join('_'), rec = data[key] || {}, att = rec.attendees || {};
+        if (date < from || date > to || !Object.keys(att).length) return;                       // 이번 주(수~화)에 출석 기록이 있는 보스만
+        const entry = cacheLoaded ? weekAssignCache[bossId] : null;
+        recs.push({ key: key, time: date + ' ' + timeOf(bossId), att: att, srv: rec.servers || {}, assigned: entry ? (entry.assignedServers || []) : [] });
+    });
+    recs.sort((a, b) => a.time.localeCompare(b.time) || a.key.localeCompare(b.key));
+    (us || []).forEach(u => {
+        const uid = String(u.id), st = res.userStats[uid];
+        if (!st) return;
+        const fallback = (ts && ts.has(Number(u.id))) ? 'support' : (u.server || '');
+        const snaps = recs.map(r => { const v = r.srv[uid] !== undefined ? r.srv[uid] : r.srv[u.id]; return SNAP_SERVERS[v] ? v : ''; });
+        const first = snaps.find(Boolean) || '';
+        let prev = '';
+        const duty = recs.map((r, i) => {                                                        // 보스마다 "내 서버 담당(또는 담당 지정 없음)"인지
+            if (snaps[i]) prev = snaps[i];
+            const sv = snaps[i] || prev || first || fallback;                                    // 그 보스 시각의 이 사람 서버
+            return r.assigned.length === 0 || r.assigned.includes(sv);
+        });
+        const none = !duty.some(Boolean);                                                        // 이 서버에 배정된 보스가 이번 주에 하나도 없으면(아직 배정 전) 모든 보스를 기준으로 함 (예전과 같은 안전장치)
+        let present = 0, absent = 0, total = 0;
+        recs.forEach((r, i) => {
+            const raw = r.att[uid] !== undefined ? r.att[uid] : r.att[u.id], status = normalizeStatus(raw);
+            if (status === 'present' || status === 'late') { present++; total++; }               // 출석한 보스는 담당이 아니어도(쟁참여) 분자·분모에 모두 포함
+            else if (none || duty[i]) { absent++; total++; }                                     // 출석 안 한 보스는 내 서버 담당일 때만 분모에 포함
+        });
+        st.present = present; st.absent = absent; st.total = total; st.serverTotal = total;
+        st.rate = total > 0 ? (present / total * 100).toFixed(1) : '0.0';
+    });
+}
+
 function installTeamRules() {                                  // app.js 의 함수를 손대지 않고, 같은 이름으로 감싸서 규칙을 끼워 넣음 (한 번만)
     const wrap = (name, make) => { const f = window[name]; if (typeof f === 'function' && !f.__settle) { const w = make(f); w.__settle = true; window[name] = w; } };
     wrap('calculateStats', (orig) => function (data) {
@@ -2541,7 +2599,10 @@ function installTeamRules() {                                  // app.js 의 함
             users = saved.map(u => (ts.has(Number(u.id)) && u.server !== 'support') ? Object.assign({}, u, { server: 'support' }) : u);
             swapped = true;
         }
-        try { return orig.call(this, d); } finally { if (swapped) users = saved; }
+        let res;
+        try { res = orig.call(this, d); } finally { if (swapped) users = saved; }
+        try { applyPersonRates(res, d, saved || getUsers(), ts); } catch (e) { /* 계산이 실패하면 앱의 원래 값을 그대로 씀 */ }
+        return res;
     });
     wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } try { addRelicButtons(); } catch (e) { /* 무시 */ } return r; });
     wrap('quickAttendanceByName', (orig) => function (name, slotId) {
@@ -2554,7 +2615,11 @@ function installTeamRules() {                                  // app.js 의 함
         if (u && requestedStatus === 'present' && !isAdmin) {
             if (targetServer === 'support' && !isTeamUser(u)) { alert('진기르 또는 판도라 서버를 먼저 선택하세요. (지원은 지원조만 쓸 수 있어요)'); return null; }
         }
-        return orig.apply(this, arguments);
+        let key = '';
+        try { if (typeof currentScheduleId !== 'undefined' && currentScheduleId) key = ((typeof currentScheduleDate !== 'undefined' && currentScheduleDate) ? currentScheduleDate : formatLocalDate(new Date())) + '_' + currentScheduleId; } catch (e) { key = ''; }
+        const res = orig.apply(this, arguments);
+        try { recordServerSnapshot(res, key, userId, u, targetServer); } catch (e) { /* 무시 */ }
+        return res;
     });
 }
 // ============================================================
@@ -2711,17 +2776,46 @@ function unlockNameField() {                                   // 수정 창의 
     const note = inp.parentElement ? inp.parentElement.querySelector('p') : null;
     if (note) note.innerHTML = isAdmin ? '✏️ 관리자만 이름을 바꿀 수 있어요. 바꾸면 이 길드원의 <b>기존 기록(복구비 · 입찰 · 분배금 · 아이템 · 드랍)의 이름도 함께 바뀌고</b>, 길드원 기기의 [내 이름]은 다음에 접속할 때 자동으로 바뀝니다.<br>이전에 공유한 출석 링크는 새 이름으로 다시 복사해야 해요.' : '* 이름은 변경할 수 없습니다';
 }
+function applyEditServerRule(userId) {                         // 길드원 수정 창의 서버 칸: 지원조는 "지원" 고정(잠금), 그 외는 진기르/판도라만
+    const sel = $('edit-user-server');
+    if (!sel) return;
+    Array.from(sel.options).forEach(o => { if (o.value === 'support') o.remove(); });               // 일반 길드원에게는 "지원" 선택지가 없음 (지원은 지원조 명단 관리에서만)
+    const u = getUsers().find(x => Number(x.id) === Number(userId));
+    let note = $('edit-user-server-note');
+    if (!note) {
+        note = document.createElement('p');
+        note.id = 'edit-user-server-note';
+        note.style.cssText = 'font-size:0.78rem; line-height:1.5; margin:6px 0 0;';
+        sel.insertAdjacentElement('afterend', note);
+    }
+    if (u && isTeamUser(u)) {
+        const o = document.createElement('option');
+        o.value = 'support'; o.textContent = '지원';
+        sel.appendChild(o);
+        sel.value = 'support';
+        sel.disabled = true;
+        note.style.color = '#1e8449';
+        note.innerHTML = '🤝 지원조는 서버가 <b>지원으로 고정</b>돼요. 서버를 바꾸려면 관리 탭의 <b>지원조 명단 관리</b>에서 먼저 지원조에서 빼 주세요.';
+    } else {
+        sel.disabled = false;
+        note.style.color = '#7f8c8d';
+        note.innerHTML = '서버는 진기르 / 판도라 중에서 정해요. 지원조는 관리 탭의 <b>지원조 명단 관리</b>에서 정합니다.';
+    }
+}
 function installRename() {
     const wrap = (name, make) => { const f = window[name]; if (typeof f === 'function' && !f.__settle) { const w = make(f); w.__settle = true; window[name] = w; } };
-    wrap('showEditUserModal', (orig) => function () {
+    wrap('showEditUserModal', (orig) => function (userId) {
         const r = orig.apply(this, arguments);
         try { unlockNameField(); } catch (e) { /* 무시 */ }
+        try { applyEditServerRule(userId); } catch (e) { /* 무시 */ }
         return r;
     });
     wrap('updateUser', (orig) => function () {
         const idEl = $('edit-user-id'), nameEl = $('edit-user-name');
         const user = idEl ? getUsers().find(u => Number(u.id) === parseInt(idEl.value)) : null;
         const nn = nameEl ? String(nameEl.value || '').trim() : '';
+        const srv = $('edit-user-server');
+        if (user && srv && srv.disabled && (!nameEl || nameEl.readOnly || nn === user.name)) { alert('지원조는 서버가 지원으로 고정되어 있어 바꿀 내용이 없어요.\n서버를 바꾸려면 관리 탭의 지원조 명단 관리에서 먼저 지원조에서 빼 주세요.'); return; }      // 지원조의 서버는 여기서 바꿀 수 없음
         if (!user || !nameEl || nameEl.readOnly || nn === user.name) return orig.apply(this, arguments);       // 이름을 바꾸지 않았으면 기존대로(서버만 변경)
         if (!nn) { alert('이름을 입력해주세요.'); return; }
         return renameUserFlow(user, nn);
