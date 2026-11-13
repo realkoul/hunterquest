@@ -2631,6 +2631,21 @@ function setupMyNameModalRules() {
     applyMyNameServerRule();
 }
 
+// ============================================================
+// 🗓️ [내 이름]에서 서버를 바꾸면, 출석 탭 위쪽의 "이번 주 서버 스케줄" 이미지와 오늘 스케줄도 그 서버로 같이 바뀜
+//   (서버 스케줄 이미지의 탭을 직접 누를 때는 앱이 이미 오늘 스케줄까지 맞춰 주는데, [내 이름] 카드의 서버 버튼은 오늘 스케줄만 바꿨음)
+// ============================================================
+function syncScheduleViewToServer(sv) {
+    if (!SNAP_SERVERS[sv]) return;                                                       // 진기르 · 판도라 · 지원만
+    if (typeof switchScheduleImageServer === 'function' && typeof currentScheduleImageServer !== 'undefined') {
+        if (currentScheduleImageServer !== sv) switchScheduleImageServer(sv);             // 이미지 탭 전환 + 오늘 스케줄 동기화 (선택한 서버 이미지만 내려받음)
+    } else if (window._viewServer !== sv && typeof renderTodaySchedules === 'function') {
+        window._viewServer = sv;
+        renderTodaySchedules();
+    }
+    if (window._viewServer !== sv && typeof renderTodaySchedules === 'function') { window._viewServer = sv; renderTodaySchedules(); }
+}
+
 function installTeamRules() {                                  // app.js 의 함수를 손대지 않고, 같은 이름으로 감싸서 규칙을 끼워 넣음 (한 번만)
     const wrap = (name, make) => { const f = window[name]; if (typeof f === 'function' && !f.__settle) { const w = make(f); w.__settle = true; window[name] = w; } };
     wrap('calculateStats', (orig) => function (data) {
@@ -2648,8 +2663,19 @@ function installTeamRules() {                                  // app.js 의 함
         return res;
     });
     wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } try { addRelicButtons(); } catch (e) { /* 무시 */ } return r; });
+    wrap('selectQuickServer', (orig) => function (name, serverKey, slotId) {
+        const r = orig.apply(this, arguments);
+        try { syncScheduleViewToServer(serverKey); } catch (e) { /* 무시 */ }                  // 오늘 스케줄뿐 아니라 위의 "이번 주 서버 스케줄" 이미지도 같은 서버로
+        return r;
+    });
     wrap('showMyNameModal', (orig) => function () { const r = orig.apply(this, arguments); try { setupMyNameModalRules(); } catch (e) { /* 무시 */ } return r; });
-    wrap('saveMyNames', (orig) => function () { try { applyMyNameServerRule(); } catch (e) { /* 무시 */ } return orig.apply(this, arguments); });
+    wrap('saveMyNames', (orig) => function () {
+        try { applyMyNameServerRule(); } catch (e) { /* 무시 */ }
+        const was = (typeof getMyServer === 'function') ? getMyServer() : '';
+        const r = orig.apply(this, arguments);
+        try { const now = getMyServer(); if (now && now !== was) syncScheduleViewToServer(now); } catch (e) { /* 무시 */ }      // 첫 번째 이름의 서버가 바뀐 경우에만 (그대로 저장하면 보던 화면 유지)
+        return r;
+    });
     wrap('selectMyServer', (orig) => function (slotIdx, serverKey) { if (serverKey === 'support' && !myNameSlotIsTeam(slotIdx)) return; return orig.apply(this, arguments); });       // 지원조가 아니면 지원을 고를 수 없음
     wrap('quickAttendanceByName', (orig) => function (name, slotId) {
         const info = nameServerInfo(name);
