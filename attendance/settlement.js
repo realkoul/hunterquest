@@ -67,6 +67,7 @@ const state = {
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
     nameChanges: [],                                                                           // 길드원 이름 변경 내역(기기의 [내 이름]을 새 이름으로 옮기는 데 씀)
+    dropBusy: false,                                                                           // 드랍 기록을 저장하는 중 (한 번 더 눌러도 다시 기록하지 않음)
     supDirty: false,                                                                           // 지원조 명단을 고르는 중(저장 전)인지
     mypay: { list: [], loaded: false, err: false, sig: '' },                                   // 내 분배금: 최근 정산 기록(본인 몫만 화면에 보여 줌)
     bidRule: { minRate: 50, ready: false }, bidElig: { att: {}, today: '', at: 0 },            // 입찰 자격: 2순위 출석률 기준 / 신청 시점에 읽은 당일 출석
@@ -1083,6 +1084,7 @@ function storageFromDrop(d) {
 }
 
 async function addDrop() {
+    if (state.dropBusy) return;                                // 저장하는 동안(응답이 느릴 때) 한 번 더 눌러도 같은 드랍을 또 기록하지 않음
     const t = dropTarget();
     const itemName = getItemName();
     const winner = userById(parseInt($('settle-drop-winner').value));
@@ -1091,30 +1093,47 @@ async function addDrop() {
     if (!winner)   { alert('획득자를 선택하세요.'); return; }
     if (state.variants.length >= 2 && !state.variantSel) { alert('어떤 보스를 잡았는지(예: 1층 / 6층) 먼저 선택하세요.'); return; }
     const vObj = state.variants.find(v => v.label === state.variantSel) || null;
-    const date = t.date, bossId = t.bossId, boss = t.boss;
-
-    const id = Date.now() + '_' + Number(winner.id);
-    const isMgr = state.managers.includes(Number(winner.id));      // 담당자가 먹었으면 전달·보관함 자동 처리
-    const drop = {
-        id: id, itemName: itemName, winner: winner.name, winnerId: Number(winner.id), winnerServer: winner.server || '',
-        bossId: bossId, bossName: boss.name, bossServer: winner.server || '', date: date,
-        bossVariant: vObj ? vObj.label : '', bossVariantName: vObj ? vObj.bossName : '',
-        delivered: isMgr, inStorage: isMgr, timestamp: nowIso()
-    };
-    const updates = {};
-    updates['boss_drops/' + date + '_' + bossId + '/items/' + id] = drop;
-    if (isMgr) updates['boss_storage/' + id] = storageFromDrop(Object.assign({ _k: id }, drop));   // 보관함에도 실제로 등록
+    const date = t.date, bossId = t.bossId, boss = t.boss, vLabel = vObj ? vObj.label : '';
+    state.dropBusy = true;
+    const btn = document.querySelector('button[onclick="Settle.addDrop()"]'), btnLabel = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '기록 중…'; }
     try {
-        await db.ref().update(updates);
-        state.undelivStale = true;
-        await learnItem(itemName);
-        $('settle-drop-item').value = '';
-        $('settle-drop-item-direct').value = '';
-        $('settle-drop-item-direct').style.display = 'none';
-        $('settle-drop-winner').value = '';
-        showDropMsg('✅ ' + itemName + ' → ' + boss.time + ' ' + boss.name + (vObj ? ' · ' + vObj.label : '') + (date !== ymdOf(nowD()) ? ' (' + date.slice(5) + ')' : '') + ' 기록 완료');
-    } catch (e) {
-        alert('❌ 드랍 기록 실패: ' + e.message);
+        // 같은 보스에 같은 사람이 같은 아이템을 이미 기록했는지 확인 (방금 다른 기기에서 기록한 것까지 새로 읽어서 봄)
+        let same = [];
+        try {
+            const cur = (await db.ref('boss_drops/' + date + '_' + bossId + '/items').once('value')).val() || {};
+            same = Object.keys(cur).map(k => cur[k]).filter(d => d && d.itemName === itemName && Number(d.winnerId) === Number(winner.id) && (d.bossVariant || '') === vLabel);
+        } catch (e) { same = []; }
+        if (same.length) {
+            const latest = same.map(d => Date.parse(d.timestamp) || 0).sort((a, b) => b - a)[0], mins = latest ? Math.max(0, Math.round((Date.now() - latest) / 60000)) : null;
+            if (!confirm('"' + itemName + '" · ' + winner.name + ' 님의 드랍이 같은 보스(' + boss.time + ' ' + boss.name + (vLabel ? ' · ' + vLabel : '') + ')에 이미 기록되어 있어요 (' + same.length + '건' + (mins !== null ? ', 가장 최근 ' + (mins < 1 ? '방금' : mins + '분 전') : '') + ').\n\n같은 아이템이 정말 한 번 더 나왔다면 [확인], 중복이면 [취소]를 눌러 주세요.')) return;
+        }
+        const id = Date.now() + '_' + Number(winner.id);
+        const isMgr = state.managers.includes(Number(winner.id));      // 담당자가 먹었으면 전달·보관함 자동 처리
+        const drop = {
+            id: id, itemName: itemName, winner: winner.name, winnerId: Number(winner.id), winnerServer: winner.server || '',
+            bossId: bossId, bossName: boss.name, bossServer: winner.server || '', date: date,
+            bossVariant: vLabel, bossVariantName: vObj ? vObj.bossName : '',
+            delivered: isMgr, inStorage: isMgr, timestamp: nowIso()
+        };
+        const updates = {};
+        updates['boss_drops/' + date + '_' + bossId + '/items/' + id] = drop;
+        if (isMgr) updates['boss_storage/' + id] = storageFromDrop(Object.assign({ _k: id }, drop));   // 보관함에도 실제로 등록
+        try {
+            await db.ref().update(updates);
+            state.undelivStale = true;
+            await learnItem(itemName);
+            $('settle-drop-item').value = '';
+            $('settle-drop-item-direct').value = '';
+            $('settle-drop-item-direct').style.display = 'none';
+            $('settle-drop-winner').value = '';
+            showDropMsg('✅ ' + itemName + ' → ' + boss.time + ' ' + boss.name + (vObj ? ' · ' + vObj.label : '') + (date !== ymdOf(nowD()) ? ' (' + date.slice(5) + ')' : '') + ' 기록 완료');
+        } catch (e) {
+            alert('❌ 드랍 기록 실패: ' + e.message);
+        }
+    } finally {
+        state.dropBusy = false;
+        if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
     }
 }
 
@@ -1189,6 +1208,10 @@ async function deleteDrop(k) {
     const updates = {};
     updates['boss_drops/' + state.dropKey + '/items/' + d._k] = null;
     updates['boss_storage/' + d.id] = null;
+    try {
+        const bs = await db.ref('boss_bids').once('value');                           // 이 아이템에 걸린 입찰도 함께 삭제 (남겨 두면 주인 없는 입찰이 됨)
+        bs.forEach(u => { if (bidNode(u.val())[d.id]) updates['boss_bids/' + u.key + '/' + d.id] = null; });
+    } catch (e) { /* 입찰 정리에 실패해도 삭제는 진행 */ }
     try { await db.ref().update(updates); state.undelivStale = true; } catch (e) { alert('❌ 삭제 실패: ' + e.message); }
 }
 
@@ -1563,6 +1586,9 @@ function renderStorage() {
     const bidHint = (state.stFilter !== 'sold' && state.storage.some(i => !i.sold)) ? '<div style="font-size:0.78rem; color:#7f8c8d; background:#fffaf0; border:1px dashed #f5cba7; border-radius:8px; padding:7px 10px; margin-bottom:10px; line-height:1.5;">💡 입찰하려는 아이템 왼쪽 <b>체크 칸</b>을 누른 뒤 아래 <b>[🙋 입찰 신청]</b>을 누르세요. 한 개만, 또는 여러 개를 한꺼번에 신청할 수 있어요. 입찰가는 관리자가 정해 둔 가격이고, 낙찰은 관리자가 확정합니다.</div>' : '';
 
     if (!list.length) { box.innerHTML = head + bidHint + '<p style="color:#95a5a6; text-align:center; padding:14px; margin:0; font-size:0.88rem;">조건에 맞는 아이템이 없습니다.</p>'; return; }
+    const dupKey = (x) => [String(x.itemName || '').replace(/\s+/g, ''), String(x.winnerId !== undefined && x.winnerId !== null ? x.winnerId : x.winner), x.date, x.bossName, x.bossVariant || ''].join('|');
+    const dupMap = {};
+    if (mg) state.storage.forEach(x => { const dk = dupKey(x); dupMap[dk] = (dupMap[dk] || 0) + 1; });          // 같은 날 같은 보스에서 같은 사람이 먹은 같은 아이템이 여러 건이면 표시
     box.innerHTML = head + bidHint + list.slice(0, state.stShow).map(it => {
         const k = sid(it.id);
         const sold = !!it.sold;
@@ -1579,6 +1605,7 @@ function renderStorage() {
                     ${catTagLine(it.itemName)}
                     ${mg ? `<div style="font-size:0.8rem; color:#666;">📅 ${esc(it.date)} ⚔️ ${esc(it.bossName)}${it.bossVariant ? ` <span style="display:inline-block; padding:1px 6px; border-radius:4px; background:#f4ecf7; color:#6c3483; font-size:0.72rem; font-weight:bold;">${esc(it.bossVariant)}${it.bossVariantName ? ' · ' + esc(it.bossVariantName) : ''}</span>` : ''}${serverBadge(it.bossServer)}</div>` : (it.bossServer ? `<div style="margin-top:3px;">${serverBadge(it.bossServer)}</div>` : '')}
                     ${mg ? `<div style="font-size:0.8rem; color:#666;">획득: <b>${esc(it.winner)}</b>${sold && mg ? ` → 낙찰: <b>${esc(it.buyer)}</b> <span style="color:#2980b9; font-weight:bold;">${fmt(it.bidPrice)} ${UNIT}</span>` : ''}</div>` : ''}
+                    ${mg && dupMap[dupKey(it)] > 1 ? `<div style="font-size:0.78rem; color:#c0392b; font-weight:bold;">⚠️ 같은 아이템이 ${dupMap[dupKey(it)]}건 기록돼 있어요${sold ? '' : ' — 중복이면 하나를 삭제하세요'}</div>` : ''}
                     ${!sold && priceOf(it.itemName) ? `<div style="font-size:0.8rem; color:#e67e22; font-weight:bold;">💎 입찰가 ${fmt(priceOf(it.itemName))} ${UNIT}</div>` : ''}
                     ${!sold ? bidHintHtml(it) : ''}
                     ${bidLineHtml(it)}
@@ -2516,7 +2543,7 @@ function installTeamRules() {                                  // app.js 의 함
         }
         try { return orig.call(this, d); } finally { if (swapped) users = saved; }
     });
-    wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } return r; });
+    wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } try { addRelicButtons(); } catch (e) { /* 무시 */ } return r; });
     wrap('quickAttendanceByName', (orig) => function (name, slotId) {
         const info = nameServerInfo(name);
         if (info && !info.valid) { alert('진기르 또는 판도라 서버를 먼저 선택하세요. (지원은 지원조만 쓸 수 있어요)'); return; }
@@ -2530,6 +2557,46 @@ function installTeamRules() {                                  // app.js 의 함
         return orig.apply(this, arguments);
     });
 }
+// ============================================================
+// 📖 성물 — [내 이름] 카드의 [📖 성물] 버튼: 본인이 직접 보유한 성물을 체크
+//   관리자가 길드원 명단에서 쓰던 "성물 관리" 창(showRelicModal / saveRelics)을 그대로 열어 줌 (저장: boss_attendance_users/{번호}/missingRelics)
+//   · [내 이름]에 등록한 이름(본인 캐릭터)에만 나타나고, 카드가 다시 그려질 때마다 한 번씩 붙음
+// ============================================================
+function addRelicButtons() {
+    const list = $('my-names-quick-list');
+    if (!list || typeof getMyNameSlots !== 'function') return;
+    let slots = [];
+    try { slots = getMyNameSlots(); } catch (e) { return; }
+    if (!slots.length || list.children.length !== slots.length) return;
+    slots.forEach((slot, i) => {
+        const card = list.children[i];
+        if (!card || card.querySelector('[data-relic-btn]')) return;
+        const rm = card.querySelector('button[onclick^="removeMyName"]');                       // 이름 줄 오른쪽의 [해제] 버튼 — 그 옆에 나란히 둠
+        if (!rm || !rm.parentNode) return;
+        const box = document.createElement('span'), b = document.createElement('button');
+        box.style.cssText = 'display:flex; align-items:center; gap:6px; flex-shrink:0; margin-left:auto;';          // 자리가 모자라면 이름 줄 아래로 내려가서 오른쪽에 붙음
+        b.type = 'button';
+        b.setAttribute('data-relic-btn', '1');
+        b.setAttribute('data-name', slot.name);
+        b.title = '내가 가진 성물을 직접 체크해요';
+        b.textContent = '📖 성물';
+        b.style.cssText = 'padding:3px 8px; background:transparent; border:1px solid #8e44ad; color:#8e44ad; border-radius:4px; cursor:pointer; font-size:0.75rem; font-weight:bold; white-space:nowrap;';
+        b.onclick = () => openMyRelic(slot.name);
+        const head = rm.parentNode;
+        head.style.flexWrap = 'wrap';
+        head.style.rowGap = '6px';
+        rm.style.whiteSpace = 'nowrap';
+        head.insertBefore(box, rm);
+        box.appendChild(b);
+        box.appendChild(rm);
+    });
+}
+function openMyRelic(name) {
+    const u = getUsers().find(x => x.name === name);
+    if (!u) { alert('"' + name + '"은(는) 길드원 명단에 없는 이름이라 성물을 설정할 수 없어요.\n관리자에게 명단 등록을 요청하거나 내 이름을 다시 등록해 주세요.'); return; }
+    if (typeof showRelicModal === 'function') showRelicModal(u.id);
+}
+
 // ============================================================
 // ✏️ 길드원 이름 변경 (관리자 전용) — 관리 탭 > 길드원 명단 관리 > [수정] 창에서
 //   이름은 여러 기록에 "글자"로 저장되어 있어서, 이름만 바꾸면 복구비 신청 · 분배금 · 입찰 · 아이템이 "내 것"으로 인식되지 않음
