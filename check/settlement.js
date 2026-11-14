@@ -66,6 +66,8 @@ const state = {
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
+    distMonth: null, distSel: '', distBusy: false, distErr: '', distToken: 0,                     // 분배 정산의 기준 월(월 출석률)
+    assignDocs: {}, assignRefs: {}, assignVer: 0, assignVerSeen: 0,                              // 서버 배정 문서(일~토 주별, 일요일 키) 실시간 보관
     nameChanges: [],                                                                           // 길드원 이름 변경 내역(기기의 [내 이름]을 새 이름으로 옮기는 데 씀)
     dropBusy: false,                                                                           // 드랍 기록을 저장하는 중 (한 번 더 눌러도 다시 기록하지 않음)
     supDirty: false,                                                                           // 지원조 명단을 고르는 중(저장 전)인지
@@ -745,6 +747,8 @@ function renderMyAtt() {
 // 1초마다: 이름/명단/주가 바뀌었는지 확인 (이름이 없으면 구독하지 않음)
 function myAttTick() {
     navFit();
+    ensureAssignDocs();
+    if (state.assignVer !== state.assignVerSeen) { state.assignVerSeen = state.assignVer; afterAssignChange(); }          // 서버 배정이 바뀌면 출석률을 쓰는 화면을 바로 다시 계산
     if (state.nameChanges.length) migrateMyNames();                                   // 길드원 명단을 나중에 받는 경우에도 옛 이름을 새 이름으로 옮김
     if ($('rbu-window')) { const wk = String(rbOpenWeek()); if (wk !== rb.windowSig) { rb.windowSig = wk; rbPopulateUserWeeks(); rbRenderUser(); } }          // 신청 기간이 열리고 닫히는 순간 화면을 바로 바꿈
     if ($('settle-mypay') && myUsers().map(u => u.id).join(',') !== state.mypay.sig) renderMyPay();        // 내 이름을 새로 등록·해제하면 분배금 칸도 바로 갱신
@@ -2474,16 +2478,27 @@ function excludedBossIds() {
     partBossGroups().forEach(g => { if (ex[g.key]) g.ids.forEach(id => ids.add(String(id))); });
     return ids;
 }
-function statsInput(data) {                                    // 이번 주 기록에서 제외 보스의 기록을 뺌 (원본은 건드리지 않고 복사)
-    const ws = getWeekStart(), we = new Date(ws);
-    we.setDate(ws.getDate() + 6);
-    const a = formatLocalDate(ws), b = formatLocalDate(we), skip = excludedBossIds(), out = {};
+function bossNameExcluded(name) {                              // 보스 이름이 출석률 제외 대상인지 (설정을 저장했으면 저장한 목록, 아니면 기본 제외 이름)
+    if (!name) return false;
+    if (state.part.configured) return !!(state.part.exclude || {})[tagKey(name)];
+    return PART_DEFAULT_EXCLUDE_WORDS.some(w => normName(name).indexOf(w) >= 0);
+}
+function filterExcluded(data, from, to) {                      // 기간(from~to) 안의 기록에서 제외 보스를 뺌: 기록에 보스 이름이 저장돼 있으면 그 이름으로, 없으면 지금 스케줄 이름으로 판단 (원본은 건드리지 않고 복사)
+    const skip = excludedBossIds(), out = {};
     Object.keys(data || {}).forEach(k => {
-        const d = k.split('_')[0];
-        if (d >= a && d <= b && skip.has(k.split('_').slice(1).join('_'))) return;
+        const d = k.split('_')[0], rec = data[k];
+        if (d >= from && d <= to) {
+            const bn = rec && rec.bossName;
+            if (bn ? bossNameExcluded(bn) : skip.has(k.split('_').slice(1).join('_'))) return;
+        }
         out[k] = data[k];
     });
     return out;
+}
+function statsInput(data) {                                    // 이번 주 기록에서 제외 보스의 기록을 뺌
+    const ws = getWeekStart(), we = new Date(ws);
+    we.setDate(ws.getDate() + 6);
+    return filterExcluded(data, formatLocalDate(ws), formatLocalDate(we));
 }
 function teamRulesRefresh() {                                  // 지원조 명단·출석률 설정이 바뀌면 화면의 출석 관련 숫자를 다시 그림
     try { if (typeof updateMyNameDisplay === 'function') updateMyNameDisplay(); } catch (e) { /* 무시 */ }
@@ -2542,49 +2557,95 @@ function adjustNameCards() {                                   // [내 이름] �
 //   보스 시각의 서버: 그 보스에 저장된 서버 → 없으면 직전에 출석한 서버를 이어서 → 한 번도 없으면 처음 출석한 서버 → 기록이 아예 없으면 지금 서버
 // ============================================================
 const SNAP_SERVERS = { jingir: 1, pandora: 1, support: 1 };      // 출석 기록에 남길 수 있는 서버 (SRV_OK 는 일반 길드원이 고를 수 있는 진기르·판도라뿐이라 지원이 빠져 있음)
-function recordServerSnapshot(res, key, userId, user, targetServer) {
+function recordServerSnapshot(res, key, userId, user, targetServer, sch) {
     if (!key || !res || typeof res.then !== 'function') return;
     const sv = (user && isTeamUser(user)) ? 'support' : (SNAP_SERVERS[targetServer] ? targetServer : (user ? user.server : ''));
     if (!SNAP_SERVERS[sv]) return;
-    res.then(() => db.ref('boss_attendance/' + key + '/servers/' + Number(userId)).set(sv))
-        .catch(e => { try { console.warn('출석한 서버 기록 실패:', e && e.message); } catch (x) { /* 무시 */ } });        // 실패해도 출석 자체에는 영향 없음
+    res.then(() => db.ref('boss_attendance/' + key + '/bossName').once('value')).then(snap => {
+        const up = {};
+        up['boss_attendance/' + key + '/servers/' + Number(userId)] = sv;                               // 그때의 서버
+        if (!snap.val() && sch && sch.name) { up['boss_attendance/' + key + '/bossName'] = String(sch.name); if (sch.time) up['boss_attendance/' + key + '/bossTime'] = String(sch.time); }      // 보스 이름·시각은 처음 한 번만 (스케줄 이름을 나중에 바꿔도 지난 기록의 이름·제외 여부가 유지되도록, 이미 있으면 덮어쓰지 않음)
+        return db.ref().update(up);
+    }).catch(e => { try { console.warn('출석한 서버 기록 실패:', e && e.message); } catch (x) { /* 무시 */ } });        // 실패해도 출석 자체에는 영향 없음
 }
-function applyPersonRates(res, data, us, ts) {
-    if (!res || !res.userStats || typeof getWeekStart !== 'function' || typeof formatLocalDate !== 'function') return;
-    const ws = getWeekStart(), we = new Date(ws);
-    we.setDate(ws.getDate() + 6);
-    const from = formatLocalDate(ws), to = formatLocalDate(we);
-    const cacheLoaded = typeof weekAssignCache === 'object' && weekAssignCache && Object.keys(weekAssignCache).length > 0;
-    const timeOf = (bossId) => { const sc = (typeof schedules !== 'undefined' && Array.isArray(schedules)) ? schedules.find(x => x.id === bossId) : null; return sc && sc.time ? String(sc.time) : '99:99'; };
+// ── 서버 배정은 "그 보스가 속한 날짜의 일~토 주" 문서를 읽음 (출석 통계는 항상 수~화 기준 / 배정 문서는 일요일마다 새로 올리므로 한 주에 두 문서가 걸침) ──
+function sunKeyOf(dateStr) {                                   // 날짜가 속한 일~토 주의 일요일 (서버 배정 문서 키, boss_schedule_assignments/{일요일})
+    const d = new Date(dateStr + 'T00:00:00');
+    d.setDate(d.getDate() - d.getDay());
+    return formatLocalDate(d);
+}
+function assignedOf(date, bossId, docs) {                      // 그 날짜·보스의 담당 서버 목록 (배정이 없으면 빈 목록 = 모든 서버 대상, 예전과 같음)
+    const key = sunKeyOf(date);
+    let doc = docs ? docs[key] : undefined;
+    if (doc === undefined && typeof weekAssignCacheKey !== 'undefined' && weekAssignCacheKey === key && typeof weekAssignCache === 'object') doc = weekAssignCache;     // 아직 못 읽었으면 앱이 읽어 둔 이번 주 문서
+    const e = doc ? doc[bossId] : null, a = e ? e.assignedServers : null;
+    return Array.isArray(a) ? a : (a && typeof a === 'object' ? Object.values(a) : []);
+}
+function ensureAssignDocs() {                                  // 지난 주 · 이번 주 · 다음 주 서버 배정 문서를 실시간으로 읽어 둠 (수~화 한 주는 이 중 두 문서에 걸침)
+    if (!depsOk() || typeof formatLocalDate !== 'function') return;
+    const keys = [];
+    [-7, 0, 7].forEach(n => { const d = new Date(nowD()); d.setDate(d.getDate() + n); const k = sunKeyOf(formatLocalDate(d)); if (!keys.includes(k)) keys.push(k); });
+    Object.keys(state.assignRefs).forEach(k => {
+        if (keys.includes(k)) return;
+        try { state.assignRefs[k].ref.off('value', state.assignRefs[k].cb); } catch (e) { /* 이미 해제됨 */ }
+        delete state.assignRefs[k]; delete state.assignDocs[k];
+    });
+    keys.forEach(k => {
+        if (state.assignRefs[k]) return;
+        const ref = db.ref('boss_schedule_assignments/' + k), cb = snap => { state.assignDocs[k] = snap.val() || {}; state.assignVer++; };
+        state.assignRefs[k] = { ref: ref, cb: cb };
+        ref.on('value', cb);
+    });
+}
+function afterAssignChange() {                                 // 서버 배정이 바뀌거나 늦게 도착하면 출석률을 쓰는 화면을 다시 계산
+    try { if (state.partRaw) partCompute(); } catch (e) { /* 무시 */ }
+    try { const t = $('tab-stats'); if (t && t.classList.contains('active') && typeof loadStats === 'function') loadStats(); } catch (e) { /* 무시 */ }
+    try { if (myAtt.data) renderMyAtt(); } catch (e) { /* 무시 */ }
+}
+function buildRecs(data, from, to, docs, grpOf) {              // 기간 안의 출석 기록을 시각 순으로 (보스별 그 날짜의 담당 서버 · 서버 기록 포함)
+    const timeOf = (bossId, rec) => { if (rec && rec.bossTime) return String(rec.bossTime); const sc = (typeof schedules !== 'undefined' && Array.isArray(schedules)) ? schedules.find(x => x.id === bossId) : null; return sc && sc.time ? String(sc.time) : '99:99'; };
     const recs = [];
     Object.keys(data || {}).forEach(key => {
         const date = key.split('_')[0], bossId = key.split('_').slice(1).join('_'), rec = data[key] || {}, att = rec.attendees || {};
-        if (date < from || date > to || !Object.keys(att).length) return;                       // 이번 주(수~화)에 출석 기록이 있는 보스만
-        const entry = cacheLoaded ? weekAssignCache[bossId] : null;
-        recs.push({ key: key, time: date + ' ' + timeOf(bossId), att: att, srv: rec.servers || {}, assigned: entry ? (entry.assignedServers || []) : [] });
+        if (date < from || date > to || !Object.keys(att).length) return;                       // 기간 안에 출석 기록이 있는 보스만
+        recs.push({ key: key, date: date, bossId: bossId, time: date + ' ' + timeOf(bossId, rec), att: att, srv: rec.servers || {}, assigned: assignedOf(date, bossId, docs), grp: grpOf(date) });
     });
-    recs.sort((a, b) => a.time.localeCompare(b.time) || a.key.localeCompare(b.key));
+    return recs.sort((a, b) => a.time.localeCompare(b.time) || a.key.localeCompare(b.key));
+}
+function personRatesCore(recs, us, ts) {                       // 사람마다 보스별로 따로 셈 → { 번호: { present, absent, total } }
+    const out = {};
     (us || []).forEach(u => {
-        const uid = String(u.id), st = res.userStats[uid];
-        if (!st) return;
-        const fallback = (ts && ts.has(Number(u.id))) ? 'support' : (u.server || '');
+        const uid = String(u.id), fallback = (ts && ts.has(Number(u.id))) ? 'support' : (u.server || '');
         const snaps = recs.map(r => { const v = r.srv[uid] !== undefined ? r.srv[uid] : r.srv[u.id]; return SNAP_SERVERS[v] ? v : ''; });
         const first = snaps.find(Boolean) || '';
         let prev = '';
-        const duty = recs.map((r, i) => {                                                        // 보스마다 "내 서버 담당(또는 담당 지정 없음)"인지
+        const duty = recs.map((r, i) => {                                                        // 보스마다 "그 시각 내 서버 담당(또는 담당 지정 없음)"인지
             if (snaps[i]) prev = snaps[i];
-            const sv = snaps[i] || prev || first || fallback;                                    // 그 보스 시각의 이 사람 서버
+            const sv = snaps[i] || prev || first || fallback;                                    // 그 보스 시각의 이 사람 서버: 저장된 서버 → 직전 출석 서버 → 처음 출석 서버 → 지금 서버
             return r.assigned.length === 0 || r.assigned.includes(sv);
         });
-        const none = !duty.some(Boolean);                                                        // 이 서버에 배정된 보스가 이번 주에 하나도 없으면(아직 배정 전) 모든 보스를 기준으로 함 (예전과 같은 안전장치)
+        const none = {};                                                                         // 한 주(수~화) 안에서 이 서버에 배정된 보스가 하나도 없으면(아직 배정 전) 그 주는 모든 보스를 기준으로 함 (예전과 같은 안전장치)
+        recs.forEach((r, i) => { const g = r.grp || ''; none[g] = (none[g] === undefined) ? !duty[i] : (none[g] && !duty[i]); });
         let present = 0, absent = 0, total = 0;
         recs.forEach((r, i) => {
             const raw = r.att[uid] !== undefined ? r.att[uid] : r.att[u.id], status = normalizeStatus(raw);
             if (status === 'present' || status === 'late') { present++; total++; }               // 출석한 보스는 담당이 아니어도(쟁참여) 분자·분모에 모두 포함
-            else if (none || duty[i]) { absent++; total++; }                                     // 출석 안 한 보스는 내 서버 담당일 때만 분모에 포함
+            else if (none[r.grp || ''] || duty[i]) { absent++; total++; }                        // 출석 안 한 보스는 내 서버 담당일 때만 분모에 포함
         });
-        st.present = present; st.absent = absent; st.total = total; st.serverTotal = total;
-        st.rate = total > 0 ? (present / total * 100).toFixed(1) : '0.0';
+        out[uid] = { present: present, absent: absent, total: total };
+    });
+    return out;
+}
+function applyPersonRates(res, data, us, ts) {                 // 이번 주(수~화)의 출석률을 "그 사람 기준"으로 다시 계산해서 통계 결과에 덮어씀
+    if (!res || !res.userStats || typeof getWeekStart !== 'function' || typeof formatLocalDate !== 'function') return;
+    const ws = getWeekStart(), we = new Date(ws);
+    we.setDate(ws.getDate() + 6);
+    const recs = buildRecs(data, formatLocalDate(ws), formatLocalDate(we), state.assignDocs, () => 'w'), r = personRatesCore(recs, us, ts);
+    (us || []).forEach(u => {
+        const st = res.userStats[String(u.id)], x = r[String(u.id)];
+        if (!st || !x) return;
+        st.present = x.present; st.absent = x.absent; st.total = x.total; st.serverTotal = x.total;
+        st.rate = x.total > 0 ? (x.present / x.total * 100).toFixed(1) : '0.0';
     });
 }
 
@@ -2646,6 +2707,21 @@ function syncScheduleViewToServer(sv) {
     if (window._viewServer !== sv && typeof renderTodaySchedules === 'function') { window._viewServer = sv; renderTodaySchedules(); }
 }
 
+// ── 스케줄을 지우거나 이름을 바꿔도 지난 출석률이 달라지지 않게: 그 전에 기존 출석 기록에 보스 이름·시각을 채워 둠 ──
+async function backfillBossName(sch) {                         // 그 스케줄(번호)의 출석 기록 중 이름이 없는 것에 이름·시각을 저장
+    if (!sch || !sch.id || !sch.name) return 0;
+    const raw = (await db.ref('boss_attendance').once('value')).val() || {}, up = {};
+    let n = 0;
+    Object.keys(raw).forEach(k => {
+        if (k.split('_').slice(1).join('_') !== String(sch.id)) return;
+        const rec = raw[k] || {};
+        if (!rec.bossName) { up['boss_attendance/' + k + '/bossName'] = String(sch.name); n++; }
+        if (!rec.bossTime && sch.time) up['boss_attendance/' + k + '/bossTime'] = String(sch.time);
+    });
+    if (Object.keys(up).length) await db.ref().update(up);
+    return n;
+}
+
 function installTeamRules() {                                  // app.js 의 함수를 손대지 않고, 같은 이름으로 감싸서 규칙을 끼워 넣음 (한 번만)
     const wrap = (name, make) => { const f = window[name]; if (typeof f === 'function' && !f.__settle) { const w = make(f); w.__settle = true; window[name] = w; } };
     wrap('calculateStats', (orig) => function (data) {
@@ -2668,6 +2744,42 @@ function installTeamRules() {                                  // app.js 의 함
         try { syncScheduleViewToServer(serverKey); } catch (e) { /* 무시 */ }                  // 오늘 스케줄뿐 아니라 위의 "이번 주 서버 스케줄" 이미지도 같은 서버로
         return r;
     });
+    wrap('deleteSchedule', (orig) => function (id) {                                                                  // 스케줄 삭제: 출석 기록은 남으므로, 지우기 전에 기록마다 보스 이름을 저장해 출석률 제외 설정이 유지되게 함
+        const sch = (typeof schedules !== 'undefined' && Array.isArray(schedules)) ? schedules.find(x => x.id === id) : null;
+        if (!sch) return orig.apply(this, arguments);
+        if (!confirm('정말 삭제하시겠습니까?\n\n이 스케줄("' + sch.name + '")의 출석 기록은 지워지지 않고 남습니다.\n삭제하기 전에 기록마다 보스 이름을 저장해서, 출석률에서 뺀 보스는 삭제한 뒤에도 계속 빠지고 지난 출석률도 그대로 유지됩니다.')) return;
+        return backfillBossName(sch).then(() => db.ref('boss_schedules/' + id).remove()).then(() => { alert('삭제되었습니다!'); })
+            .catch(e => { alert('❌ 출석 기록에 보스 이름을 저장하지 못해서 삭제를 중단했습니다.\n(지난 출석률이 바뀌는 것을 막기 위해서입니다) ' + (e && e.message ? e.message : '')); });
+    });
+    wrap('saveSchedule', (orig) => function () {                                                                      // 스케줄 수정에서 이름·시간을 바꾸면, 바꾸기 전에 기존 기록에 옛 이름을 남김
+        const idEl = $('schedule-id'), editingId = idEl ? idEl.value : '';
+        const old = editingId && typeof schedules !== 'undefined' ? schedules.find(x => x.id === editingId) : null;
+        const nm = $('schedule-name') ? $('schedule-name').value.trim() : '', tm = $('schedule-time') ? $('schedule-time').value : '';
+        if (old && nm && tm && (old.name !== nm || old.time !== tm)) {
+            const self = this, args = arguments;
+            backfillBossName(old).then(() => orig.apply(self, args)).catch(e => { alert('❌ 기존 출석 기록에 보스 이름을 저장하지 못해서 수정을 중단했습니다.\n(지난 출석률이 바뀌는 것을 막기 위해서입니다) ' + (e && e.message ? e.message : '')); });
+            return;
+        }
+        return orig.apply(this, arguments);
+    });
+    wrap('populateAssignWeekSelect', (orig) => function () {                                                          // 서버 배정 화면: 지난 8주까지 고칠 수 있게 (월 정산 전에 지난 배정을 바로잡을 수 있도록)
+        orig.apply(this, arguments);
+        const sel = $('assign-week-select');
+        if (!sel || typeof getWeekStartSun !== 'function') return;
+        const thisW = getWeekStartSun(new Date());
+        sel.innerHTML = '';
+        for (let i = -8; i <= 4; i++) {
+            const st = new Date(thisW); st.setDate(thisW.getDate() + i * 7);
+            const en = new Date(st); en.setDate(st.getDate() + 6);
+            let label = formatMD(st) + ' ~ ' + formatMD(en);
+            if (i === 0) label = '이번 주 (' + label + ')'; else if (i === -1) label = '지난 주 (' + label + ')'; else if (i === 1) label = '다음 주 (' + label + ')'; else if (i < -1) label = (-i) + '주 전 (' + label + ')';
+            const opt = document.createElement('option');
+            opt.value = formatDate2(st); opt.textContent = label;
+            if (i === 0) opt.selected = true;
+            sel.appendChild(opt);
+        }
+        if (typeof currentAssignWeek !== 'undefined') currentAssignWeek = sel.value;
+    });
     wrap('showMyNameModal', (orig) => function () { const r = orig.apply(this, arguments); try { setupMyNameModalRules(); } catch (e) { /* 무시 */ } return r; });
     wrap('saveMyNames', (orig) => function () {
         try { applyMyNameServerRule(); } catch (e) { /* 무시 */ }
@@ -2689,8 +2801,10 @@ function installTeamRules() {                                  // app.js 의 함
         }
         let key = '';
         try { if (typeof currentScheduleId !== 'undefined' && currentScheduleId) key = ((typeof currentScheduleDate !== 'undefined' && currentScheduleDate) ? currentScheduleDate : formatLocalDate(new Date())) + '_' + currentScheduleId; } catch (e) { key = ''; }
+        let sch = null;
+        try { sch = (typeof schedules !== 'undefined' && typeof currentScheduleId !== 'undefined') ? (schedules.find(x => x.id === currentScheduleId) || null) : null; } catch (e) { sch = null; }
         const res = orig.apply(this, arguments);
-        try { recordServerSnapshot(res, key, userId, u, targetServer); } catch (e) { /* 무시 */ }
+        try { recordServerSnapshot(res, key, userId, u, targetServer, sch); } catch (e) { /* 무시 */ }
         return res;
     });
 }
@@ -3275,11 +3389,30 @@ const monthKey = (d) => { d = d || new Date(); return d.getFullYear() + '-' + St
 const rankTxt = (f, t) => f === t ? f + '등' : f + '~' + t + '등';                  // 한 명짜리 구간은 "3등"
 const monthLabel = (k) => { const m = /^(\d{4})-(\d{2})/.exec(String(k || '')); return m ? m[1] + '년 ' + Number(m[2]) + '월' : ''; };
 function distEntries() {
+    const dm = state.distMonth;
     return getUsers().map(u => {
-        const team = isTeamUser(u), st = state.partStats ? state.partStats[String(u.id)] : null;
-        const have = !!(st && st.serverTotal), rate = have ? Math.max(0, Math.min(100, Number(st.rate) || 0)) : 0;
+        const team = isTeamUser(u), st = dm && dm.stats ? dm.stats[String(u.id)] : null;
+        const have = !!(st && st.total), rate = have ? Math.max(0, Math.min(100, Number(st.rate) || 0)) : 0;
         return { userId: Number(u.id), name: u.name, server: u.server || '', team: team, rate: rate };
     });
+}
+// 순위별 차등 분배 — 공동 순위를 "자리 값 평균"으로 계산 (같은 그룹은 균등 · 높은 그룹이 낮은 그룹보다 더 받음)
+//   1) 1등~N등 "자리"마다 값을 정함: 그 그룹 몫 ÷ 그룹 정원 (비어 있는 그룹의 몫은 사람이 있는 그룹에 비율대로)
+//   2) 아래 그룹이 위 그룹보다 더 받는 구조(인원이 아주 적을 때)면 이웃 자리끼리 평균을 내서 내려가기만 하게 함 (pav)
+//   3) 공동 순위는 자리들을 같이 차지하므로 그 자리 값들의 평균을 똑같이 받음 → 경계에 걸린 동점도 역전·쏠림 없음
+//   4) 1원 단위로 반올림하되 합계는 정확히 총액 (남는 1원은 소수 부분이 큰 사람부터, 같으면 높은 순위부터)
+function pav(v) {                                              // 내려가기만 하도록: 올라가는 곳이 있으면 이웃 자리끼리 평균 (합계는 그대로)
+    const blocks = [];
+    v.forEach(x => {
+        blocks.push({ s: x, n: 1 });
+        while (blocks.length > 1 && blocks[blocks.length - 2].s / blocks[blocks.length - 2].n < blocks[blocks.length - 1].s / blocks[blocks.length - 1].n - 1e-9) {
+            const b = blocks.pop(), a = blocks.pop();
+            blocks.push({ s: a.s + b.s, n: a.n + b.n });
+        }
+    });
+    const out = [];
+    blocks.forEach(b => { for (let i = 0; i < b.n; i++) out.push(b.s / b.n); });
+    return out;
 }
 function computeRank(total, entries, cfg) {
     const warnings = [], infos = [], errors = [];
@@ -3294,32 +3427,104 @@ function computeRank(total, entries, cfg) {
     const N = ranked.length, thirds = N < cap;
     const bs = Math.floor(N / 3), rm = N % 3;
     const sizes = thirds ? tiers.map((t, i) => bs + (i < rm ? 1 : 0)) : tiers.map(t => t.size);               // 30명 미만이면 3등분(남는 사람은 앞 그룹부터), 그 이상이면 정해 둔 그룹 인원
-    const cuts = [];
-    sizes.reduce((acc, sz) => { cuts.push(acc + sz); return acc + sz; }, 0);
-    const members = tiers.map(() => []), outside = [];
-    ranked.forEach(e => { const k = cuts.findIndex(c => e.rank <= c); if (k < 0) outside.push(e); else members[k].push(e); });   // 등수가 그룹 끝 등수 이하인 첫 그룹 → 경계에 걸린 동점자는 모두 앞 그룹
-    const exact = tiers.map(t => total * t.pct / 100), pools = exact.map(Math.floor);
-    let left = total - sumOf(pools);                                                                          // 소수점 정리: 소수 부분이 큰 그룹부터 1씩
-    const ord = tiers.map((t, i) => ({ i: i, frac: exact[i] - pools[i] })).filter(o => exact[o.i] > 0).sort((a, b) => b.frac - a.frac || a.i - b.i);
-    for (let k = 0; left > 0 && ord.length && Math.abs(pctSum - 100) <= 0.01; k++, left--) pools[ord[k % ord.length].i]++;
-    if (thirds && N > 0) infos.push(`출석률 기준을 넘은 ${N}명이 ${cap}명보다 적어서, 인원을 3등분(33%씩)해 1그룹 ${sizes[0]}명 · 2그룹 ${sizes[1]}명 · 3그룹 ${sizes[2]}명으로 나눴습니다.`);
-    let unallocated = 0;
-    const rows = [], tierInfo = tiers.map((t, i) => {
-        const mem = members[i], info = { index: i, group: i + 1, pct: t.pct, size: sizes[i], pool: pools[i], members: mem, per: [], from: mem.length ? mem[0].rank : 0, to: mem.length ? mem[mem.length - 1].rank : 0 };
-        if (!mem.length) {
-            if (info.pool > 0) { unallocated += info.pool; warnings.push(`${i + 1}그룹(${Math.round(t.pct * 10) / 10}%) 몫 ${fmt(info.pool)} ${UNIT}은 해당하는 사람이 없어 미배분입니다.`); }
-            return info;
-        }
-        const base = Math.floor(info.pool / mem.length);
-        let rem = info.pool - base * mem.length;                                                             // 남는 금액은 그룹 안에서 앞사람부터 1씩
-        mem.forEach(m => { const amt = base + (rem-- > 0 ? 1 : 0); info.per.push(amt); rows.push({ userId: m.userId, name: m.name, server: m.server, team: m.team, rate: m.rate, score: m.score, rank: m.rank, tier: i + 1, amount: amt }); });
-        if (mem.length > sizes[i]) infos.push(`${i + 1}그룹은 동점자를 같은 그룹에 넣어 ${mem.length}명이 되었습니다 (기준 ${sizes[i]}명). 이 ${mem.length}명이 ${Math.round(t.pct * 10) / 10}% 몫(${fmt(info.pool)} ${UNIT})을 나눕니다.`);
-        else if (mem.length < sizes[i]) infos.push(`${i + 1}그룹은 앞 그룹에 동점자가 먼저 들어가 ${mem.length}명이 되었습니다 (기준 ${sizes[i]}명).`);
-        return info;
+    const live = sizes.map(sz => sz > 0), liveSum = sumOf(tiers.map((t, i) => live[i] ? t.pct : 0));
+    const usePct = tiers.map((t, i) => (live[i] && liveSum > 0) ? t.pct * 100 / liveSum : 0);                // 사람이 없는 그룹의 몫은 사람이 있는 그룹에 비율대로 (돈이 남지 않게)
+    const posVal = [], posGrp = [];
+    sizes.forEach((sz, g) => { for (let i = 0; i < sz && posVal.length < N; i++) { posVal.push(total * usePct[g] / 100 / sz); posGrp.push(g); } });
+    while (posVal.length < N) { posVal.push(0); posGrp.push(-1); }                                           // 정원(예: 30명)을 넘는 자리는 0
+    const val = pav(posVal), pavChanged = val.some((x, i) => Math.abs(x - posVal[i]) > 1e-6);
+    const blocks = [];
+    ranked.forEach((e, i) => { if (i > 0 && ranked[i - 1].rank === e.rank) blocks[blocks.length - 1].push(i); else blocks.push([i]); });
+    const exact = Array(N).fill(0);
+    blocks.forEach(b => { const avg = b.reduce((t, i) => t + val[i], 0) / b.length; b.forEach(i => { exact[i] = avg; }); });
+    const ex6 = exact.map(x => Math.round(x * 1e6) / 1e6), amt = ex6.map(Math.floor);                       // 소수점 6자리 아래 계산 오차는 같은 값으로 취급
+    if (N > 0 && Math.abs(sumOf(ex6) - total) < 1e-3) {
+        let left = total - sumOf(amt);
+        const ord = ex6.map((x, i) => ({ i: i, f: Math.round((x - Math.floor(x)) * 1e6) / 1e6 })).sort((a, b) => b.f - a.f || a.i - b.i);
+        for (let k = 0; left > 0 && k < ord.length; k++, left--) amt[ord[k].i]++;
+    }
+    const rows = [], outside = [], blockOf = {};
+    blocks.forEach(b => b.forEach(i => { blockOf[i] = b; }));
+    ranked.forEach((e, i) => {
+        const b = blockOf[i], g0 = posGrp[b[0]], g1 = posGrp[b[b.length - 1]];
+        if (g0 < 0 && amt[i] === 0) { outside.push(e); return; }                                              // 정원 밖 (동점으로 정원에 걸친 사람은 평균 금액을 받으므로 지급 대상)
+        rows.push({ userId: e.userId, name: e.name, server: e.server, team: e.team, rate: e.rate, score: e.score, rank: e.rank, tier: (g0 < 0 ? tiers.length : g0 + 1), tierEnd: (g1 < 0 ? tiers.length : g1 + 1), amount: amt[i] });
     });
-    const paid = sumOf(rows.map(r => r.amount));
+    const exactPool = tiers.map((t, i) => total * usePct[i] / 100), pools = exactPool.map(Math.floor);
+    let pl = total - sumOf(pools);                                                                            // 표시용 그룹 몫도 합계가 총액이 되게
+    exactPool.map((x, i) => ({ i: i, f: x - pools[i] })).filter(o => exactPool[o.i] > 0).sort((a, b) => b.f - a.f || a.i - b.i).forEach(o => { if (pl > 0) { pools[o.i]++; pl--; } });
+    const tierInfo = tiers.map((t, i) => {
+        const mem = rows.filter(r => r.tier === i + 1);
+        return { index: i, group: i + 1, pct: t.pct, size: sizes[i], pool: pools[i], members: mem, per: mem.map(r => r.amount), from: mem.length ? mem[0].rank : 0, to: mem.length ? mem[mem.length - 1].rank : 0 };
+    });
+    if (thirds && N > 0) infos.push(`출석률 기준을 넘은 ${N}명이 ${cap}명보다 적어서, 인원을 3등분(33%씩)해 1그룹 ${sizes[0]}명 · 2그룹 ${sizes[1]}명 · 3그룹 ${sizes[2]}명으로 나눴습니다.`);
+    sizes.forEach((sz, g) => { if (sz === 0 && tiers[g].pct > 0 && N > 0) infos.push(`${g + 1}그룹(${Math.round(tiers[g].pct * 10) / 10}%)에 들어갈 사람이 없어서, 그 몫은 사람이 있는 그룹에 비율대로 나눴습니다.`); });
+    if (pavChanged) infos.push('인원이 적어서 아래 그룹이 위 그룹보다 많이 받게 되는 구조라, 해당 순위들은 같은 금액으로 묶었습니다. (높은 순위가 더 적게 받는 일이 없도록)');
+    blocks.filter(b => b.length > 1 && posGrp[b[0]] !== posGrp[b[b.length - 1]]).forEach(b => {
+        const r0 = ranked[b[0]], a = amt[b[0]];
+        infos.push(`${r0.rank}등 공동 ${b.length}명은 ${posGrp[b[0]] + 1}그룹과 ${(posGrp[b[b.length - 1]] < 0 ? tiers.length : posGrp[b[b.length - 1]] + 1)}그룹 자리에 걸쳐 있어서, 걸친 자리들의 평균 금액(1인당 ${fmt(a)} ${UNIT})을 똑같이 받습니다.`);
+    });
+    const paid = sumOf(rows.map(r => r.amount)), unallocated = Math.max(0, total - paid);
+    if (unallocated > 0 && N > 0 && !errors.length) warnings.push(`미배분 금액이 ${fmt(unallocated)} ${UNIT} 있습니다.`);
     return { rows: rows, tierInfo: tierInfo, ranked: ranked, below: below, outside: outside, cap: cap, N: N, thirds: thirds, sizes: sizes, minRate: minRate, tiers: tiers, unallocated: unallocated, warnings: warnings, infos: infos, errors: errors, valid: errors.length === 0 && paid > 0, paid: paid, balanced: paid + unallocated === total, eligibleN: N };
 }
+// ============================================================
+// 📅 월 출석률 (분배 정산용) — 한 주(수~화)는 "시작하는 수요일이 속한 달"로 셈 (예: 11월 = 11/4 · 11/11 · 11/18 · 11/25 에 시작하는 주 → 11/4 ~ 12/1)
+//   그 달 모든 주의 "출석한 보스 합 ÷ 분모 합"으로 계산 (주마다 이번 주 출석률과 같은 기준: 사람 기준 · 그때의 서버 · 기록 날짜가 속한 주의 서버 배정 · 제외 보스 빠짐)
+// ============================================================
+function monthWeeks(mk) {                                      // 그 달에 시작하는 수~화 주들
+    const m = /^(\d{4})-(\d{2})$/.exec(String(mk || ''));
+    if (!m) return [];
+    const y = Number(m[1]), mo = Number(m[2]), d = new Date(y, mo - 1, 1), weeks = [];
+    while (d.getDay() !== 3) d.setDate(d.getDate() + 1);                              // 그 달의 첫 수요일
+    while (d.getMonth() === mo - 1) {
+        const st = new Date(d), en = new Date(d);
+        en.setDate(st.getDate() + 6);
+        weeks.push({ start: ymd(st), end: ymd(en), s: st, e: en });
+        d.setDate(d.getDate() + 7);
+    }
+    return weeks;
+}
+function monthDone(mk) { const w = monthWeeks(mk); return w.length > 0 && ymd(nowD()) > w[w.length - 1].end; }          // 마지막 주(화요일)까지 끝났는지
+function distMonthOptions() {                                  // 최근 6개월(이번 달부터)
+    const out = [], now = nowD();
+    for (let i = 0; i < 6; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1), k = monthKey(d), w = monthWeeks(k);
+        if (w.length) out.push({ key: k, weeks: w, done: monthDone(k), range: w[0].start.slice(5).replace('-', '/') + ' ~ ' + w[w.length - 1].end.slice(5).replace('-', '/') });
+    }
+    return out;
+}
+function defaultDistMonth() { const o = distMonthOptions(), f = o.find(x => x.done); return (f || o[1] || o[0] || { key: monthKey() }).key; }       // 가장 최근에 "끝난" 달
+async function loadDistMonth(mk) {                             // 그 달의 출석 기록과 서버 배정을 새로 읽어 사람별 월 출석률을 계산
+    const token = ++state.distToken;
+    state.distBusy = true; state.distSel = mk; state.distErr = '';
+    renderAttendBox();
+    try {
+        const weeks = monthWeeks(mk);
+        if (!weeks.length) throw new Error('이 달에는 수~화 주가 없습니다.');
+        const from = weeks[0].start, to = weeks[weeks.length - 1].end;
+        const raw = (await db.ref('boss_attendance').orderByKey().startAt(from).endAt(to + '\uf8ff').once('value')).val() || {};
+        const keys = [];
+        for (let d = new Date(weeks[0].s); ymd(d) <= to; d.setDate(d.getDate() + 1)) { const k = sunKeyOf(ymd(d)); if (!keys.includes(k)) keys.push(k); }
+        const docs = {};
+        await Promise.all(keys.map(async k => { docs[k] = (await db.ref('boss_schedule_assignments/' + k).once('value')).val() || {}; }));       // 그 기간이 걸치는 일~토 주의 서버 배정 (새로 읽음)
+        if (token !== state.distToken) return;                                         // 그 사이 다른 달을 골랐으면 이 결과는 버림
+        const data = filterExcluded(raw, from, to);
+        const recs = buildRecs(data, from, to, docs, (date) => ymd(getWeekStart(new Date(date + 'T00:00:00'))));
+        const us = getUsers(), r = personRatesCore(recs, us, teamIds()), stats = {};
+        us.forEach(u => { const x = r[String(u.id)] || { present: 0, absent: 0, total: 0 }; stats[String(u.id)] = { present: x.present, absent: x.absent, total: x.total, rate: x.total > 0 ? x.present / x.total * 100 : 0 }; });
+        const used = new Set(recs.map(x => sunKeyOf(x.date)));
+        const missing = keys.filter(k => used.has(k) && Object.keys(docs[k]).length === 0).map(k => { const st = new Date(k + 'T00:00:00'), en = new Date(st); en.setDate(st.getDate() + 6); return md(st) + '~' + md(en); });
+        state.distMonth = { key: mk, label: monthLabel(mk), from: from, to: to, weeks: weeks.length, stats: stats, missing: missing, done: monthDone(mk), records: recs.length, at: Date.now() };
+    } catch (e) {
+        if (token !== state.distToken) return;
+        state.distMonth = null; state.distErr = (e && e.message) ? e.message : '알 수 없는 오류';
+    }
+    state.distBusy = false;
+    renderAttendBox();
+}
+function distSetMonth(mk) { loadDistMonth(mk); }
+
 function rankCurrent() {
     const { items, total } = calcItems();
     return Object.assign({ items: items, total: total }, computeRank(total, distEntries(), state.dist));
@@ -3333,26 +3538,33 @@ async function openDist() {                                    // [분배 정산
     state.recipients = new Set(getUsers().map(u => Number(u.id)));
     state.calcMode = 'rank'; state.calcRatios = { jingir: 0, pandora: 0, support: 0, other: 0 }; state.calcFixed = {}; state.calcSupportPct = 50;
     renderCalc();
-    await partLoad(true);                                      // 출석 기록을 지금 새로 읽음 (읽는 동안 "불러오는 중…")
-    renderAttendBox();
+    state.distMonth = null;
+    await loadDistMonth(defaultDistMonth());                   // 가장 최근에 끝난 달의 월 출석률을 지금 새로 읽음 (읽는 동안 "불러오는 중…")
 }
-function distRecalc() { partLoad(true); renderAttendBox(); }
+function distRecalc() { loadDistMonth(state.distSel || defaultDistMonth()); }
 function renderAttendBox() {
     const box = $('settle-attend-box');
     if (!box || state.calcMode !== 'rank') return;
     const sb = $('settle-save-btn'), setSave = (on) => { if (sb) { sb.disabled = !on; sb.style.opacity = on ? '' : '0.45'; } };
-    if (state.partBusy || !state.partStats) { box.innerHTML = '<div style="padding:12px; text-align:center; color:#7f8c8d; font-size:0.88rem;">⏳ 이번 주 출석률을 불러와서 계산하는 중…</div>'; setSave(false); return; }
+    if (state.distBusy || !state.distMonth) {
+        const err = !state.distBusy && state.distErr;
+        box.innerHTML = err ? '<div style="padding:12px; text-align:center; color:#c0392b; font-size:0.88rem;">❌ 출석률을 불러오지 못했습니다: ' + esc(state.distErr) + '<div style="margin-top:6px;">' + actBtn('🔄 다시 시도', 'Settle.distRecalc()', '#5D6D7E') + '</div></div>' : '<div style="padding:12px; text-align:center; color:#7f8c8d; font-size:0.88rem;">⏳ ' + esc(monthLabel(state.distSel) || '선택한 달') + ' 출석률을 불러와서 계산하는 중…</div>';
+        setSave(false);
+        return;
+    }
     const c = rankCurrent(), r1 = (x) => Math.round(Number(x) * 10) / 10;
     const range = (arr) => arr.length ? fmt(Math.min.apply(null, arr)) + (Math.min.apply(null, arr) !== Math.max.apply(null, arr) ? ' ~ ' + fmt(Math.max.apply(null, arr)) : '') : '-';
     const ex = partExcludeMap(), exNames = Object.keys(ex).map(k => ex[k]);
-    const when = state.partAt ? new Date(state.partAt) : null, hm = when ? String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0') : '';
+    const dm = state.distMonth, when = new Date(dm.at), hm = String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0');
+    const mopts = distMonthOptions(), monthSel = '<div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;"><span style="font-size:0.84rem; font-weight:bold; color:#555;">📅 기준 월</span><select id="settle-dist-month" onchange="Settle.distSetMonth(this.value)" style="width:auto; margin:0; padding:6px 8px; border:1.5px solid #27ae60; border-radius:6px; font-size:0.84rem;">' + mopts.map(o => '<option value="' + o.key + '"' + (o.key === dm.key ? ' selected' : '') + '>' + esc(monthLabel(o.key)) + ' (' + o.range + ' · ' + o.weeks.length + '주' + (o.done ? '' : ' · 진행 중') + ')</option>').join('') + '</select></div>';
+    const monthNote = (dm.done ? '' : '<div style="font-size:0.76rem; color:#d35400; margin-top:3px;">⚠️ 아직 끝나지 않은 달입니다. 지금까지의 출석 기록으로 계산했어요. (정산은 마지막 주(화요일)가 끝난 뒤에 하는 것을 권장합니다)</div>') + (dm.missing.length ? '<div style="font-size:0.76rem; color:#d35400; margin-top:3px;">⚠️ 서버 배정이 올라와 있지 않은 주: ' + esc(dm.missing.join(', ')) + ' — 이 주의 보스는 모든 서버를 대상으로 계산했어요. 서버 배정 화면에서 배정을 올리면 자동으로 정확해집니다. (🔄 다시 계산)</div>' : '');
     const medal = ['🥇', '🥈', '🥉'], tieCount = {};
     c.ranked.forEach(r => { tieCount[r.rank] = (tieCount[r.rank] || 0) + 1; });
-    box.innerHTML = `
+    box.innerHTML = monthSel + `
         <div style="background:#f0fff4; border:1px solid #a9dfbf; border-radius:8px; padding:10px 12px; font-size:0.84rem; line-height:1.65;">
             <div>분배 누적금 <b>${fmt(c.total)} ${UNIT}</b> → 출석률 <b>${r1(c.minRate)}% 이상</b> <b>${c.N}명</b>을 ${c.thirds ? '<b>3그룹(33%씩)</b>으로 나눠' : '상위 <b>' + c.cap + '명(동점 포함)</b>을 3그룹으로 나눠'} 그룹별로 차등 분배</div>
             ${c.tierInfo.map(t => `<div>${medal[t.index] || '▪️'} <b>${t.group}그룹</b>${t.members.length ? ' (' + (t.from === t.to ? t.from : t.from + '~' + t.to) + '등)' : ''} · ${r1(t.pct)}% (${fmt(t.pool)}) → ${t.members.length ? '<b>' + t.members.length + '명</b> · 1인당 <b style="color:#27ae60;">' + range(t.per) + '</b>' : '<span style="color:#c0392b;">해당 없음</span>'}</div>`).join('')}
-            <div style="font-size:0.74rem; color:#7f8c8d; margin-top:3px;">출석률 기준: ${state.partWeek ? esc(state.partWeek) : '이번 주'}${hm ? ' · ' + hm + ' 계산' : ''}${exNames.length ? ' · 출석률에서 제외한 보스: ' + esc(exNames.join(', ')) : ''}<br>순위는 출석률이 높은 순입니다. 점수(출석률)가 같으면 공동 등수이고, 같은 점수는 항상 같은 그룹에 넣습니다.</div>
+            <div style="font-size:0.74rem; color:#7f8c8d; margin-top:3px;">출석률 기준: <b>${esc(dm.label)}</b> (수 ${esc(md(new Date(dm.from + 'T00:00:00')))} ~ 화 ${esc(md(new Date(dm.to + 'T00:00:00')))} · ${dm.weeks}주 합산) · ${hm} 계산${exNames.length ? ' · 출석률에서 제외한 보스: ' + esc(exNames.join(', ')) : ''}${monthNote}<br>월 출석률은 그 달 모든 주의 출석 횟수를 합산한 값입니다. 순위는 출석률이 높은 순입니다. 점수(출석률)가 같으면 공동 등수이고 같은 금액을 받습니다. 같은 그룹은 균등하게 나누고, 높은 그룹이 낮은 그룹보다 더 받습니다.</div>
             <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">${actBtn('🔄 다시 계산', 'Settle.distRecalc()', '#5D6D7E')}${isAdmin ? actBtn('⚙️ 분배 기준', 'Settle.openDistSettings()', '#8e44ad') : ''}</div>
         </div>
         ${c.rows.length ? `<div style="max-height:320px; overflow-y:auto; border:1px solid #eee; border-radius:8px; margin-top:8px;">
@@ -3481,14 +3693,15 @@ function initDistAdmin() {                                     // "출석률 설
 }
 async function saveRankSettlement() {                          // [분배 완료]
     if (!(await requireManage())) return;
-    if (state.partBusy || !state.partStats) { alert('출석률을 불러오는 중입니다. 잠시 뒤에 다시 눌러 주세요.'); return; }
-    const c = rankCurrent(), items = c.items, total = c.total, pays = c.rows.filter(r => r.amount > 0), month = monthKey();
+    if (state.distBusy || !state.distMonth) { alert('출석률을 불러오는 중입니다. 잠시 뒤에 다시 눌러 주세요.'); return; }
+    const dm = state.distMonth, c = rankCurrent(), items = c.items, total = c.total, pays = c.rows.filter(r => r.amount > 0), month = dm.key;          // 분배 기준 월 = 출석률을 계산한 달 (예: 12월 2일에 11월분을 정산하면 11월 분배)
     if (!items.length) { alert('정산할 아이템이 없습니다. (이미 정산되었을 수 있습니다)'); return; }
     if (c.errors.length) { alert(c.errors[0]); return; }
     if (!pays.length) { alert('받을 사람이 없습니다. 출석률 기준을 낮춰 주세요.'); return; }
     if (!c.balanced) { alert('금액 계산이 맞지 않습니다. (배분 합계 ' + fmt(c.paid) + ' + 미배분 ' + fmt(c.unallocated) + ' ≠ 총액 ' + fmt(total) + ')'); return; }
     if (c.unallocated > 0 && !confirm(`미배분 금액이 ${fmt(c.unallocated)} ${UNIT} 있습니다. (해당하는 사람이 없는 그룹의 몫)\n이 금액은 누구에게도 지급되지 않습니다. 그대로 분배를 완료할까요?`)) return;
-    if (!confirm(`${monthLabel(month)} 분배를 완료할까요?\n분배 누적금 ${fmt(total)} ${UNIT}을(를) 출석률 ${Math.round(c.minRate * 10) / 10}% 이상 ${pays.length}명에게 그룹별로 나눕니다.\n${c.tierInfo.filter(t => t.members.length).map(t => '· ' + t.group + '그룹 ' + (Math.round(t.pct * 10) / 10) + '% (' + fmt(t.pool) + ') → ' + t.members.length + '명').join('\n')}\n(분배 완료 후 분배 누적금은 0이 되고, 같은 아이템은 다시 정산되지 않습니다)`)) return;
+    if (!dm.done && !confirm(`${monthLabel(month)}은(는) 아직 끝나지 않은 달입니다. (마지막 주가 ${md(new Date(dm.to + 'T00:00:00'))} 화요일에 끝납니다)\n지금까지의 기록으로 분배를 완료할까요?`)) return;
+    if (!confirm(`${monthLabel(month)} 분배를 완료할까요?\n출석률은 ${monthLabel(month)}(${dm.weeks}주, 수 ${md(new Date(dm.from + 'T00:00:00'))} ~ 화 ${md(new Date(dm.to + 'T00:00:00'))}) 합산 기준입니다.\n분배 누적금 ${fmt(total)} ${UNIT}을(를) 출석률 ${Math.round(c.minRate * 10) / 10}% 이상 ${pays.length}명에게 그룹별로 나눕니다.\n${c.tierInfo.filter(t => t.members.length).map(t => '· ' + t.group + '그룹 ' + (Math.round(t.pct * 10) / 10) + '% (' + fmt(t.pool) + ') → ' + t.members.length + '명').join('\n')}\n(분배 완료 후 분배 누적금은 0이 되고, 같은 아이템은 다시 정산되지 않습니다)`)) return;
     try {
         const fresh = await Promise.all(items.map(i => db.ref('boss_storage/' + i.id + '/settledId').once('value')));       // 다른 사람이 먼저 정산했는지 서버 값으로 재확인
         if (fresh.some(x => x.val())) { alert('다른 사람이 이미 정산한 아이템이 포함되어 있습니다. 화면을 새로 연 뒤 다시 시도하세요.'); return; }
@@ -3501,7 +3714,7 @@ async function saveRankSettlement() {                          // [분배 완료
             id: sidv, createdAt: nowIso(), month: month, totalAmount: total, count: pays.length, mode: 'rank',
             items: items.map(i => ({ id: String(i.id), itemName: i.itemName, bossName: i.bossName, bossServer: i.bossServer || '', bossVariant: i.bossVariant || '', date: i.date, buyer: i.buyer, bidPrice: i.bidPrice })),
             recipients: recMap,
-            rank: { minRate: c.minRate, eligible: c.eligibleN, thirds: c.thirds, week: state.partWeek || '', tiers: c.tierInfo.map(t => ({ group: t.group, from: t.from, to: t.to, pct: t.pct, pool: t.pool, count: t.members.length })) }
+            rank: { minRate: c.minRate, eligible: c.eligibleN, thirds: c.thirds, week: dm.label + ' (수 ' + md(new Date(dm.from + 'T00:00:00')) + ' ~ 화 ' + md(new Date(dm.to + 'T00:00:00')) + ' · ' + dm.weeks + '주)', basis: { type: 'month', month: dm.key, from: dm.from, to: dm.to, weeks: dm.weeks }, method: 'tieAvg', tiers: c.tierInfo.map(t => ({ group: t.group, from: t.from, to: t.to, pct: t.pct, pool: t.pool, count: t.members.length })) }
         };
         if (c.unallocated) record.unallocated = c.unallocated;
         const updates = {};
@@ -3946,7 +4159,9 @@ const RB_MAX_IMAGES = 3;
 const rb = {
     inited: false, pane: 'user', windowSig: '', week: '', requests: [], prices: { recovery: 0, blessing: 0, transfer: 0 },        // pane: 복구비 탭에서 보는 화면 ('user' 신청 · 내 복구비 / 'admin' 복구비 관리)
     shots: [], shotSeq: 0, ocrQ: Promise.resolve(), workerP: null,
-    uInited: false, userData: {}, userRefs: {}, weekCb: null,          // 사용자 탭: 최근 3주 데이터
+    uInited: false, userData: {}, userRefs: {}, weekCb: null,
+    userOld: [], oldKey: '', oldAt: 0, oldBusy: false,                                  // 3주보다 오래된 "미지급 · 확인 대기" 신청 (지급되기 전까지 계속 보여 줌)
+    openAll: { weeks: {}, at: 0, busy: false, err: '' },                                // 운영진: 모든 주의 미지급 · 확인 대기          // 사용자 탭: 최근 3주 데이터
     weekRef: null, priceBound: false, imgCache: {}, open: new Set()
 };
 const RB_MAX_PER_KIND = 2;                                   // 복구 사진 2장 · 축복 사진 2장까지
@@ -4032,9 +4247,28 @@ function rbRecentWeeks(n) {                              // 이번 주부터 n�
     for (let i = 0; i < n; i++) { const st = new Date(cur); st.setDate(cur.getDate() - i * 7); out.push(ymd(st)); }
     return out;
 }
+// ── 3주가 지나도 지급되지 않은 복구비는 사라지지 않고 계속 합산 ──
+//   최근 3주는 지금처럼 실시간으로 읽고, 그보다 오래된 주(최대 156주=3년)는 "확정됐지만 미지급" · "확인 대기"인 신청만 따로 읽어서 합산에 더함 (지급 완료·반려된 옛 신청은 읽어도 쓰지 않음)
+const RB_OLD_WEEKS = 156;
+const rbUnresolved = (r) => !!r && !!r.id && (r.status === 'pending' || (r.status === 'approved' && !r.paid));
+const rbIsOldWeek = (wk) => !rbRecentWeeks(3).includes(wk);
+async function rbLoadOld(force) {
+    if (rb.oldBusy || !depsOk()) return;
+    const edge = rbRecentWeeks(4)[3];                                                  // 최근 3주 바로 앞 주까지가 "오래된 것"
+    if (!force && rb.oldKey === edge && rb.oldAt && Date.now() - rb.oldAt < 180000) return;          // 3분 안에는 다시 읽지 않음
+    rb.oldBusy = true;
+    try {
+        const snap = await db.ref('boss_reimburse').orderByKey().endAt(edge).limitToLast(RB_OLD_WEEKS).once('value'), out = [];
+        snap.forEach(wk => { const data = wk.val() || {}; Object.keys(data).forEach(id => { if (rbUnresolved(data[id])) out.push(Object.assign({}, data[id], { _week: wk.key })); }); });
+        rb.userOld = out; rb.oldKey = edge; rb.oldAt = Date.now();
+    } catch (e) { /* 이번에는 못 읽음 — 이전에 읽은 값을 그대로 쓰고 다음 기회에 다시 시도 */ }
+    rb.oldBusy = false;
+    rbRenderUser();
+}
 function rbUserAll() {
     const out = [];
     Object.keys(rb.userData).forEach(k => rb.userData[k].forEach(r => out.push(r)));
+    (rb.userOld || []).forEach(r => { if (!rb.userData[r._week]) out.push(r); });                // 3주보다 오래된 미지급 · 확인 대기
     return out;
 }
 const rbMine = () => rbUserAll().filter(rbIsMine).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
@@ -4061,6 +4295,11 @@ function rbBuildAdmin() {
             <select id="rb-week" onchange="Settle.rbLoadWeek()" style="width:auto; margin:0; padding:9px 12px; border:2px solid #5D6D7E; border-radius:8px; font-size:0.88rem; font-weight:bold;"></select>
         </div>
         <div id="rb-price-line" style="font-size:0.82rem; color:#7f8c8d;"></div>
+    </div>
+    <div class="card">
+        <h3 style="margin:0 0 4px; color:#2c3e50; font-size:1rem;">📌 지급을 기다리는 신청 (모든 주)</h3>
+        <p style="font-size:0.78rem; color:#7f8c8d; margin:0 0 10px; line-height:1.5;">확정됐지만 아직 지급하지 않은 신청과 확인 대기 신청을 주차와 상관없이 모아서 보여줍니다. [이 주 열기]를 누르면 그 주의 신청 내역으로 이동해서 지급 처리할 수 있어요.</p>
+        <div id="rb-open-all"></div>
     </div>
     <div class="card">
         <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">📋 이 주차 신청 내역 (전체)</h3>
@@ -4118,7 +4357,7 @@ function rbBuildUser() {
     </div>
 
     <div class="card">
-        <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">📋 내 신청 내역 <span style="font-weight:normal; color:#95a5a6; font-size:0.78rem;">(최근 3주)</span></h3>
+        <h3 style="margin:0 0 12px; color:#2c3e50; font-size:1rem;">📋 내 신청 내역 <span style="font-weight:normal; color:#95a5a6; font-size:0.78rem;">(최근 3주 + 지급 전 신청 전부)</span></h3>
         <div id="rbu-list"></div>
     </div>
     </div>
@@ -4165,6 +4404,7 @@ function rbAdminInit() {
     if (!rb.weekRef) rbLoadWeek();
     rbRenderPriceLine();
     rbRender();
+    rbLoadOpenAll(false);                                   // 모든 주의 미지급 · 확인 대기 (1분 안에는 다시 읽지 않음)
 }
 
 // 사용자 탭을 열 때: 화면 만들기 + 최근 3주 신청 구독
@@ -4197,6 +4437,7 @@ function rbUserAttach() {
         rb.userRefs[key] = { ref: ref, cb: cb };
         ref.on('value', cb);
     });
+    rbLoadOld(false);                                       // 3주보다 오래된 미지급 · 확인 대기도 함께 (새 주가 시작되어 범위를 벗어난 주도 여기서 이어짐)
 }
 function initUserReimb() {                               // 복구비 탭이 열릴 때마다 (app.js 수정 없이 감지)
     const tab = $('tab-reimb');
@@ -4210,9 +4451,67 @@ function initUserReimb() {                               // 복구비 탭이 열
     if (was) afterAuth(rbUserOpen);
 }
 
-function rbPopulateWeeks() {                              // 관리자: 최근 8주
+// ── 운영진: 모든 주의 "확정됐지만 미지급" · "확인 대기"를 한눈에 (주차 선택에 없는 오래된 주도 여기서 바로 열 수 있음) ──
+async function rbLoadOpenAll(force) {
+    const o = rb.openAll;
+    if (o.busy || !depsOk()) return;
+    if (!force && o.at && Date.now() - o.at < 60000) { rbRenderOpenAll(); return; }
+    o.busy = true; o.err = ''; rbRenderOpenAll();
+    try {
+        const snap = await db.ref('boss_reimburse').orderByKey().limitToLast(RB_OLD_WEEKS).once('value'), weeks = {};
+        snap.forEach(wk => { weeks[wk.key] = Object.keys(wk.val() || {}).map(id => Object.assign({}, wk.val()[id], { _week: wk.key })).filter(r => r && r.id); });
+        o.weeks = weeks; o.at = Date.now();
+    } catch (e) { o.err = (e && e.message) ? e.message : '알 수 없는 오류'; }
+    o.busy = false;
+    rbRenderOpenAll();
+}
+function rbRenderOpenAll() {
+    const box = $('rb-open-all');
+    if (!box) return;
+    const o = rb.openAll;
+    if (o.busy && !o.at) { box.innerHTML = '<div style="padding:10px; text-align:center; color:#7f8c8d; font-size:0.86rem;">⏳ 모든 주의 신청을 불러오는 중…</div>'; return; }
+    if (o.err && !o.at) { box.innerHTML = `<div style="padding:10px; text-align:center; color:#c0392b; font-size:0.86rem;">❌ 불러오지 못했습니다: ${esc(o.err)} ${actBtn('🔄 다시 시도', 'Settle.rbLoadOpenAll(true)', '#5D6D7E')}</div>`; return; }
+    const weeks = Object.assign({}, o.weeks);
+    if (rb.week && rb.inited) weeks[rb.week] = rb.requests;                                  // 지금 열어 둔 주는 실시간 값으로
+    const rows = [];
+    Object.keys(weeks).sort().reverse().forEach(wk => {
+        const list = (weeks[wk] || []).filter(rbUnresolved), unpaid = list.filter(r => r.status === 'approved'), pend = list.filter(r => r.status === 'pending');
+        if (list.length) rows.push({ wk: wk, unpaidCnt: unpaid.length, unpaid: unpaid.reduce((t, r) => t + rbAmount(r), 0), pendCnt: pend.length, pend: pend.reduce((t, r) => t + rbAmount(r), 0), names: Array.from(new Set(list.map(r => r.name))) });
+    });
+    const tU = rows.reduce((t, x) => t + x.unpaid, 0), cU = rows.reduce((t, x) => t + x.unpaidCnt, 0), tP = rows.reduce((t, x) => t + x.pend, 0), cP = rows.reduce((t, x) => t + x.pendCnt, 0);
+    const byUser = {};
+    Object.keys(weeks).forEach(wk => (weeks[wk] || []).filter(r => rbUnresolved(r) && r.status === 'approved').forEach(r => { byUser[r.name] = (byUser[r.name] || 0) + rbAmount(r); }));
+    const users = Object.keys(byUser).sort((a, b) => byUser[b] - byUser[a]);
+    const tile = (label, val, bg, color) => `<div style="flex:1; min-width:100px; background:${bg}; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:0.74rem; color:#7f8c8d;">${label}</div><div style="font-size:1rem; font-weight:bold; color:${color};">${val}</div></div>`;
+    box.innerHTML = `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+            ${tile('미지급 (확정됨) 전체', fmt(tU) + ' ' + UNIT + ' · ' + cU + '건', '#fef9e7', '#d35400')}
+            ${tile('확인 대기 전체', cP + '건 · ' + fmt(tP) + ' ' + UNIT, '#e8f4fd', '#2980b9')}
+        </div>
+        ${rows.length ? rows.map(x => `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 10px; border:1px solid #e5e8ea; border-radius:8px; margin-bottom:6px; background:white;">
+            <div style="font-size:0.84rem; color:#2c3e50; min-width:0;"><b>${esc(rbWeekName(x.wk))}</b><div style="font-size:0.78rem; color:#7f8c8d;">${x.unpaidCnt ? '미지급 ' + x.unpaidCnt + '건 ' + fmt(x.unpaid) + ' ' + UNIT : ''}${x.unpaidCnt && x.pendCnt ? ' · ' : ''}${x.pendCnt ? '확인 대기 ' + x.pendCnt + '건 ' + fmt(x.pend) + ' ' + UNIT : ''}<br>${esc(x.names.join(' · '))}</div></div>
+            ${actBtn('📂 이 주 열기', `Settle.rbOpenWeekFor('${x.wk}')`, '#5D6D7E')}
+        </div>`).join('') : '<p style="color:#27ae60; text-align:center; padding:10px; margin:0; font-size:0.9rem;">✅ 지급을 기다리는 신청이 없습니다.</p>'}
+        ${users.length ? `<div style="margin-top:8px; font-size:0.8rem; color:#7f8c8d; line-height:1.7;"><b>사람별 미지급(확정) 합계</b><br>${users.map(n => esc(n) + ' <b style="color:#d35400;">' + fmt(byUser[n]) + '</b>').join(' · ')}</div>` : ''}
+        <div style="margin-top:8px; display:flex; gap:6px; align-items:center; flex-wrap:wrap;">${actBtn('🔄 새로 불러오기', 'Settle.rbLoadOpenAll(true)', '#5D6D7E')}<span style="font-size:0.74rem; color:#95a5a6;">최근 ${RB_OLD_WEEKS}주 · ${o.at ? new Date(o.at).toLocaleTimeString('ko-KR') + ' 기준' : ''}${o.busy ? ' · 갱신 중…' : ''}</span></div>`;
+}
+function rbOpenWeekFor(key) {                                  // 주차 선택에 없는 오래된 주도 열 수 있게 선택지를 더해서 그 주를 엶
     const sel = $('rb-week');
-    if (sel) sel.innerHTML = rbRecentWeeks(8).map(k => `<option value="${k}">${esc(rbWeekName(k))}</option>`).join('');
+    if (!sel) return;
+    if (!Array.from(sel.options).some(o => o.value === key)) {
+        const opt = document.createElement('option');
+        opt.value = key; opt.textContent = rbWeekName(key);
+        const after = Array.from(sel.options).find(o => o.value < key);                                  // 날짜 내림차순 자리
+        sel.insertBefore(opt, after || null);
+    }
+    sel.value = key;
+    rbLoadWeek();
+    const list = $('rb-list');
+    if (list && list.scrollIntoView) list.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function rbPopulateWeeks() {                              // 관리자: 최근 26주 (그보다 오래된 주는 [이 주 열기]로)
+    const sel = $('rb-week');
+    if (sel) sel.innerHTML = rbRecentWeeks(26).map(k => `<option value="${k}">${esc(rbWeekName(k))}</option>`).join('');
 }
 function rbPopulateUserWeeks() {                          // 사용자: 지금 신청받는 주 하나만 (신청 기간이 아니면 비어 있음)
     const sel = $('rbu-week');
@@ -4627,11 +4926,13 @@ function rbRender() {                                      // 관리자: 이 주
     if (rb.requests.length === 0) {
         box.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:20px; margin:0;">이 주차에 접수된 신청이 없습니다.</p>';
         rbRenderSummary();
+        rbRenderOpenAll();
         return;
     }
     box.innerHTML = rb.requests.map(r => rbCardHtml(r, 'admin')).join('');
     rb.open.forEach(k => rbPaintImages(k));
     rbRenderSummary();
+    rbRenderOpenAll();                                      // 열어 둔 주의 변경(확정·지급 등)을 모든 주 요약에도 바로 반영
 }
 
 // ── 사용자 화면: 내가 받을 돈 / 내 신청 내역 ──
@@ -4688,6 +4989,7 @@ function rbRenderMoney() {
     const waiting = sum(r => r.status === 'approved' && !r.paid);
     const paid = sum(r => r.status === 'approved' && r.paid);
     const est = sum(r => r.status === 'pending');
+    const oldWait = sum(r => r.status === 'approved' && !r.paid && rbIsOldWeek(r._week)), oldEst = sum(r => r.status === 'pending' && rbIsOldWeek(r._week));
     const wp = mine.filter(r => r.status === 'approved' && !r.paid).reduce((a, r) => { const q = rbParts(r); a.base += q.base; a.tr += q.transfer; a.ex += q.extra; return a; }, { base: 0, tr: 0, ex: 0 });
     const detail = (wp.tr || wp.ex) ? `<div style="font-size:0.78rem; color:#555; margin-top:4px;">복구·축복 ${fmt(wp.base)} + 이전 ${fmt(wp.tr)}${wp.ex ? ' + 추가비용 ' + fmt(wp.ex) : ''}</div>` : '';
     const tile = (label, val, bg, color) => `<div style="flex:1; background:${bg}; border-radius:8px; padding:8px; text-align:center;"><div style="font-size:0.72rem; color:#7f8c8d;">${label}</div><div style="font-size:0.98rem; font-weight:bold; color:${color};">${fmt(val)} ${UNIT}</div></div>`;
@@ -4696,10 +4998,11 @@ function rbRenderMoney() {
             <div style="font-size:0.8rem; color:#7f8c8d;">지급 대기 (확정됨)</div>
             <div style="font-size:1.8rem; font-weight:bold; color:#2980b9;">${fmt(waiting)} <span style="font-size:1rem;">${UNIT}</span></div>
             ${detail}
+            ${oldWait ? `<div style="font-size:0.78rem; color:#d35400; font-weight:bold; margin-top:3px;">🕒 3주 넘은 미지급 ${fmt(oldWait)} ${UNIT} 포함</div>` : ''}
             <div style="font-size:0.76rem; color:#7f8c8d;">${waiting ? '운영진이 확정한 금액입니다. 곧 지급됩니다.' : (est ? '운영진이 확정하면 이곳에 표시됩니다.' : '확정된 금액이 없습니다.')}</div>
         </div>
-        <div style="display:flex; gap:8px;">${tile('확인 대기 (예상)', est, '#fef9e7', '#d35400')}${tile('지급 완료', paid, '#d5f4e6', '#27ae60')}</div>
-        <div style="font-size:0.74rem; color:#95a5a6; margin-top:8px; line-height:1.5;">최근 3주 신청 기준</div>`;
+        <div style="display:flex; gap:8px;">${tile('확인 대기 (예상)' + (oldEst ? ' · 3주 넘은 건 포함' : ''), est, '#fef9e7', '#d35400')}${tile('지급 완료', paid, '#d5f4e6', '#27ae60')}</div>
+        <div style="font-size:0.74rem; color:#95a5a6; margin-top:8px; line-height:1.5;">지급 대기·확인 대기는 오래된 신청도 지급되기 전까지 모두 합산합니다. 지급 완료는 최근 3주만 보여요.</div>`;
 }
 function rbRenderMine() {
     const box = $('rbu-list');
@@ -4708,7 +5011,7 @@ function rbRenderMine() {
     if (card) card.style.display = has ? '' : 'none';                  // 내 이름을 등록하지 않았으면 아무것도 보여주지 않음
     if (!has) { box.innerHTML = ''; return; }
     const mine = rbMine();
-    if (!mine.length) { box.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:16px; margin:0; font-size:0.9rem;">최근 3주 동안 신청한 내역이 없습니다.</p>'; return; }
+    if (!mine.length) { box.innerHTML = '<p style="color:#95a5a6; text-align:center; padding:16px; margin:0; font-size:0.9rem;">최근 3주 동안 신청한 내역이 없고, 지급을 기다리는 오래된 신청도 없습니다.</p>'; return; }
     box.innerHTML = mine.map(r => rbCardHtml(r, 'user')).join('');
     rb.open.forEach(k => rbPaintImages(k));
 }
@@ -4851,6 +5154,7 @@ async function rbSaveEdit(k) {
         });
         closeModal();
         if (res && res.committed === false) alert('이미 확정되어 수정할 수 없습니다.');
+        if (rbIsOldWeek(rbWeekOf(r))) rbLoadOld(true);
     } catch (e) { alert('❌ 저장 실패: ' + e.message); }
 }
 
@@ -4933,6 +5237,7 @@ async function rbDelete(k) {
     await db.ref().update(updates).catch(e => alert('❌ 삭제 실패: ' + e.message));
     delete rb.imgCache[r.id];
     rb.open.delete(k);
+    if (rbIsOldWeek(rbWeekOf(r))) rbLoadOld(true);                       // 3주보다 오래된 신청을 지웠다면 오래된 목록도 바로 갱신
 }
 async function rbDeleteImages(k) {
     const r = rbFind(k);
@@ -5029,7 +5334,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, partBossAll, partToggleBoss, openPartAdmin, guideRetry, supRowChange, supBulk, openDist, distRecalc, openDistSettings, distDemo, saveDistSettings, resetDistSettings, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportAdmin, supDirty, supReset, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, partBossAll, partToggleBoss, openPartAdmin, guideRetry, supRowChange, supBulk, openDist, distRecalc, openDistSettings, distDemo, saveDistSettings, resetDistSettings, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportAdmin, supDirty, supReset, distSetMonth, rbLoadOpenAll, rbOpenWeekFor, monthWeeks, monthDone, defaultDistMonth, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
