@@ -3484,6 +3484,7 @@ function closeCalc() { const b = $('settle-calc-area'); if (b) b.innerHTML = '';
 //     (예: 3그룹 경계인 30등에 동점자가 있어 3그룹이 13명이 되면, 그 13명이 3그룹 몫을 나눔)
 //   · [분배 정산]을 누른 그때의 이번 주 출석률로 계산하고, [분배 완료]를 누르면 그 달의 개인별 금액으로 저장되며 누적금은 0이 됨
 // ============================================================
+const DIST_STEP = 10;                                              // 20명 이상 30명 미만일 때 지급 인원을 내림하는 단위 (24·25명 → 20명까지). 20명 미만은 내림 없이 전원
 const DIST_DEFAULT = { minRate: 50, tiers: [{ size: 10, pct: 50 }, { size: 10, pct: 30 }, { size: 10, pct: 20 }] };
 const monthKey = (d) => { d = d || new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
 const rankTxt = (f, t) => f === t ? f + '등' : f + '~' + t + '등';                  // 한 명짜리 구간은 "3등"
@@ -3525,13 +3526,14 @@ function computeRank(total, entries, cfg) {
     const below = entries.filter(e => e.rate < minRate).sort(disp);
     ranked.forEach((e, i) => { e.rank = (i > 0 && ranked[i - 1].rate === e.rate) ? ranked[i - 1].rank : i + 1; });      // 같은 점수는 공동 등수 (예: 1, 1, 1, 4)
     const N = ranked.length, thirds = N < cap;
-    const bs = Math.floor(N / 3), rm = N % 3;
-    const sizes = thirds ? tiers.map((t, i) => bs + (i < rm ? 1 : 0)) : tiers.map(t => t.size);               // 30명 미만이면 3등분(남는 사람은 앞 그룹부터), 그 이상이면 정해 둔 그룹 인원
+    const payN = !thirds ? cap : (N >= 2 * DIST_STEP ? Math.floor(N / DIST_STEP) * DIST_STEP : N);          // 지급 인원: 기준 인원(30명) 이상이면 30명까지 · 20명 이상 30명 미만이면 20명까지(24·25명 → 20명) · 20명 미만이면 전원(19명이면 19명)
+    const bs = Math.floor(payN / 3), rm = payN % 3;
+    const sizes = thirds ? tiers.map((t, i) => bs + (i < rm ? 1 : 0)) : tiers.map(t => t.size);               // 30명 미만이면 지급 인원을 3등분(남는 사람은 앞 그룹부터), 그 이상이면 정해 둔 그룹 인원
     const live = sizes.map(sz => sz > 0), liveSum = sumOf(tiers.map((t, i) => live[i] ? t.pct : 0));
     const usePct = tiers.map((t, i) => (live[i] && liveSum > 0) ? t.pct * 100 / liveSum : 0);                // 사람이 없는 그룹의 몫은 사람이 있는 그룹에 비율대로 (돈이 남지 않게)
     const posVal = [], posGrp = [];
     sizes.forEach((sz, g) => { for (let i = 0; i < sz && posVal.length < N; i++) { posVal.push(total * usePct[g] / 100 / sz); posGrp.push(g); } });
-    while (posVal.length < N) { posVal.push(0); posGrp.push(-1); }                                           // 정원(예: 30명)을 넘는 자리는 0
+    while (posVal.length < N) { posVal.push(0); posGrp.push(-1); }                                           // 지급 인원(예: 30명·20명)을 넘는 자리는 0
     const val = pav(posVal), pavChanged = val.some((x, i) => Math.abs(x - posVal[i]) > 1e-6);
     const blocks = [];
     ranked.forEach((e, i) => { if (i > 0 && ranked[i - 1].rank === e.rank) blocks[blocks.length - 1].push(i); else blocks.push([i]); });
@@ -3557,7 +3559,10 @@ function computeRank(total, entries, cfg) {
         const mem = rows.filter(r => r.tier === i + 1);
         return { index: i, group: i + 1, pct: t.pct, size: sizes[i], pool: pools[i], members: mem, per: mem.map(r => r.amount), from: mem.length ? mem[0].rank : 0, to: mem.length ? mem[mem.length - 1].rank : 0 };
     });
-    if (thirds && N > 0) infos.push(`출석률 기준을 넘은 ${N}명이 ${cap}명보다 적어서, 인원을 3등분(33%씩)해 1그룹 ${sizes[0]}명 · 2그룹 ${sizes[1]}명 · 3그룹 ${sizes[2]}명으로 나눴습니다.`);
+    if (thirds && N > 0) {
+        if (payN < N) infos.push(`출석률 기준을 넘은 ${N}명이 ${cap}명보다 적어서 ${DIST_STEP}명 단위로 내림해 상위 ${payN}명(동점 포함)에게 지급합니다. ${payN}명을 3등분해 1그룹 ${sizes[0]}명 · 2그룹 ${sizes[1]}명 · 3그룹 ${sizes[2]}명으로 나눴습니다.`);
+        else infos.push(`출석률 기준을 넘은 ${N}명이 ${cap}명보다 적어서, 인원을 3등분해 1그룹 ${sizes[0]}명 · 2그룹 ${sizes[1]}명 · 3그룹 ${sizes[2]}명으로 나눴습니다.`);
+    }
     sizes.forEach((sz, g) => { if (sz === 0 && tiers[g].pct > 0 && N > 0) infos.push(`${g + 1}그룹(${Math.round(tiers[g].pct * 10) / 10}%)에 들어갈 사람이 없어서, 그 몫은 사람이 있는 그룹에 비율대로 나눴습니다.`); });
     if (pavChanged) infos.push('인원이 적어서 아래 그룹이 위 그룹보다 많이 받게 되는 구조라, 해당 순위들은 같은 금액으로 묶었습니다. (높은 순위가 더 적게 받는 일이 없도록)');
     blocks.filter(b => b.length > 1 && posGrp[b[0]] !== posGrp[b[b.length - 1]]).forEach(b => {
@@ -3566,7 +3571,7 @@ function computeRank(total, entries, cfg) {
     });
     const paid = sumOf(rows.map(r => r.amount)), unallocated = Math.max(0, total - paid);
     if (unallocated > 0 && N > 0 && !errors.length) warnings.push(`미배분 금액이 ${fmt(unallocated)} ${UNIT} 있습니다.`);
-    return { rows: rows, tierInfo: tierInfo, ranked: ranked, below: below, outside: outside, cap: cap, N: N, thirds: thirds, sizes: sizes, minRate: minRate, tiers: tiers, unallocated: unallocated, warnings: warnings, infos: infos, errors: errors, valid: errors.length === 0 && paid > 0, paid: paid, balanced: paid + unallocated === total, eligibleN: N };
+    return { rows: rows, tierInfo: tierInfo, ranked: ranked, below: below, outside: outside, cap: cap, payN: payN, N: N, thirds: thirds, sizes: sizes, minRate: minRate, tiers: tiers, unallocated: unallocated, warnings: warnings, infos: infos, errors: errors, valid: errors.length === 0 && paid > 0, paid: paid, balanced: paid + unallocated === total, eligibleN: N };
 }
 // ============================================================
 // 📅 월 출석률 (분배 정산용) — 한 주(수~화)는 "시작하는 수요일이 속한 달"로 셈 (예: 11월 = 11/4 · 11/11 · 11/18 · 11/25 에 시작하는 주 → 11/4 ~ 12/1)
@@ -3672,7 +3677,7 @@ function renderAttendBox() {
     c.ranked.forEach(r => { tieCount[r.rank] = (tieCount[r.rank] || 0) + 1; });
     box.innerHTML = monthSel + `
         <div style="background:#f0fff4; border:1px solid #a9dfbf; border-radius:8px; padding:10px 12px; font-size:0.84rem; line-height:1.65;">
-            <div>분배 누적금 <b>${fmt(c.total)} ${UNIT}</b> → 출석률 <b>${r1(c.minRate)}% 이상</b> <b>${c.N}명</b>을 ${c.thirds ? '<b>3그룹(33%씩)</b>으로 나눠' : '상위 <b>' + c.cap + '명(동점 포함)</b>을 3그룹으로 나눠'} 그룹별로 차등 분배</div>
+            <div>분배 누적금 <b>${fmt(c.total)} ${UNIT}</b> → 출석률 <b>${r1(c.minRate)}% 이상</b> <b>${c.N}명</b>을 ${c.payN < c.N || !c.thirds ? '상위 <b>' + c.payN + '명(동점 포함)</b>을 3그룹으로 나눠' : '<b>3그룹</b>으로 나눠'} 그룹별로 차등 분배</div>
             ${c.tierInfo.map(t => `<div>${medal[t.index] || '▪️'} <b>${t.group}그룹</b>${t.members.length ? ' (' + (t.from === t.to ? t.from : t.from + '~' + t.to) + '등)' : ''} · ${r1(t.pct)}% (${fmt(t.pool)}) → ${t.members.length ? '<b>' + t.members.length + '명</b> · 1인당 <b style="color:#27ae60;">' + range(t.per) + '</b>' : '<span style="color:#c0392b;">해당 없음</span>'}</div>`).join('')}
             <div style="font-size:0.74rem; color:#7f8c8d; margin-top:3px;">출석률 기준: <b>${esc(dm.label)}</b> (수 ${esc(md(new Date(dm.from + 'T00:00:00')))} ~ 화 ${esc(md(new Date(dm.to + 'T00:00:00')))} · ${dm.weeks}주 평균) · ${hm} 계산${exNames.length ? ' · 출석률에서 제외한 보스: ' + esc(exNames.join(', ')) : ''}${monthNote}<br>월 출석률은 그 달 각 주의 출석률(%)을 더해서 주 수로 나눈 평균입니다 (그 주에 대상 보스가 없던 사람은 그 주를 뺍니다). 아직 진행하지 않은 보스는 계산하지 않습니다. 순위는 출석률이 높은 순입니다. 점수(출석률)가 같으면 공동 등수이고 같은 금액을 받습니다. 같은 그룹은 균등하게 나누고, 높은 그룹이 낮은 그룹보다 더 받습니다.</div>
             <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">${actBtn('🔄 다시 계산', 'Settle.distRecalc()', '#5D6D7E')}${isAdmin ? actBtn('⚙️ 분배 기준', 'Settle.openDistSettings()', '#8e44ad') : ''}</div>
@@ -3681,7 +3686,7 @@ function renderAttendBox() {
             <div style="display:flex; gap:6px; padding:6px 10px; background:#f8f9fa; font-size:0.74rem; color:#7f8c8d; font-weight:bold; position:sticky; top:0;"><span style="width:40px;">등수</span><span style="flex:1;">이름 · 출석률</span><span style="width:70px; text-align:right;">받을 금액</span></div>
             ${c.rows.map(r => `<div class="settle-attend-row" data-rank="${r.rank}" data-tier="${r.tier}" data-amt="${r.amount}" style="display:flex; align-items:center; gap:6px; padding:6px 10px; border-top:1px solid #f3f3f3; font-size:0.84rem;"><span style="width:40px; color:#2c3e50;"><b>${r.rank}</b>${tieCount[r.rank] > 1 ? '<br><span style="font-size:0.66rem; color:#d35400;">공동</span>' : ''}</span><span style="flex:1; min-width:0;"><span style="word-break:keep-all;">${esc(r.name)}</span><br><span style="font-size:0.72rem; color:#7f8c8d;">${r1(r.rate)}%${r.team ? ' <span style="padding:1px 6px; background:#d5f5e3; color:#1e8449; border-radius:4px; font-size:0.68rem; font-weight:bold;">지원조</span>' : ''} · ${r.tier}그룹</span></span><b style="width:70px; text-align:right; color:#27ae60;">${fmt(r.amount)}</b></div>`).join('')}
         </div>` : '<div style="margin-top:8px; padding:10px; color:#c0392b; font-size:0.85rem; text-align:center;">받을 사람이 없습니다. 출석률 기준을 낮춰 주세요.</div>'}
-        ${c.outside.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">출석률은 충족했지만 상위 ${c.cap}명(동점 포함) 밖인 ${c.outside.length}명</summary><div style="margin-top:4px; line-height:1.7;">${c.outside.map(r => esc(r.name) + ' <span style="color:#95a5a6;">' + r1(r.rate) + '%</span>').join(' · ')}</div></details>` : ''}
+        ${c.outside.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">출석률은 충족했지만 상위 ${c.payN}명(동점 포함) 밖인 ${c.outside.length}명</summary><div style="margin-top:4px; line-height:1.7;">${c.outside.map(r => esc(r.name) + ' <span style="color:#95a5a6;">' + r1(r.rate) + '%</span>').join(' · ')}</div></details>` : ''}
         ${c.below.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">출석률 ${r1(c.minRate)}% 미만이라 제외된 ${c.below.length}명</summary><div style="margin-top:4px; line-height:1.7;">${c.below.map(r => esc(r.name) + ' <span style="color:#95a5a6;">' + r1(r.rate) + '%</span>').join(' · ')}</div></details>` : ''}
         ${weekDetail}
         <div style="margin-top:6px; font-size:0.8rem; color:#555;">총액 <b>${fmt(c.total)}</b> = 지급 <b>${fmt(c.paid)}</b> + 미배분 <b style="color:${c.unallocated ? '#c0392b' : '#555'};">${fmt(c.unallocated)}</b></div>
@@ -3694,7 +3699,7 @@ const DIST_LAB = 'font-size:0.85rem; font-weight:bold; color:#555; display:block
 function distFormHtml(pfx) {                                   // 분배 기준 폼: pfx = 입력칸 ID 머리말 (창: 'settle-dist', 관리 탭 카드: 'pd')
     const d = state.dist, sm = 'width:100%; margin:0; padding:7px 8px; border:2px solid #ddd; border-radius:6px; font-size:0.9rem; box-sizing:border-box; text-align:right;';
     return `
-        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">[분배 정산]에서 <b>출석률에 따라 분배 누적금을 나누는 방식</b>입니다. 출석률이 <b>기준 이상</b>인 사람을 출석률 순으로 줄 세워 <b>3개 그룹</b>으로 나누고, <b>그룹마다 정한 비율</b>로 나눕니다. 각 그룹의 몫은 그 그룹에 든 사람끼리 균등합니다.<br>기준을 넘은 사람이 <b>그룹 인원의 합계(기본 30명) 이상</b>이면 정해 둔 인원대로(1그룹 10명·2그룹 10명·3그룹 10명), <b>그보다 적으면 전체 인원을 3등분(33%씩)</b>합니다. <b>출석률이 같은 사람은 같은 그룹</b>에 넣고, 경계에 걸리면 앞 그룹에 넣어 그 그룹 인원이 늘어난 대로 몫을 나눕니다.</p>
+        <p style="font-size:0.8rem; color:#7f8c8d; margin:0; line-height:1.55;">[분배 정산]에서 <b>출석률에 따라 분배 누적금을 나누는 방식</b>입니다. 출석률이 <b>기준 이상</b>인 사람을 출석률 순으로 줄 세워 <b>3개 그룹</b>으로 나누고, <b>그룹마다 정한 비율</b>로 나눕니다. 각 그룹의 몫은 그 그룹에 든 사람끼리 균등합니다.<br>기준을 넘은 사람이 <b>그룹 인원의 합계(기본 30명) 이상</b>이면 <b>상위 30명(동점 포함)까지</b> 정해 둔 인원대로(1그룹 10명·2그룹 10명·3그룹 10명) 지급하고, <b>20명 이상 30명 미만이면 상위 20명까지</b>(예: 24·25명이면 20등까지) 지급하고 그 20명을 3등분합니다(7/7/6). <b>20명 미만이면 전원</b>에게 지급하고 그 인원을 3등분합니다(남는 인원은 1그룹부터 한 명씩, 예: 19명이면 7/6/6).<br><b>출석률이 같은 사람은 같은 등수</b>이고, 같이 차지한 자리의 금액을 합쳐서 똑같이 나눕니다. 그룹 경계에 걸린 동점은 걸친 자리들의 평균 금액을 받습니다.</p>
         <label style="${DIST_LAB}">출석률 기준 (% 이상)</label>
         <input type="number" id="${pfx}-min" min="0" max="100" step="1" value="${d.minRate}" oninput="Settle.distDemo('${pfx}')" style="${inputStyle}">
         <label style="${DIST_LAB}">그룹별 인원과 분배 비율</label>
@@ -3739,7 +3744,7 @@ function distDemo(pfx) {
     const el = $(pfx + '-demo'), f = distFormRead(pfx);
     if (!el) return;
     if (!f || f.error) { el.innerHTML = f && f.error ? '<span style="color:#c0392b;">⛔ ' + esc(f.error) + '</span>' : ''; return; }
-    el.innerHTML = '예) 1,000 ' + UNIT + ' → ' + f.tiers.map((t, i) => (i + 1) + '그룹 <b>' + fmt(Math.round(1000 * t.pct / 100)) + '</b>').join(' · ') + '<br>(출석률 ' + f.minRate + '% 이상인 사람만 · 기준 인원 ' + f.tiers.map(t => t.size).join('·') + '명, 그보다 적으면 3등분 · 그룹 안에서는 균등)';
+    el.innerHTML = '예) 1,000 ' + UNIT + ' → ' + f.tiers.map((t, i) => (i + 1) + '그룹 <b>' + fmt(Math.round(1000 * t.pct / 100)) + '</b>').join(' · ') + '<br>(출석률 ' + f.minRate + '% 이상인 사람만 · 기준 인원 ' + f.tiers.map(t => t.size).join('·') + '명까지 · 20명 이상 30명 미만이면 20명까지 · 20명 미만이면 전원 3등분 · 그룹 안에서는 균등)';
 }
 async function saveDistSettings(pfx) {
     pfx = pfx || 'settle-dist';
@@ -3825,7 +3830,7 @@ async function saveRankSettlement() {                          // [분배 완료
             id: sidv, createdAt: nowIso(), month: month, totalAmount: total, count: pays.length, mode: 'rank',
             items: items.map(i => ({ id: String(i.id), itemName: i.itemName, bossName: i.bossName, bossServer: i.bossServer || '', bossVariant: i.bossVariant || '', date: i.date, buyer: i.buyer, bidPrice: i.bidPrice })),
             recipients: recMap,
-            rank: { minRate: c.minRate, eligible: c.eligibleN, thirds: c.thirds, week: dm.label + ' (수 ' + md(new Date(dm.from + 'T00:00:00')) + ' ~ 화 ' + md(new Date(dm.to + 'T00:00:00')) + ' · ' + dm.weeks + '주)', basis: { type: 'month', avg: 'weekly', month: dm.key, from: dm.from, to: dm.to, weeks: dm.weeks }, method: 'tieAvg', tiers: c.tierInfo.map(t => ({ group: t.group, from: t.from, to: t.to, pct: t.pct, pool: t.pool, count: t.members.length })) }
+            rank: { minRate: c.minRate, eligible: c.eligibleN, paidCap: c.payN, thirds: c.thirds, week: dm.label + ' (수 ' + md(new Date(dm.from + 'T00:00:00')) + ' ~ 화 ' + md(new Date(dm.to + 'T00:00:00')) + ' · ' + dm.weeks + '주)', basis: { type: 'month', avg: 'weekly', month: dm.key, from: dm.from, to: dm.to, weeks: dm.weeks }, method: 'tieAvg', tiers: c.tierInfo.map(t => ({ group: t.group, from: t.from, to: t.to, pct: t.pct, pool: t.pool, count: t.members.length })) }
         };
         if (c.unallocated) record.unallocated = c.unallocated;
         const updates = {};
