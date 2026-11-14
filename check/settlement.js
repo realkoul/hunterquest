@@ -3621,7 +3621,8 @@ async function loadDistMonth(mk) {                             // 그 달의 출
             stats[uid] = { present: present, absent: total - present, total: total, weeks: wk, weeksUsed: n, rate: n ? sum / n : 0 };
         });
         const used = new Set(recs.map(x => sunKeyOf(x.date)));
-        const missing = keys.filter(k => used.has(k) && Object.keys(docs[k]).length === 0).map(k => { const st = new Date(k + 'T00:00:00'), en = new Date(st); en.setDate(st.getDate() + 6); return md(st) + '~' + md(en); });
+        const inUse = keys.some(k => used.has(k) && Object.keys(docs[k]).length > 0);                // 이 달에 서버 배정이 하나라도 있으면(쓰다 만 상태) 빠진 주를 알리고, 하나도 없으면(서버 배정 대신 이미지 인식 팀 배정을 쓰는 경우) 알리지 않음
+        const missing = !inUse ? [] : keys.filter(k => used.has(k) && Object.keys(docs[k]).length === 0).map(k => { const st = new Date(k + 'T00:00:00'), en = new Date(st); en.setDate(st.getDate() + 6); return md(st) + '~' + md(en); });
         state.distMonth = { key: mk, label: monthLabel(mk), from: from, to: to, weeks: weeks.length, weekMeta: weeks.map(w => ({ start: w.start, end: w.end })), stats: stats, missing: missing, done: monthDone(mk), records: recs.length, at: Date.now() };
     } catch (e) {
         if (token !== state.distToken) return;
