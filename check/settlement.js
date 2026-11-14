@@ -2604,10 +2604,13 @@ function afterAssignChange() {                                 // 서버 배정�
 }
 function buildRecs(data, from, to, docs, grpOf) {              // 기간 안의 출석 기록을 시각 순으로 (보스별 그 날짜의 담당 서버 · 서버 기록 포함)
     const timeOf = (bossId, rec) => { if (rec && rec.bossTime) return String(rec.bossTime); const sc = (typeof schedules !== 'undefined' && Array.isArray(schedules)) ? schedules.find(x => x.id === bossId) : null; return sc && sc.time ? String(sc.time) : '99:99'; };
-    const recs = [];
+    const recs = [], nowMs = nowD().getTime(), todayStr = ymd(nowD());
     Object.keys(data || {}).forEach(key => {
         const date = key.split('_')[0], bossId = key.split('_').slice(1).join('_'), rec = data[key] || {}, att = rec.attendees || {};
         if (date < from || date > to || !Object.keys(att).length) return;                       // 기간 안에 출석 기록이 있는 보스만
+        const tm = timeOf(bossId, rec);
+        if (tm === '99:99') { if (date > todayStr) return; }                                    // 시각을 모르는 기록은 미래 날짜만 제외
+        else { const st = new Date(date + 'T00:00:00'); st.setHours(Number(tm.slice(0, 2)), Number(tm.slice(3, 5)), 0, 0); if (nowMs < st.getTime() + 60000) return; }       // 아직 시작하지 않은 보스(시작 시각의 그 분이 끝나기 전)는 출석이 계속 열려 있으므로 계산하지 않음 — 먼저 누른 사람만 있고 나머지가 불참으로 셈되는 일을 막음
         recs.push({ key: key, date: date, bossId: bossId, time: date + ' ' + timeOf(bossId, rec), att: att, srv: rec.servers || {}, assigned: assignedOf(date, bossId, docs), grp: grpOf(date) });
     });
     return recs.sort((a, b) => a.time.localeCompare(b.time) || a.key.localeCompare(b.key));
@@ -3471,7 +3474,7 @@ function computeRank(total, entries, cfg) {
 }
 // ============================================================
 // 📅 월 출석률 (분배 정산용) — 한 주(수~화)는 "시작하는 수요일이 속한 달"로 셈 (예: 11월 = 11/4 · 11/11 · 11/18 · 11/25 에 시작하는 주 → 11/4 ~ 12/1)
-//   그 달 모든 주의 "출석한 보스 합 ÷ 분모 합"으로 계산 (주마다 이번 주 출석률과 같은 기준: 사람 기준 · 그때의 서버 · 기록 날짜가 속한 주의 서버 배정 · 제외 보스 빠짐)
+//   그 달 각 주의 출석률(%)을 더해서 주 수로 나눈 평균으로 계산 (주마다 이번 주 통계와 같은 기준: 사람 기준 · 그때의 서버 · 기록 날짜가 속한 주의 서버 배정 · 제외 보스 빠짐)
 // ============================================================
 function monthWeeks(mk) {                                      // 그 달에 시작하는 수~화 주들
     const m = /^(\d{4})-(\d{2})$/.exec(String(mk || ''));
@@ -3512,8 +3515,15 @@ async function loadDistMonth(mk) {                             // 그 달의 출
         if (token !== state.distToken) return;                                         // 그 사이 다른 달을 골랐으면 이 결과는 버림
         const data = filterExcluded(raw, from, to);
         const recs = buildRecs(data, from, to, docs, (date) => ymd(getWeekStart(new Date(date + 'T00:00:00'))));
-        const us = getUsers(), r = personRatesCore(recs, us, teamIds()), stats = {};
-        us.forEach(u => { const x = r[String(u.id)] || { present: 0, absent: 0, total: 0 }; stats[String(u.id)] = { present: x.present, absent: x.absent, total: x.total, weeks: x.weeks || {}, rate: x.total > 0 ? x.present / x.total * 100 : 0 }; });
+        const us = getUsers(), ts = teamIds(), grp = {}, perWeek = {}, stats = {};
+        recs.forEach(x => { (grp[x.grp] = grp[x.grp] || []).push(x); });
+        Object.keys(grp).forEach(g => { perWeek[g] = personRatesCore(grp[g], us, ts); });         // 이번 주 통계와 똑같은 계산을 주마다 따로
+        us.forEach(u => {                                                                         // 월 출석률 = 주별 출석률(%)을 더해서 주 수로 나눈 평균 (그 주에 대상 보스가 없던 사람은 그 주를 뺌)
+            const uid = String(u.id), wk = {};
+            let present = 0, total = 0, sum = 0, n = 0;
+            Object.keys(perWeek).sort().forEach(g => { const x = perWeek[g][uid]; if (!x || !x.total) return; const rt = x.present / x.total * 100; wk[g] = { present: x.present, total: x.total, rate: rt }; present += x.present; total += x.total; sum += rt; n++; });
+            stats[uid] = { present: present, absent: total - present, total: total, weeks: wk, weeksUsed: n, rate: n ? sum / n : 0 };
+        });
         const used = new Set(recs.map(x => sunKeyOf(x.date)));
         const missing = keys.filter(k => used.has(k) && Object.keys(docs[k]).length === 0).map(k => { const st = new Date(k + 'T00:00:00'), en = new Date(st); en.setDate(st.getDate() + 6); return md(st) + '~' + md(en); });
         state.distMonth = { key: mk, label: monthLabel(mk), from: from, to: to, weeks: weeks.length, weekMeta: weeks.map(w => ({ start: w.start, end: w.end })), stats: stats, missing: missing, done: monthDone(mk), records: recs.length, at: Date.now() };
@@ -3560,14 +3570,14 @@ function renderAttendBox() {
     const mopts = distMonthOptions(), monthSel = '<div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;"><span style="font-size:0.84rem; font-weight:bold; color:#555;">📅 기준 월</span><select id="settle-dist-month" onchange="Settle.distSetMonth(this.value)" style="width:auto; margin:0; padding:6px 8px; border:1.5px solid #27ae60; border-radius:6px; font-size:0.84rem;">' + mopts.map(o => '<option value="' + o.key + '"' + (o.key === dm.key ? ' selected' : '') + '>' + esc(monthLabel(o.key)) + ' (' + o.range + ' · ' + o.weeks.length + '주' + (o.done ? '' : ' · 진행 중') + ')</option>').join('') + '</select></div>';
     const monthNote = (dm.done ? '' : '<div style="font-size:0.76rem; color:#d35400; margin-top:3px;">⚠️ 아직 끝나지 않은 달입니다. 지금까지의 출석 기록으로 계산했어요. (정산은 마지막 주(화요일)가 끝난 뒤에 하는 것을 권장합니다)</div>') + (dm.missing.length ? '<div style="font-size:0.76rem; color:#d35400; margin-top:3px;">⚠️ 서버 배정이 올라와 있지 않은 주: ' + esc(dm.missing.join(', ')) + ' — 이 주의 보스는 모든 서버를 대상으로 계산했어요. 서버 배정 화면에서 배정을 올리면 자동으로 정확해집니다. (🔄 다시 계산)</div>' : '');
     const detRows = getUsers().map(u => ({ u: u, st: dm.stats[String(u.id)] })).filter(x => x.st && x.st.total > 0).sort((a, b) => b.st.rate - a.st.rate || koCmp(a.u.name, b.u.name));
-    const weekDetail = detRows.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">📊 사람별 주차 내역 보기 (왜 이 출석률인지)</summary><div style="margin-top:4px; max-height:260px; overflow-y:auto; line-height:1.75;">${detRows.map(x => { const parts = (dm.weekMeta || []).map(w => { const c = (x.st.weeks || {})[w.start]; return c && c.total ? md(new Date(w.start + 'T00:00:00')) + '주 ' + c.present + '/' + c.total : ''; }).filter(Boolean).join(' · '); return `<div><b style="color:#2c3e50;">${esc(x.u.name)}</b> ${r1(x.st.rate)}% (${x.st.present}/${x.st.total}) <span style="color:#95a5a6;">— ${parts}</span></div>`; }).join('')}</div></details>` : '';
+    const weekDetail = detRows.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">📊 사람별 주차 내역 보기 (왜 이 출석률인지)</summary><div style="margin-top:4px; max-height:260px; overflow-y:auto; line-height:1.75;">${detRows.map(x => { const parts = (dm.weekMeta || []).map(w => { const c = (x.st.weeks || {})[w.start]; return c && c.total ? md(new Date(w.start + 'T00:00:00')) + '주 ' + r1(c.rate) + '% (' + c.present + '/' + c.total + ')' : ''; }).filter(Boolean).join(' · '); return `<div><b style="color:#2c3e50;">${esc(x.u.name)}</b> ${r1(x.st.rate)}% <span style="color:#95a5a6;">(${x.st.weeksUsed}주 평균)</span> <span style="color:#95a5a6;">— ${parts}</span></div>`; }).join('')}</div></details>` : '';
     const medal = ['🥇', '🥈', '🥉'], tieCount = {};
     c.ranked.forEach(r => { tieCount[r.rank] = (tieCount[r.rank] || 0) + 1; });
     box.innerHTML = monthSel + `
         <div style="background:#f0fff4; border:1px solid #a9dfbf; border-radius:8px; padding:10px 12px; font-size:0.84rem; line-height:1.65;">
             <div>분배 누적금 <b>${fmt(c.total)} ${UNIT}</b> → 출석률 <b>${r1(c.minRate)}% 이상</b> <b>${c.N}명</b>을 ${c.thirds ? '<b>3그룹(33%씩)</b>으로 나눠' : '상위 <b>' + c.cap + '명(동점 포함)</b>을 3그룹으로 나눠'} 그룹별로 차등 분배</div>
             ${c.tierInfo.map(t => `<div>${medal[t.index] || '▪️'} <b>${t.group}그룹</b>${t.members.length ? ' (' + (t.from === t.to ? t.from : t.from + '~' + t.to) + '등)' : ''} · ${r1(t.pct)}% (${fmt(t.pool)}) → ${t.members.length ? '<b>' + t.members.length + '명</b> · 1인당 <b style="color:#27ae60;">' + range(t.per) + '</b>' : '<span style="color:#c0392b;">해당 없음</span>'}</div>`).join('')}
-            <div style="font-size:0.74rem; color:#7f8c8d; margin-top:3px;">출석률 기준: <b>${esc(dm.label)}</b> (수 ${esc(md(new Date(dm.from + 'T00:00:00')))} ~ 화 ${esc(md(new Date(dm.to + 'T00:00:00')))} · ${dm.weeks}주 합산) · ${hm} 계산${exNames.length ? ' · 출석률에서 제외한 보스: ' + esc(exNames.join(', ')) : ''}${monthNote}<br>월 출석률은 그 달 모든 주의 출석 횟수를 합산한 값입니다. 순위는 출석률이 높은 순입니다. 점수(출석률)가 같으면 공동 등수이고 같은 금액을 받습니다. 같은 그룹은 균등하게 나누고, 높은 그룹이 낮은 그룹보다 더 받습니다.</div>
+            <div style="font-size:0.74rem; color:#7f8c8d; margin-top:3px;">출석률 기준: <b>${esc(dm.label)}</b> (수 ${esc(md(new Date(dm.from + 'T00:00:00')))} ~ 화 ${esc(md(new Date(dm.to + 'T00:00:00')))} · ${dm.weeks}주 평균) · ${hm} 계산${exNames.length ? ' · 출석률에서 제외한 보스: ' + esc(exNames.join(', ')) : ''}${monthNote}<br>월 출석률은 그 달 각 주의 출석률(%)을 더해서 주 수로 나눈 평균입니다 (그 주에 대상 보스가 없던 사람은 그 주를 뺍니다). 아직 진행하지 않은 보스는 계산하지 않습니다. 순위는 출석률이 높은 순입니다. 점수(출석률)가 같으면 공동 등수이고 같은 금액을 받습니다. 같은 그룹은 균등하게 나누고, 높은 그룹이 낮은 그룹보다 더 받습니다.</div>
             <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">${actBtn('🔄 다시 계산', 'Settle.distRecalc()', '#5D6D7E')}${isAdmin ? actBtn('⚙️ 분배 기준', 'Settle.openDistSettings()', '#8e44ad') : ''}</div>
         </div>
         ${c.rows.length ? `<div style="max-height:320px; overflow-y:auto; border:1px solid #eee; border-radius:8px; margin-top:8px;">
@@ -3705,7 +3715,7 @@ async function saveRankSettlement() {                          // [분배 완료
     if (!c.balanced) { alert('금액 계산이 맞지 않습니다. (배분 합계 ' + fmt(c.paid) + ' + 미배분 ' + fmt(c.unallocated) + ' ≠ 총액 ' + fmt(total) + ')'); return; }
     if (c.unallocated > 0 && !confirm(`미배분 금액이 ${fmt(c.unallocated)} ${UNIT} 있습니다. (해당하는 사람이 없는 그룹의 몫)\n이 금액은 누구에게도 지급되지 않습니다. 그대로 분배를 완료할까요?`)) return;
     if (!dm.done && !confirm(`${monthLabel(month)}은(는) 아직 끝나지 않은 달입니다. (마지막 주가 ${md(new Date(dm.to + 'T00:00:00'))} 화요일에 끝납니다)\n지금까지의 기록으로 분배를 완료할까요?`)) return;
-    if (!confirm(`${monthLabel(month)} 분배를 완료할까요?\n출석률은 ${monthLabel(month)}(${dm.weeks}주, 수 ${md(new Date(dm.from + 'T00:00:00'))} ~ 화 ${md(new Date(dm.to + 'T00:00:00'))}) 합산 기준입니다.\n분배 누적금 ${fmt(total)} ${UNIT}을(를) 출석률 ${Math.round(c.minRate * 10) / 10}% 이상 ${pays.length}명에게 그룹별로 나눕니다.\n${c.tierInfo.filter(t => t.members.length).map(t => '· ' + t.group + '그룹 ' + (Math.round(t.pct * 10) / 10) + '% (' + fmt(t.pool) + ') → ' + t.members.length + '명').join('\n')}\n(분배 완료 후 분배 누적금은 0이 되고, 같은 아이템은 다시 정산되지 않습니다)`)) return;
+    if (!confirm(`${monthLabel(month)} 분배를 완료할까요?\n출석률은 ${monthLabel(month)}(${dm.weeks}주, 수 ${md(new Date(dm.from + 'T00:00:00'))} ~ 화 ${md(new Date(dm.to + 'T00:00:00'))}) 각 주 출석률의 평균 기준입니다.\n분배 누적금 ${fmt(total)} ${UNIT}을(를) 출석률 ${Math.round(c.minRate * 10) / 10}% 이상 ${pays.length}명에게 그룹별로 나눕니다.\n${c.tierInfo.filter(t => t.members.length).map(t => '· ' + t.group + '그룹 ' + (Math.round(t.pct * 10) / 10) + '% (' + fmt(t.pool) + ') → ' + t.members.length + '명').join('\n')}\n(분배 완료 후 분배 누적금은 0이 되고, 같은 아이템은 다시 정산되지 않습니다)`)) return;
     try {
         const fresh = await Promise.all(items.map(i => db.ref('boss_storage/' + i.id + '/settledId').once('value')));       // 다른 사람이 먼저 정산했는지 서버 값으로 재확인
         if (fresh.some(x => x.val())) { alert('다른 사람이 이미 정산한 아이템이 포함되어 있습니다. 화면을 새로 연 뒤 다시 시도하세요.'); return; }
@@ -3718,7 +3728,7 @@ async function saveRankSettlement() {                          // [분배 완료
             id: sidv, createdAt: nowIso(), month: month, totalAmount: total, count: pays.length, mode: 'rank',
             items: items.map(i => ({ id: String(i.id), itemName: i.itemName, bossName: i.bossName, bossServer: i.bossServer || '', bossVariant: i.bossVariant || '', date: i.date, buyer: i.buyer, bidPrice: i.bidPrice })),
             recipients: recMap,
-            rank: { minRate: c.minRate, eligible: c.eligibleN, thirds: c.thirds, week: dm.label + ' (수 ' + md(new Date(dm.from + 'T00:00:00')) + ' ~ 화 ' + md(new Date(dm.to + 'T00:00:00')) + ' · ' + dm.weeks + '주)', basis: { type: 'month', month: dm.key, from: dm.from, to: dm.to, weeks: dm.weeks }, method: 'tieAvg', tiers: c.tierInfo.map(t => ({ group: t.group, from: t.from, to: t.to, pct: t.pct, pool: t.pool, count: t.members.length })) }
+            rank: { minRate: c.minRate, eligible: c.eligibleN, thirds: c.thirds, week: dm.label + ' (수 ' + md(new Date(dm.from + 'T00:00:00')) + ' ~ 화 ' + md(new Date(dm.to + 'T00:00:00')) + ' · ' + dm.weeks + '주)', basis: { type: 'month', avg: 'weekly', month: dm.key, from: dm.from, to: dm.to, weeks: dm.weeks }, method: 'tieAvg', tiers: c.tierInfo.map(t => ({ group: t.group, from: t.from, to: t.to, pct: t.pct, pool: t.pool, count: t.members.length })) }
         };
         if (c.unallocated) record.unallocated = c.unallocated;
         const updates = {};
