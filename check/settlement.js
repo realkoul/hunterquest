@@ -2627,12 +2627,13 @@ function personRatesCore(recs, us, ts) {                       // 사람마다 �
         const none = {};                                                                         // 한 주(수~화) 안에서 이 서버에 배정된 보스가 하나도 없으면(아직 배정 전) 그 주는 모든 보스를 기준으로 함 (예전과 같은 안전장치)
         recs.forEach((r, i) => { const g = r.grp || ''; none[g] = (none[g] === undefined) ? !duty[i] : (none[g] && !duty[i]); });
         let present = 0, absent = 0, total = 0;
+        const wk = {};                                                                           // 주(수~화)별 출석 횟수 (분배 창의 "사람별 주차 내역"용)
         recs.forEach((r, i) => {
-            const raw = r.att[uid] !== undefined ? r.att[uid] : r.att[u.id], status = normalizeStatus(raw);
-            if (status === 'present' || status === 'late') { present++; total++; }               // 출석한 보스는 담당이 아니어도(쟁참여) 분자·분모에 모두 포함
-            else if (none[r.grp || ''] || duty[i]) { absent++; total++; }                        // 출석 안 한 보스는 내 서버 담당일 때만 분모에 포함
+            const raw = r.att[uid] !== undefined ? r.att[uid] : r.att[u.id], status = normalizeStatus(raw), g = r.grp || '', w = wk[g] || (wk[g] = { present: 0, total: 0 });
+            if (status === 'present' || status === 'late') { present++; total++; w.present++; w.total++; }               // 출석한 보스는 담당이 아니어도(쟁참여) 분자·분모에 모두 포함
+            else if (none[g] || duty[i]) { absent++; total++; w.total++; }                                              // 출석 안 한 보스는 내 서버 담당일 때만 분모에 포함
         });
-        out[uid] = { present: present, absent: absent, total: total };
+        out[uid] = { present: present, absent: absent, total: total, weeks: wk };
     });
     return out;
 }
@@ -3512,10 +3513,10 @@ async function loadDistMonth(mk) {                             // 그 달의 출
         const data = filterExcluded(raw, from, to);
         const recs = buildRecs(data, from, to, docs, (date) => ymd(getWeekStart(new Date(date + 'T00:00:00'))));
         const us = getUsers(), r = personRatesCore(recs, us, teamIds()), stats = {};
-        us.forEach(u => { const x = r[String(u.id)] || { present: 0, absent: 0, total: 0 }; stats[String(u.id)] = { present: x.present, absent: x.absent, total: x.total, rate: x.total > 0 ? x.present / x.total * 100 : 0 }; });
+        us.forEach(u => { const x = r[String(u.id)] || { present: 0, absent: 0, total: 0 }; stats[String(u.id)] = { present: x.present, absent: x.absent, total: x.total, weeks: x.weeks || {}, rate: x.total > 0 ? x.present / x.total * 100 : 0 }; });
         const used = new Set(recs.map(x => sunKeyOf(x.date)));
         const missing = keys.filter(k => used.has(k) && Object.keys(docs[k]).length === 0).map(k => { const st = new Date(k + 'T00:00:00'), en = new Date(st); en.setDate(st.getDate() + 6); return md(st) + '~' + md(en); });
-        state.distMonth = { key: mk, label: monthLabel(mk), from: from, to: to, weeks: weeks.length, stats: stats, missing: missing, done: monthDone(mk), records: recs.length, at: Date.now() };
+        state.distMonth = { key: mk, label: monthLabel(mk), from: from, to: to, weeks: weeks.length, weekMeta: weeks.map(w => ({ start: w.start, end: w.end })), stats: stats, missing: missing, done: monthDone(mk), records: recs.length, at: Date.now() };
     } catch (e) {
         if (token !== state.distToken) return;
         state.distMonth = null; state.distErr = (e && e.message) ? e.message : '알 수 없는 오류';
@@ -3558,6 +3559,8 @@ function renderAttendBox() {
     const dm = state.distMonth, when = new Date(dm.at), hm = String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0');
     const mopts = distMonthOptions(), monthSel = '<div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;"><span style="font-size:0.84rem; font-weight:bold; color:#555;">📅 기준 월</span><select id="settle-dist-month" onchange="Settle.distSetMonth(this.value)" style="width:auto; margin:0; padding:6px 8px; border:1.5px solid #27ae60; border-radius:6px; font-size:0.84rem;">' + mopts.map(o => '<option value="' + o.key + '"' + (o.key === dm.key ? ' selected' : '') + '>' + esc(monthLabel(o.key)) + ' (' + o.range + ' · ' + o.weeks.length + '주' + (o.done ? '' : ' · 진행 중') + ')</option>').join('') + '</select></div>';
     const monthNote = (dm.done ? '' : '<div style="font-size:0.76rem; color:#d35400; margin-top:3px;">⚠️ 아직 끝나지 않은 달입니다. 지금까지의 출석 기록으로 계산했어요. (정산은 마지막 주(화요일)가 끝난 뒤에 하는 것을 권장합니다)</div>') + (dm.missing.length ? '<div style="font-size:0.76rem; color:#d35400; margin-top:3px;">⚠️ 서버 배정이 올라와 있지 않은 주: ' + esc(dm.missing.join(', ')) + ' — 이 주의 보스는 모든 서버를 대상으로 계산했어요. 서버 배정 화면에서 배정을 올리면 자동으로 정확해집니다. (🔄 다시 계산)</div>' : '');
+    const detRows = getUsers().map(u => ({ u: u, st: dm.stats[String(u.id)] })).filter(x => x.st && x.st.total > 0).sort((a, b) => b.st.rate - a.st.rate || koCmp(a.u.name, b.u.name));
+    const weekDetail = detRows.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">📊 사람별 주차 내역 보기 (왜 이 출석률인지)</summary><div style="margin-top:4px; max-height:260px; overflow-y:auto; line-height:1.75;">${detRows.map(x => { const parts = (dm.weekMeta || []).map(w => { const c = (x.st.weeks || {})[w.start]; return c && c.total ? md(new Date(w.start + 'T00:00:00')) + '주 ' + c.present + '/' + c.total : ''; }).filter(Boolean).join(' · '); return `<div><b style="color:#2c3e50;">${esc(x.u.name)}</b> ${r1(x.st.rate)}% (${x.st.present}/${x.st.total}) <span style="color:#95a5a6;">— ${parts}</span></div>`; }).join('')}</div></details>` : '';
     const medal = ['🥇', '🥈', '🥉'], tieCount = {};
     c.ranked.forEach(r => { tieCount[r.rank] = (tieCount[r.rank] || 0) + 1; });
     box.innerHTML = monthSel + `
@@ -3573,6 +3576,7 @@ function renderAttendBox() {
         </div>` : '<div style="margin-top:8px; padding:10px; color:#c0392b; font-size:0.85rem; text-align:center;">받을 사람이 없습니다. 출석률 기준을 낮춰 주세요.</div>'}
         ${c.outside.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">출석률은 충족했지만 상위 ${c.cap}명(동점 포함) 밖인 ${c.outside.length}명</summary><div style="margin-top:4px; line-height:1.7;">${c.outside.map(r => esc(r.name) + ' <span style="color:#95a5a6;">' + r1(r.rate) + '%</span>').join(' · ')}</div></details>` : ''}
         ${c.below.length ? `<details style="margin-top:6px; font-size:0.78rem; color:#7f8c8d;"><summary style="cursor:pointer;">출석률 ${r1(c.minRate)}% 미만이라 제외된 ${c.below.length}명</summary><div style="margin-top:4px; line-height:1.7;">${c.below.map(r => esc(r.name) + ' <span style="color:#95a5a6;">' + r1(r.rate) + '%</span>').join(' · ')}</div></details>` : ''}
+        ${weekDetail}
         <div style="margin-top:6px; font-size:0.8rem; color:#555;">총액 <b>${fmt(c.total)}</b> = 지급 <b>${fmt(c.paid)}</b> + 미배분 <b style="color:${c.unallocated ? '#c0392b' : '#555'};">${fmt(c.unallocated)}</b></div>
         ${c.errors.map(m => `<div style="color:#c0392b; font-size:0.8rem; margin-top:3px;">⛔ ${esc(m)}</div>`).join('')}
         ${c.infos.map(m => `<div style="color:#2471a3; font-size:0.8rem; margin-top:3px;">ℹ️ ${esc(m)}</div>`).join('')}
