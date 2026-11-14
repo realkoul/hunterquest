@@ -66,6 +66,7 @@ const state = {
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
+    statsOff: 0, statsForceCur: false,                                                       // 통계 탭에서 보고 있는 주(0=이번 주, 1=지난 주 …) / 내 출석·입찰·분배 계산은 항상 이번 주로 고정
     distMonth: null, distSel: '', distBusy: false, distErr: '', distToken: 0,                     // 분배 정산의 기준 월(월 출석률)
     assignDocs: {}, assignRefs: {}, assignVer: 0, assignVerSeen: 0,                              // 서버 배정 문서(일~토 주별, 일요일 키) 실시간 보관
     nameChanges: [],                                                                           // 길드원 이름 변경 내역(기기의 [내 이름]을 새 이름으로 옮기는 데 씀)
@@ -725,7 +726,7 @@ function renderMyAtt() {
     let stats = null;
     if (myAtt.data && typeof calculateStats === 'function') {
         const log = console.log; console.log = function () {};                // calculateStats 의 디버그 로그가 콘솔을 채우지 않게
-        try { stats = calculateStats(myAtt.data).userStats; } catch (e) { stats = null; } finally { console.log = log; }
+        try { stats = calcCurrentStats(myAtt.data).userStats; } catch (e) { stats = null; } finally { console.log = log; }
     }
     const rows = mine.map(u => {
         const st = stats ? stats[String(u.id)] : null;
@@ -2374,7 +2375,7 @@ function partCompute() {                                       // 이미 읽은 
     if (!state.partRaw || typeof calculateStats !== 'function') return;
     const log = console.log; console.log = function () {};
     let stats = null;
-    try { stats = calculateStats(state.partRaw).userStats; } catch (e) { stats = null; } finally { console.log = log; }
+    try { stats = calcCurrentStats(state.partRaw).userStats; } catch (e) { stats = null; } finally { console.log = log; }
     state.partStats = stats || {};
     renderBidAdmin();
     renderAttendBox();
@@ -2581,10 +2582,10 @@ function assignedOf(date, bossId, docs) {                      // 그 날짜·�
     const e = doc ? doc[bossId] : null, a = e ? e.assignedServers : null;
     return Array.isArray(a) ? a : (a && typeof a === 'object' ? Object.values(a) : []);
 }
-function ensureAssignDocs() {                                  // 지난 주 · 이번 주 · 다음 주 서버 배정 문서를 실시간으로 읽어 둠 (수~화 한 주는 이 중 두 문서에 걸침)
+function ensureAssignDocs() {                                  // 지난 5주 · 이번 주 · 다음 주 서버 배정 문서를 실시간으로 읽어 둠 (수~화 한 주는 이 중 두 문서에 걸침 / 통계 탭에서 지난 3주를 볼 때도 필요)
     if (!depsOk() || typeof formatLocalDate !== 'function') return;
     const keys = [];
-    [-7, 0, 7].forEach(n => { const d = new Date(nowD()); d.setDate(d.getDate() + n); const k = sunKeyOf(formatLocalDate(d)); if (!keys.includes(k)) keys.push(k); });
+    [-35, -28, -21, -14, -7, 0, 7].forEach(n => { const d = new Date(nowD()); d.setDate(d.getDate() + n); const k = sunKeyOf(formatLocalDate(d)); if (!keys.includes(k)) keys.push(k); });
     Object.keys(state.assignRefs).forEach(k => {
         if (keys.includes(k)) return;
         try { state.assignRefs[k].ref.off('value', state.assignRefs[k].cb); } catch (e) { /* 이미 해제됨 */ }
@@ -2726,9 +2727,54 @@ async function backfillBossName(sch) {                         // 그 스케줄(
     return n;
 }
 
+// ── 통계 탭: 이번 주 + 지난 3주 (모두 볼 수 있음) ──
+const STATS_WEEKS = 4;                                           // 이번 주 포함 4주
+function calcCurrentStats(data) {                                // 통계 탭에서 지난 주를 보고 있어도, 내 출석·입찰·분배는 항상 이번 주로 계산
+    state.statsForceCur = true;
+    try { return calculateStats(data); } finally { state.statsForceCur = false; }
+}
+function statsWeekRange(off) {
+    const ws = getWeekStart(), st = new Date(ws), en = new Date(ws);
+    st.setDate(ws.getDate() - 7 * off); en.setDate(st.getDate() + 6);
+    return '수 ' + md(st) + ' ~ 화 ' + md(en);
+}
+function updateStatsWeekUi() {
+    const sel = $('stats-week-select');
+    if (sel && sel.value !== String(state.statsOff)) sel.value = String(state.statsOff);
+    const sp = document.querySelector('#tab-stats h2 span');
+    if (sp) sp.textContent = '(' + (state.statsOff === 0 ? '이번 주 ' : state.statsOff === 1 ? '지난 주 ' : state.statsOff + '주 전 ') + statsWeekRange(state.statsOff) + ')';
+}
+function statsSetWeek(v) {                                       // 주 선택: 다시 계산해서 화면을 바꿈
+    state.statsOff = Math.max(0, Math.min(STATS_WEEKS - 1, Number(v) || 0));
+    updateStatsWeekUi();
+    if (typeof loadStats === 'function') loadStats();
+}
+function initStatsWeek() {
+    const tab = $('tab-stats'), card = tab ? tab.querySelector('.card') : null;
+    if (!card || $('stats-week-select') || typeof getWeekStart !== 'function') return;
+    const box = document.createElement('div');
+    box.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0 2px;';
+    let opts = '';
+    for (let i = 0; i < STATS_WEEKS; i++) opts += '<option value="' + i + '">' + (i === 0 ? '이번 주' : i === 1 ? '지난 주' : i + '주 전') + ' (' + statsWeekRange(i) + ')</option>';
+    box.innerHTML = '<span style="font-size:0.84rem; font-weight:bold; color:#555;">📅 주 선택</span><select id="stats-week-select" onchange="Settle.statsSetWeek(this.value)" style="width:auto; margin:0; padding:6px 8px; border:1.5px solid #5d6d7e; border-radius:6px; font-size:0.84rem;">' + opts + '</select><span style="font-size:0.74rem; color:#95a5a6;">지난 3주까지 볼 수 있어요</span>';
+    const head = card.firstElementChild;                           // 제목 줄 바로 아래
+    if (head && head.nextSibling) card.insertBefore(box, head.nextSibling); else card.appendChild(box);
+    let was = tab.classList.contains('active');
+    new MutationObserver(() => {                                   // 통계 탭을 새로 열 때마다 이번 주부터 보여 줌
+        const now = tab.classList.contains('active');
+        if (now && !was) { const had = state.statsOff > 0; state.statsOff = 0; updateStatsWeekUi(); if (had && typeof loadStats === 'function') loadStats(); }          // 지난 주를 보다가 나갔다 오면 이번 주로 되돌리고 표도 다시 계산 (표시와 숫자가 어긋나지 않게)
+        was = now;
+    }).observe(tab, { attributes: true, attributeFilter: ['class'] });
+    updateStatsWeekUi();
+}
+
 function installTeamRules() {                                  // app.js 의 함수를 손대지 않고, 같은 이름으로 감싸서 규칙을 끼워 넣음 (한 번만)
     const wrap = (name, make) => { const f = window[name]; if (typeof f === 'function' && !f.__settle) { const w = make(f); w.__settle = true; window[name] = w; } };
     wrap('calculateStats', (orig) => function (data) {
+        const tabS = $('tab-stats'), off = (!state.statsForceCur && state.statsOff > 0 && tabS && tabS.classList.contains('active')) ? state.statsOff : 0;     // 통계 탭이 열려 있고 지난 주를 골랐을 때만
+        const ogWs = window.getWeekStart;
+        if (off) window.getWeekStart = function (d) { const r = ogWs.apply(this, arguments); if (!d) r.setDate(r.getDate() - 7 * off); return r; };       // 이 계산 동안만 "이번 주"의 시작을 n주 앞으로
+        try {
         let d = data;
         try { d = statsInput(data); } catch (e) { d = data; }
         const saved = (typeof users !== 'undefined' && Array.isArray(users)) ? users : null, ts = teamIds();
@@ -2740,7 +2786,17 @@ function installTeamRules() {                                  // app.js 의 함
         let res;
         try { res = orig.call(this, d); } finally { if (swapped) users = saved; }
         try { applyPersonRates(res, d, saved || getUsers(), ts); } catch (e) { /* 계산이 실패하면 앱의 원래 값을 그대로 씀 */ }
+        if (off && res) {                                                                          // 지난 주: 위쪽 "총 출석 횟수"도 그 주 기록과 그 주의 서버 배정으로 다시 셈 (앱 원래 값은 이번 주 배정 기준)
+            try {
+                const wsx = getWeekStart(), wex = new Date(wsx);
+                wex.setDate(wsx.getDate() + 6);
+                const rr = buildRecs(d, formatLocalDate(wsx), formatLocalDate(wex), state.assignDocs, () => 'w'), m = {};
+                ['jingir', 'pandora', 'support'].forEach(sv => { m[sv] = rr.filter(x => x.assigned.length === 0 || x.assigned.includes(sv)).length; });
+                res.totalSchedules = rr.length; res.serverTotalMap = m;
+            } catch (e) { /* 무시 */ }
+        }
         return res;
+        } finally { if (off) window.getWeekStart = ogWs; }
     });
     wrap('updateMyNameDisplay', (orig) => function () { const r = orig.apply(this, arguments); try { adjustNameCards(); } catch (e) { /* 무시 */ } try { addRelicButtons(); } catch (e) { /* 무시 */ } return r; });
     wrap('selectQuickServer', (orig) => function (name, serverKey, slotId) {
@@ -5348,7 +5404,7 @@ window.Settle = {
     onDropTargetChange, refreshDropBox: () => syncDropBox(true), onVariantChange, openVariants, addVariantRow, removeVariantRow, saveVariants, resetVariants, onItemSelect, addDrop, toggleDelivered, deleteDrop, confirmDelivery, deleteUndelivered, reloadUndelivered, adminOnBossChange, adminAddItems, adminDeleteItem, adminMoveSlot, adminDeleteSlot,
     setStorageFilter, setStorageServer, openAuction, confirmAuction, unsell, deleteStorage,
     openManagers, filterManagerRows, saveManagers,
-    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, partBossAll, partToggleBoss, openPartAdmin, guideRetry, supRowChange, supBulk, openDist, distRecalc, openDistSettings, distDemo, saveDistSettings, resetDistSettings, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportAdmin, supDirty, supReset, distSetMonth, rbLoadOpenAll, rbOpenWeekFor, monthWeeks, monthDone, defaultDistMonth, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
+    openCalc, closeCalc, openBackupSettings, saveBackupSettings, clearBackupSettings, backupNowRequest, toggleBidSel, clearBidSel, openBidModal, bidCharChange, submitBids, cancelMyBid, openBidAdmin, closeBidAdmin, confirmBid, deleteBid, partBossAll, partToggleBoss, openPartAdmin, guideRetry, supRowChange, supBulk, openDist, distRecalc, openDistSettings, distDemo, saveDistSettings, resetDistSettings, savePartSettings, resetPartSettings, partRefresh, adminSetPrice, adminSetTag, setStQuery, setStCat, setStSort, toggleCatPanel, moreStorage, clearStFilters, openCatSettings, catRowCount, catAddRow, catDelRow, saveCatSettings, resetCatSettings, toggleRecipient, setCalcMode, setSupportPct, openSupportAdmin, supDirty, supReset, distSetMonth, statsSetWeek, rbLoadOpenAll, rbOpenWeekFor, monthWeeks, monthDone, defaultDistMonth, saveSupportTeam, filterSupportRows, setRatio, setFixed, fillRatioByHeadcount, setRecipientsAll, setRecipientsServer, saveSettlement,
     showHistory, hideHistory, toggleReceived, cancelSettlement,
     rbLoadWeek, rbUserOpen, rbSubmitState: rbRenderSubmitState, rbTransferInput: rbRenderTransferPreview, rbExtra, rbSaveExtra, rbHandleFiles, rbShotKind, rbShotCount, rbRemoveShot, rbSubmit, rbShowImages, rbOpenImage, rbSaveEdit, rbUnconfirm,
     rbApprove, rbReject, rbEdit, rbTogglePaid, rbPayUser, rbDelete, rbDeleteImages, rbSetPrices, rbSavePrices
@@ -5365,6 +5421,7 @@ initSupportAdmin(); // 관리 탭의 [🤝 지원조 명단 관리] 카드 (길�
 initPartToggle();  // 출석 탭 [출석하기]와 [내 출석] 사이의 "이 스케줄을 출석률에 포함" 체크 칸 (관리자)
 initGuide();       // 하단 메뉴 [사이트이용법] 탭
 initTeamRules();   // 지원조 규칙 + 통계 통일
+initStatsWeek();     // 통계 탭: 이번 주 + 지난 3주 선택
 initRename();      // 관리 탭 길드원 수정 창: 관리자 전용 이름 변경 + 기기의 [내 이름] 자동 이전
 updateNav();      // 정산 메뉴는 관리자·담당자에게만
 })();
