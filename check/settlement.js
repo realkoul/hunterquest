@@ -66,6 +66,7 @@ const state = {
     catRules: {}, catCache: {}, catDraft: null, itemTags: {},                                          // + 아이템별로 직접 지정한 분류(이름 → {type, job})
                                                          // 분류 규칙(관리자 설정) / 이름별 분류 계산 캐시 / 설정창 임시 편집본
     backupStatus: null, backupCool: 0,
+    serverChanges: {}, serverChOn: false,                                                       // 운영진이 서버를 바꾼 기록 { 번호: [{ms, from, to}] } (길드원이 출석하며 바꾼 것과 같게 계산하려고)
     statsOff: 0, statsForceCur: false,                                                       // 통계 탭에서 보고 있는 주(0=이번 주, 1=지난 주 …) / 내 출석·입찰·분배 계산은 항상 이번 주로 고정
     distMonth: null, distSel: '', distBusy: false, distErr: '', distToken: 0,                     // 분배 정산의 기준 월(월 출석률)
     assignDocs: {}, assignRefs: {}, assignVer: 0, assignVerSeen: 0,                              // 서버 배정 문서(일~토 주별, 일요일 키) 실시간 보관
@@ -749,6 +750,7 @@ function renderMyAtt() {
 function myAttTick() {
     navFit();
     ensureAssignDocs();
+    ensureServerChanges();
     if (state.assignVer !== state.assignVerSeen) { state.assignVerSeen = state.assignVer; afterAssignChange(); }          // 서버 배정이 바뀌면 출석률을 쓰는 화면을 바로 다시 계산
     if (state.nameChanges.length) migrateMyNames();                                   // 길드원 명단을 나중에 받는 경우에도 옛 이름을 새 이름으로 옮김
     if ($('rbu-window')) { const wk = String(rbOpenWeek()); if (wk !== rb.windowSig) { rb.windowSig = wk; rbPopulateUserWeeks(); rbRenderUser(); } }          // 신청 기간이 열리고 닫히는 순간 화면을 바로 바꿈
@@ -1936,10 +1938,10 @@ async function saveSupportTeam() {
     const idset = new Set(ids), missing = [], updates = {};
     getUsers().forEach(u => {
         const uid = Number(u.id);
-        if (idset.has(uid)) { if (u.server !== 'support') updates['boss_attendance_users/' + u.id + '/server'] = 'support'; return; }          // 지원조: 서버는 지원으로 고정
+        if (idset.has(uid)) { if (u.server !== 'support') { addServerLog(updates, u, 'support'); updates['boss_attendance_users/' + u.id + '/server'] = 'support'; } return; }          // 지원조: 서버는 지원으로 고정
         if (!(state.supportTeam.includes(uid) || u.server === 'support')) return;
         const sel = document.querySelector('#settle-sup-list select[data-uid="' + uid + '"]'), v = sel ? sel.value : '';
-        if (v === 'jingir' || v === 'pandora') updates['boss_attendance_users/' + u.id + '/server'] = v; else missing.push(u.name);              // 뺀 사람: 진기르/판도라 중 선택 필수
+        if (v === 'jingir' || v === 'pandora') { addServerLog(updates, u, v); updates['boss_attendance_users/' + u.id + '/server'] = v; } else missing.push(u.name);              // 뺀 사람: 진기르/판도라 중 선택 필수
     });
     if (missing.length) { alert('지원조에서 뺀 사람(또는 서버가 지원인 지원조 아닌 사람)은 진기르 또는 판도라 서버를 선택해야 합니다.\n선택이 필요한 사람: ' + missing.slice(0, 8).join(', ') + (missing.length > 8 ? ' 외 ' + (missing.length - 8) + '명' : '')); return; }
     updates['hunter_config/supportTeam'] = ids.length ? ids : null;
@@ -2598,6 +2600,28 @@ function ensureAssignDocs() {                                  // 지난 5주 ·
         ref.on('value', cb);
     });
 }
+// ── 운영진이 서버를 바꾼 시각 기록: 길드원이 출석하며 서버를 바꾼 것과 똑같이, 바꾼 시각 이후의 보스는 새 서버로 판단 ──
+//   hunter_config/serverChanges/{키} = { userId, from, to, at }  (길드원 수정 창 · 지원조 명단 저장 · 이름 변경 창에서 서버가 바뀔 때)
+function ensureServerChanges() {
+    if (state.serverChOn || !depsOk()) return;
+    state.serverChOn = true;
+    db.ref('hunter_config/serverChanges').on('value', snap => {
+        const v = snap.val() || {}, m = {};
+        Object.keys(v).forEach(k => {
+            const c = v[k], ms = c ? Date.parse(c.at) : NaN;
+            if (!c || isNaN(ms) || !SNAP_SERVERS[c.to]) return;
+            (m[String(c.userId)] = m[String(c.userId)] || []).push({ ms: ms, from: SNAP_SERVERS[c.from] ? c.from : '', to: c.to });
+        });
+        Object.keys(m).forEach(k => m[k].sort((a, b) => a.ms - b.ms));
+        state.serverChanges = m;
+        state.assignVer++;                                                                       // 기록이 바뀌면 출석률을 쓰는 화면을 다시 계산
+    });
+}
+function addServerLog(updates, user, to) {                     // 서버가 실제로 바뀔 때만, 같은 쓰기에 기록을 함께 넣음
+    if (!user || !SNAP_SERVERS[to] || to === user.server) return;
+    updates['hunter_config/serverChanges/' + Number(user.id) + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)] = { userId: Number(user.id), from: user.server || '', to: to, at: nowIso() };
+}
+
 function afterAssignChange() {                                 // 서버 배정이 바뀌거나 늦게 도착하면 출석률을 쓰는 화면을 다시 계산
     try { if (state.partRaw) partCompute(); } catch (e) { /* 무시 */ }
     try { const t = $('tab-stats'); if (t && t.classList.contains('active') && typeof loadStats === 'function') loadStats(); } catch (e) { /* 무시 */ }
@@ -2609,10 +2633,10 @@ function buildRecs(data, from, to, docs, grpOf) {              // 기간 안의 
     Object.keys(data || {}).forEach(key => {
         const date = key.split('_')[0], bossId = key.split('_').slice(1).join('_'), rec = data[key] || {}, att = rec.attendees || {};
         if (date < from || date > to || !Object.keys(att).length) return;                       // 기간 안에 출석 기록이 있는 보스만
-        const tm = timeOf(bossId, rec);
-        if (tm === '99:99') { if (date > todayStr) return; }                                    // 시각을 모르는 기록은 미래 날짜만 제외
-        else { const st = new Date(date + 'T00:00:00'); st.setHours(Number(tm.slice(0, 2)), Number(tm.slice(3, 5)), 0, 0); if (nowMs < st.getTime() + 60000) return; }       // 아직 시작하지 않은 보스(시작 시각의 그 분이 끝나기 전)는 출석이 계속 열려 있으므로 계산하지 않음 — 먼저 누른 사람만 있고 나머지가 불참으로 셈되는 일을 막음
-        recs.push({ key: key, date: date, bossId: bossId, time: date + ' ' + timeOf(bossId, rec), att: att, srv: rec.servers || {}, assigned: assignedOf(date, bossId, docs), grp: grpOf(date) });
+        const tm = timeOf(bossId, rec), unknownTime = tm === '99:99', startMs = new Date(date + 'T00:00:00').setHours(unknownTime ? 12 : Number(tm.slice(0, 2)), unknownTime ? 0 : Number(tm.slice(3, 5)), 0, 0);
+        if (unknownTime) { if (date > todayStr) return; }                                       // 시각을 모르는 기록은 미래 날짜만 제외
+        else if (nowMs < startMs + 60000) return;                                               // 아직 시작하지 않은 보스(시작 시각의 그 분이 끝나기 전)는 출석이 계속 열려 있으므로 계산하지 않음 — 먼저 누른 사람만 있고 나머지가 불참으로 셈되는 일을 막음
+        recs.push({ ms: startMs, key: key, date: date, bossId: bossId, time: date + ' ' + timeOf(bossId, rec), att: att, srv: rec.servers || {}, assigned: assignedOf(date, bossId, docs), grp: grpOf(date) });
     });
     return recs.sort((a, b) => a.time.localeCompare(b.time) || a.key.localeCompare(b.key));
 }
@@ -2621,11 +2645,21 @@ function personRatesCore(recs, us, ts) {                       // 사람마다 �
     (us || []).forEach(u => {
         const uid = String(u.id), fallback = (ts && ts.has(Number(u.id))) ? 'support' : (u.server || '');
         const snaps = recs.map(r => { const v = r.srv[uid] !== undefined ? r.srv[uid] : r.srv[u.id]; return SNAP_SERVERS[v] ? v : ''; });
-        const first = snaps.find(Boolean) || '';
-        let prev = '';
-        const duty = recs.map((r, i) => {                                                        // 보스마다 "그 시각 내 서버 담당(또는 담당 지정 없음)"인지
-            if (snaps[i]) prev = snaps[i];
-            const sv = snaps[i] || prev || first || fallback;                                    // 그 보스 시각의 이 사람 서버: 저장된 서버 → 직전 출석 서버 → 처음 출석 서버 → 지금 서버
+        const evs = (state.serverChanges && state.serverChanges[uid]) || [];                      // 운영진이 이 사람의 서버를 바꾼 기록 (시각 순)
+        const firstIdx = snaps.findIndex(Boolean), first = firstIdx >= 0 ? snaps[firstIdx] : '';
+        let last = null;                                                                          // 직전에 출석한 서버 { sv, ms }
+        const duty = recs.map((r, i) => {                                                         // 보스마다 "그 시각 내 서버 담당(또는 담당 지정 없음)"인지
+            let sv;
+            if (snaps[i]) { sv = snaps[i]; last = { sv: sv, ms: r.ms }; }                         // 그 보스에 출석하며 저장된 서버
+            else {
+                let best = last;                                                                  // 직전 출석 서버와, 그 보스 시각 이전에 운영진이 바꾼 서버 중 더 나중 것
+                evs.forEach(e => { if (e.ms <= r.ms && (!best || e.ms >= best.ms)) best = { sv: e.to, ms: e.ms }; });
+                if (best) sv = best.sv;
+                else {                                                                            // 이전 기록이 전혀 없으면: 가장 이른 사건이 운영진의 변경이면 그 "바꾸기 전 서버", 아니면 처음 출석한 서버, 그것도 없으면 지금 서버
+                    const nx = evs.find(e => e.ms > r.ms), fm = firstIdx >= 0 ? recs[firstIdx].ms : Infinity;
+                    sv = (nx && nx.ms <= fm && SNAP_SERVERS[nx.from]) ? nx.from : (first || fallback);
+                }
+            }
             return r.assigned.length === 0 || r.assigned.includes(sv);
         });
         const none = {};                                                                         // 한 주(수~화) 안에서 이 서버에 배정된 보스가 하나도 없으면(아직 배정 전) 그 주는 모든 보스를 기준으로 함 (예전과 같은 안전장치)
@@ -2985,7 +3019,7 @@ async function applyRename(user, newName, server) {
     const chKey = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), fin = {};
     fin['hunter_config/nameChanges/' + chKey] = { userId: Number(user.id), from: user.name, to: newName, at: nowIso() };
     fin['boss_attendance_users/' + user.id + '/name'] = newName;              // 길드원 이름은 마지막에
-    if (server && server !== user.server) fin['boss_attendance_users/' + user.id + '/server'] = server;
+    if (server && server !== user.server) { addServerLog(fin, user, server); fin['boss_attendance_users/' + user.id + '/server'] = server; }
     await db.ref().update(fin);
     return cnt;
 }
@@ -3062,7 +3096,13 @@ function installRename() {
         const nn = nameEl ? String(nameEl.value || '').trim() : '';
         const srv = $('edit-user-server');
         if (user && srv && srv.disabled && (!nameEl || nameEl.readOnly || nn === user.name)) { alert('지원조는 서버가 지원으로 고정되어 있어 바꿀 내용이 없어요.\n서버를 바꾸려면 관리 탭의 지원조 명단 관리에서 먼저 지원조에서 빼 주세요.'); return; }      // 지원조의 서버는 여기서 바꿀 수 없음
-        if (!user || !nameEl || nameEl.readOnly || nn === user.name) return orig.apply(this, arguments);       // 이름을 바꾸지 않았으면 기존대로(서버만 변경)
+        if (!user || !nameEl || nameEl.readOnly || nn === user.name) {                                              // 이름을 바꾸지 않았으면 기존대로(서버만 변경) — 서버가 바뀌면 바꾼 시각도 기록
+            const to = srv ? srv.value : '', lg = {};
+            if (user && SNAP_SERVERS[to] && to !== user.server) addServerLog(lg, user, to);
+            const r = orig.apply(this, arguments);
+            if (Object.keys(lg).length) { try { db.ref().update(lg).catch(() => { /* 기록 실패는 서버 변경에 영향 없음 */ }); } catch (e) { /* 무시 */ } }
+            return r;
+        }
         if (!nn) { alert('이름을 입력해주세요.'); return; }
         return renameUserFlow(user, nn);
     });
